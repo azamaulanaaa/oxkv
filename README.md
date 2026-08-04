@@ -1,23 +1,22 @@
-# Rust Template
+# Rust WASM Template
 
-A minimal, linted Rust library template with strict Clippy settings.
+A minimal, linted Rust library that compiles to WebAssembly (WASM).
 
 ## Purpose
 
-This repository serves as a clean starting point for new Rust libraries. It includes:
+This repository provides a clean starting point for Rust‑to‑WASM projects. It includes:
 
-- Cargo metadata and workspace configuration
-- Comprehensive lints (Rust & Clippy) enforced at the crate level
-- Documentation stubs and a placeholder function
-- CI‑ready (you can add GitHub Actions later)
+- Cargo metadata with `wasm-bindgen` dependency
+- Strict Rust and Clippy lints enforced at the crate level
+- Example exported functions (`add`)
+- Panic hook for better error messages in the browser/Node.js
 
-## Getting Started
-
-### Prerequisites
+## Prerequisites
 
 - [Rust](https://www.rust-lang.org/tools/install) (latest stable)
+- [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) – for building and packaging the WASM module
 
-### Building
+## Building for WebAssembly
 
 ```bash
-cargo build
+wasm-pack build --target web   # or --target bundler, nodejs, etc.argo build

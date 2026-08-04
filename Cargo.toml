@@ -2,17 +2,19 @@
 name = "rust-template"
 version = "0.1.0"
 edition = "2024"
-description = "A minimal Rust library template with strict linting."
+description = "A minimal Rust WASM library template with strict linting."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/yourusername/rust-template" 
-keywords = ["template", "placeholder", "starter"]
-categories = ["development-tools"]
+keywords = ["wasm", "webassembly", "template"]
+categories = ["wasm", "development-tools"]
 readme = "README.md"
 
 [lib]
-crate-type = ["lib", "rlib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"
 
 [lints.rust]
 unsafe_code = "forbid"
