@@ -1,18 +1,13 @@
 //! A minimal WASM library template with strict linting.
 
-use wasm_bindgen::prelude::*;
+/// Wasm Bindings
+#[cfg(feature = "wasm")]
+pub mod wasm;
 
 /// Adds two unsigned 64-bit integers.
 #[must_use]
-#[wasm_bindgen]
 pub fn add(left: u64, right: u64) -> u64 {
     left + right
-}
-
-/// the main function when WASM module is loaded
-#[wasm_bindgen(start)]
-pub fn main_wasm() {
-    console_error_panic_hook::set_once();
 }
 
 #[cfg(test)]
