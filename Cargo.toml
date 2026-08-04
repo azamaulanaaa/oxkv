@@ -1,6 +1,25 @@
 [package]
-name = "rust-kv"
+name = "rust-template"
 version = "0.1.0"
 edition = "2024"
+description = "A minimal Rust library template with strict linting."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yourusername/rust-template" 
+keywords = ["template", "placeholder", "starter"]
+categories = ["development-tools"]
+readme = "README.md"
+
+[lib]
+crate-type = ["lib", "rlib"]
 
 [dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+unreachable_pub = "deny"
+
+[lints.clippy]
+all = "deny"
+cargo = "deny"
+pedantic = "deny"

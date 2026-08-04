@@ -1,0 +1,8 @@
+# Clippy configuration
+# See https://rust-lang.github.io/rust-clippy/master/index.html
+
+# Allow certain checks in tests (e.g., `needless_return`)
+allow-dbg-in-tests = true
+
+# Use `&str` instead of `String` where possible for string handling
+avoid-breaking-exported-api = false
