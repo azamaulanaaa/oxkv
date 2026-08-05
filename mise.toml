@@ -3,6 +3,7 @@ rust = { version = "stable", components = "rust-analyzer" }
 zig = "latest"
 "cargo:cargo-zigbuild" = "latest"
 "cargo:wasm-pack" = "latest"
+node = "latest"
 
 [env]
 RUSTUP_TOOLCHAIN = "{% if os() == 'windows' %}stable-x86_64-pc-windows-gnu{% endif %}"
