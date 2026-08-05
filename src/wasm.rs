@@ -13,7 +13,7 @@ pub fn main_wasm() {
     console_error_panic_hook::set_once();
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(test)]
 mod wasm_tests {
     use super::*;
     use wasm_bindgen_test::*;

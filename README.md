@@ -19,4 +19,4 @@ This repository provides a clean starting point for Rust‑to‑WASM projects. I
 ## Building for WebAssembly
 
 ```bash
-wasm-pack build --features wasm --target web   # or --target bundler, nodejs, etc.argo build
+wasm-pack build --target web   # or --target bundler, nodejs, etc.argo build

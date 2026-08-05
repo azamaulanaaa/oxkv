@@ -1,7 +1,7 @@
 //! A minimal WASM library template with strict linting.
 
 /// Wasm Bindings
-#[cfg(feature = "wasm")]
+#[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
 /// Adds two unsigned 64-bit integers.
