@@ -16,6 +16,26 @@ This repository provides a clean starting point for Rust‑to‑WASM projects. I
 - [Rust](https://www.rust-lang.org/tools/install) (latest stable)
 - [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) – for building and packaging the WASM module
 
+## Testing
+
+### Native Tests
+
+```bash
+cargo test
+```
+
+### Wasm Tests (wasm-bindgen-test)
+
+Requires Node.js (`https://nodejs.org/`).
+
+```bash
+# Build for WASM with wasm-bindgen-test support
+wasm-pack build --target web
+
+# Run tests using Node.js runtime
+wasm-pack test --node
+```
+
 ## Building for WebAssembly
 
 ```bash
