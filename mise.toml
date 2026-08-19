@@ -4,6 +4,7 @@ zig = "latest"
 "cargo:cargo-zigbuild" = "latest"
 "cargo:wasm-pack" = "latest"
 node = "latest"
+"cargo:cargo-llvm-cov" = "latest"
 
 [env]
 RUSTUP_TOOLCHAIN = "{% if os() == 'windows' %}stable-x86_64-pc-windows-gnu{% endif %}"
