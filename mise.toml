@@ -7,8 +7,8 @@ node = "latest"
 "cargo:cargo-llvm-cov" = "latest"
 
 [env]
-RUSTUP_TOOLCHAIN = "{% if os() == 'windows' %}stable-x86_64-pc-windows-gnu{% endif %}"
-CARGO_BUILD_TARGET = "{% if os() == 'windows' %}x86_64-pc-windows-gnu{% endif %}"
+RUSTUP_TOOLCHAIN = "{% if os() == 'windows' %}stable-x86_64-pc-windows-msvc{% endif %}"
+CARGO_BUILD_TARGET = "{% if os() == 'windows' %}x86_64-pc-windows-msvc{% endif %}"
 
 [tasks]
 build = { run = "cargo-zigbuild build" }
