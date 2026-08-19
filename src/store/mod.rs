@@ -14,6 +14,9 @@
 use async_trait::async_trait;
 use thiserror::Error;
 
+pub use btree::{BTreeStore, BTreeTx};
+mod btree;
+
 /// A specialized `Result` type for store operations.
 pub type Result<T> = std::result::Result<T, StoreError>;
 
