@@ -35,6 +35,10 @@ pub enum StoreError {
     #[error("UTF-8 error: {0}")]
     Utf8(#[from] std::string::FromUtf8Error),
 
+    /// A JSON serialization or deserialization error.
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
     /// An error when decoding UTF-8 from a byte slice.
     #[error("UTF-8 error: {0}")]
     Utf8Slice(#[from] std::str::Utf8Error),
@@ -52,6 +56,7 @@ impl PartialEq for StoreError {
             | (StoreError::Other(a), StoreError::Other(b)) => a == b,
             (StoreError::Utf8(a), StoreError::Utf8(b)) => a == b,
             (StoreError::Utf8Slice(a), StoreError::Utf8Slice(b)) => a == b,
+            (StoreError::Json(a), StoreError::Json(b)) => a.to_string() == b.to_string(),
             _ => false,
         }
     }
@@ -336,6 +341,48 @@ pub trait StoreExt: Store {
 }
 
 impl<T: Store> StoreExt for T {}
+
+/// Extension methods for common serialization formats (BINCODE).
+///
+/// This trait is automatically implemented for all types that implement [`GetSet`].
+#[async_trait]
+pub trait GetSetExt: GetSet {
+    /// Sets a value serialized with JSON, stored as raw bytes.
+    ///
+    /// The value is serialized using `serde_json` and stored directly as bytes.
+    /// If the key already exists, it will be overwritten (treated as an update).
+    ///
+    /// Returns the previous value deserialized as `T` if the key already existed
+    /// (an update), or `None` if the key did not exist before (a new insertion).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] if serialization or storage fails.
+    async fn set<T: serde::Serialize + Sync>(&mut self, key: &str, value: &T) -> Result<Option<T>>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let json = serde_json::to_vec(value)?;
+        match self.set_bytes(key, &json).await? {
+            Some(prev) => Ok(Some(serde_json::from_slice(&prev)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Retrieves a value and deserializes it using JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] if deserialization or retrieval fails.
+    async fn get<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
+        match self.get_bytes(key).await? {
+            Some(json) => Ok(Some(serde_json::from_slice(&json)?)),
+            None => Ok(None),
+        }
+    }
+}
+
+impl<T: GetSet> GetSetExt for T {}
 
 #[cfg(test)]
 mod tests {
