@@ -1,12 +1,12 @@
 [package]
-name = "rust-template"
+name = "rust-kv"
 version = "0.1.0"
 edition = "2024"
-description = "A minimal Rust WASM library template with strict linting."
+description = "A transactional key-value store with WASM bindings, cursor pagination."
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/yourusername/rust-template" 
-keywords = ["wasm", "webassembly", "template"]
-categories = ["wasm", "development-tools"]
+repository = "https://github.com/yourusername/rust-kv" 
+keywords = ["wasm", "keyvalue", "kv-store", "transaction"]
+categories = ["wasm", "database", "data-structures"]
 readme = "README.md"
 
 [lib]
