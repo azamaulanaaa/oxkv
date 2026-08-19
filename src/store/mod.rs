@@ -16,6 +16,8 @@ use thiserror::Error;
 
 pub use btree::{BTreeStore, BTreeTx};
 mod btree;
+pub use redb::{RedbStore, RedbTx};
+mod redb;
 
 /// A specialized `Result` type for store operations.
 pub type Result<T> = std::result::Result<T, StoreError>;
