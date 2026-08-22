@@ -1,3 +1,4 @@
+use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 use crate::store::{self, GetSet, GetSetExt, Store, StoreExt, Transaction};
@@ -31,6 +32,17 @@ impl From<store::StoreError> for JsValue {
     fn from(value: store::StoreError) -> Self {
         JsError::new(value.to_string().as_str()).into()
     }
+}
+
+/// Serializes a value into a plain, JSON-compatible `JsValue`.
+///
+/// Unlike [`serde_wasm_bindgen::to_value`], which encodes maps as ES6 `Map`
+/// objects (opaque `{}` to JavaScript property access and `JSON.stringify`),
+/// this produces plain objects so callers see real JSON documents.
+fn json_compatible<T: Serialize>(value: &T) -> Result<JsValue, store::StoreError> {
+    value
+        .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+        .map_err(|e| store::StoreError::Serialization(e.to_string()))
 }
 
 // Manual wasm-bindgen wrappers for BTreeStore — inlined from `make_wasm_store!` macro.
@@ -142,8 +154,7 @@ impl JsBTreeStore {
         let mut store = self.inner.lock().await;
         match store.set(key, &json_value).await {
             Ok(Some(prev)) => {
-                let js_value = serde_wasm_bindgen::to_value(&prev)
-                    .map_err(|e| store::StoreError::Serialization(e.to_string()))?;
+                let js_value = json_compatible(&prev)?;
                 Ok(js_value)
             }
             Ok(None) => Ok(JsValue::null()),
@@ -166,8 +177,7 @@ impl JsBTreeStore {
         let store = self.inner.lock().await;
         match store.get::<serde_json::Value>(key).await {
             Ok(Some(value)) => {
-                let js_value = serde_wasm_bindgen::to_value(&value)
-                    .map_err(|e| store::StoreError::Serialization(e.to_string()))?;
+                let js_value = json_compatible(&value)?;
                 Ok(js_value)
             }
             Ok(None) => Ok(JsValue::null()),
@@ -287,7 +297,7 @@ impl JsBTreeStore {
                     // back to bytes in that case so nothing is silently dropped.
                     let js_val =
                         if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&kv.value) {
-                            serde_wasm_bindgen::to_value(&value)?
+                            json_compatible(&value)?
                         } else {
                             js_sys::Uint8Array::from(&kv.value[..]).into()
                         };
@@ -484,8 +494,7 @@ impl JsBTreeTx {
         })?;
         match tx.set(key, &json_value).await {
             Ok(Some(prev)) => {
-                let js_value = serde_wasm_bindgen::to_value(&prev)
-                    .map_err(|e| store::StoreError::Serialization(e.to_string()))?;
+                let js_value = json_compatible(&prev)?;
                 Ok(js_value)
             }
             Ok(None) => Ok(JsValue::null()),
@@ -510,8 +519,7 @@ impl JsBTreeTx {
         })?;
         match tx.get::<serde_json::Value>(key).await {
             Ok(Some(value)) => {
-                let js_value = serde_wasm_bindgen::to_value(&value)
-                    .map_err(|e| store::StoreError::Serialization(e.to_string()))?;
+                let js_value = json_compatible(&value)?;
                 Ok(js_value)
             }
             Ok(None) => Ok(JsValue::null()),
@@ -739,7 +747,7 @@ mod tests {
     async fn json_set_get_roundtrip() {
         let js_store = JsBTreeStore::new();
         let doc = serde_json::json!({ "name": "oxkv", "tags": ["a", "b"], "count": 2 });
-        let js_doc = serde_wasm_bindgen::to_value(&doc).expect("serialize to JsValue");
+        let js_doc = json_compatible(&doc).expect("serialize to JsValue");
 
         let inserted = ok(js_store.set("doc", js_doc).await);
         assert!(inserted.is_null());
@@ -751,15 +759,44 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
+    async fn get_returns_plain_json_object_readable_from_js() {
+        let js_store = JsBTreeStore::new();
+        let doc = json_compatible(&serde_json::json!({ "name": "Ada", "age": 36 }))
+            .expect("serialize to JsValue");
+        ok(js_store.set("u", doc).await);
+
+        let loaded = ok(js_store.get("u").await);
+        assert!(
+            !loaded.is_instance_of::<js_sys::Map>(),
+            "objects must come back as plain JSON objects, not ES6 Maps"
+        );
+        let name = js_sys::Reflect::get(&loaded, &"name".into())
+            .expect("object has no name property")
+            .as_string()
+            .expect("name is not a string");
+        assert_eq!(name, "Ada");
+
+        // JSON.stringify is what JS consumers and schema validators effectively
+        // see; a Map would serialize to "{}" here.
+        let serialized = js_sys::JSON::stringify(&loaded).expect("stringify failed");
+        let roundtripped: serde_json::Value =
+            serde_json::from_str(&serialized.as_string().expect("serialized is not a string"))
+                .expect("stringified value is not JSON");
+        assert_eq!(
+            roundtripped,
+            serde_json::json!({ "name": "Ada", "age": 36 }),
+            "JSON.stringify must show the full document"
+        );
+    }
+
+    #[wasm_bindgen_test]
     async fn json_set_returns_previous_document() {
         let js_store = JsBTreeStore::new();
 
-        let first = serde_wasm_bindgen::to_value(&serde_json::json!({ "n": 1 }))
-            .expect("serialize to JsValue");
+        let first = json_compatible(&serde_json::json!({ "n": 1 })).expect("serialize to JsValue");
         ok(js_store.set("k", first).await);
 
-        let second = serde_wasm_bindgen::to_value(&serde_json::json!({ "n": 2 }))
-            .expect("serialize to JsValue");
+        let second = json_compatible(&serde_json::json!({ "n": 2 })).expect("serialize to JsValue");
         let previous = ok(js_store.set("k", second).await);
         let previous: serde_json::Value =
             serde_wasm_bindgen::from_value(previous).expect("deserialize from JsValue");
@@ -876,8 +913,8 @@ mod tests {
     async fn gets_without_query_returns_all_documents() {
         let js_store = JsBTreeStore::new();
         for n in 0..3u32 {
-            let doc = serde_wasm_bindgen::to_value(&serde_json::json!({ "n": n }))
-                .expect("serialize to JsValue");
+            let doc =
+                json_compatible(&serde_json::json!({ "n": n })).expect("serialize to JsValue");
             ok(js_store.set(&format!("k{n}"), doc).await);
         }
 
@@ -898,7 +935,7 @@ mod tests {
     async fn gets_with_query_limits_matches_not_scanned_entries() {
         let js_store = JsBTreeStore::new();
         for n in 0..4u32 {
-            let doc = serde_wasm_bindgen::to_value(&serde_json::json!({ "even": n % 2 == 0 }))
+            let doc = json_compatible(&serde_json::json!({ "even": n % 2 == 0 }))
                 .expect("serialize to JsValue");
             ok(js_store.set(&format!("k{n}"), doc).await);
         }
@@ -962,8 +999,7 @@ mod tests {
         ok(tx
             .set(
                 "doc",
-                serde_wasm_bindgen::to_value(&serde_json::json!({ "ok": true }))
-                    .expect("serialize to JsValue"),
+                json_compatible(&serde_json::json!({ "ok": true })).expect("serialize to JsValue"),
             )
             .await);
 
@@ -1082,7 +1118,7 @@ mod tests {
             "nested": { "ok": true, "n": 42 },
             "arr": [1, 2, 3]
         });
-        let js_doc = serde_wasm_bindgen::to_value(&doc).expect("serialize to JsValue");
+        let js_doc = json_compatible(&doc).expect("serialize to JsValue");
         ok(js_store.set("doc", js_doc).await);
 
         let snapshot = to_bytes(&ok(js_store.save().await));
