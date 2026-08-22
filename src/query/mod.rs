@@ -3,6 +3,8 @@ use pest::Parser;
 
 mod parser;
 pub use parser::{LuceneParser, Rule};
+mod json;
+pub use json::eval;
 
 /// A parsed Lucene-style query.
 #[derive(Debug, PartialEq, Clone)]
