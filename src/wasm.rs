@@ -586,3 +586,527 @@ impl JsBTreeTx {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use wasm_bindgen_test::*;
+
+    use super::*;
+
+    fn to_bytes(value: &JsValue) -> Vec<u8> {
+        assert!(!value.is_null(), "expected a Uint8Array, got null");
+        js_sys::Uint8Array::new(value).to_vec()
+    }
+
+    fn ok_bytes(result: Result<JsValue, JsValue>) -> Option<Vec<u8>> {
+        let value = result.expect("operation failed");
+        if value.is_null() {
+            None
+        } else {
+            Some(to_bytes(&value))
+        }
+    }
+
+    fn ok(result: Result<JsValue, JsValue>) -> JsValue {
+        result.expect("operation failed")
+    }
+
+    fn entries(result: Result<Vec<js_sys::Object>, JsValue>) -> Vec<js_sys::Object> {
+        result.expect("operation failed")
+    }
+
+    fn entry_key(entry: &js_sys::Object) -> String {
+        let key = js_sys::Reflect::get(entry, &"key".into()).expect("missing key field");
+        key.as_string().expect("key is not a string")
+    }
+
+    fn entry_bytes(entry: &js_sys::Object) -> Vec<u8> {
+        let value = js_sys::Reflect::get(entry, &"value".into()).expect("missing value field");
+        to_bytes(&value)
+    }
+
+    fn entry_json(entry: &js_sys::Object) -> serde_json::Value {
+        let value = js_sys::Reflect::get(entry, &"value".into()).expect("missing value field");
+        serde_wasm_bindgen::from_value(value).expect("value is not JSON")
+    }
+
+    async fn begin_test_tx(js_store: &JsBTreeStore) -> JsBTreeTx {
+        let mut guard = js_store.inner.lock().await;
+        let tx = guard.begin_tx().expect("begin_tx failed");
+        JsBTreeTx {
+            inner: std::sync::Arc::new(futures::lock::Mutex::new(Some(tx))),
+        }
+    }
+
+    fn snapshot_entries(snapshot: &[u8]) -> Vec<(String, Vec<u8>)> {
+        fn take<'a>(data: &mut &'a [u8], len: usize, message: &str) -> &'a [u8] {
+            assert!(data.len() >= len, "{message}");
+            let (head, tail) = data.split_at(len);
+            *data = tail;
+            head
+        }
+
+        let mut entries = Vec::new();
+        let mut data = snapshot;
+
+        while !data.is_empty() {
+            let key_len = u32::from_le_bytes(
+                take(&mut data, 4, "truncated key length header in snapshot")
+                    .try_into()
+                    .expect("exactly 4 bytes"),
+            ) as usize;
+            let key =
+                std::str::from_utf8(take(&mut data, key_len, "truncated key data in snapshot"))
+                    .expect("snapshot key is UTF-8")
+                    .to_owned();
+            let value_len = u32::from_le_bytes(
+                take(&mut data, 4, "truncated value length header in snapshot")
+                    .try_into()
+                    .expect("exactly 4 bytes"),
+            ) as usize;
+            entries.push((
+                key,
+                take(&mut data, value_len, "truncated value data in snapshot").to_vec(),
+            ));
+        }
+
+        entries
+    }
+
+    #[wasm_bindgen_test]
+    fn direction_maps_to_store_direction() {
+        assert_eq!(
+            store::Direction::from(Direction::Next),
+            store::Direction::Next
+        );
+        assert_eq!(
+            store::Direction::from(Direction::Prev),
+            store::Direction::Prev
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn store_error_converts_to_js_error() {
+        let value = JsValue::from(store::StoreError::Other("boom".to_owned()));
+        assert!(value.is_instance_of::<js_sys::Error>());
+        let message = js_sys::Reflect::get(&value, &"message".into())
+            .expect("error has no message")
+            .as_string()
+            .expect("message is not a string");
+        assert_eq!(message, "boom");
+    }
+
+    #[wasm_bindgen_test]
+    async fn get_missing_key_returns_null() {
+        let js_store = JsBTreeStore::new();
+        let result = js_store.get_bytes("absent").await;
+        assert!(result.expect("get failed").is_null());
+    }
+
+    #[wasm_bindgen_test]
+    async fn set_then_get_bytes_roundtrip() {
+        let js_store = JsBTreeStore::new();
+
+        let inserted = ok_bytes(js_store.set_bytes("k", b"v1").await);
+        assert_eq!(inserted, None);
+
+        let previous = ok_bytes(js_store.set_bytes("k", b"v2").await);
+        assert_eq!(previous, Some(b"v1".to_vec()));
+
+        assert_eq!(
+            ok_bytes(js_store.get_bytes("k").await),
+            Some(b"v2".to_vec())
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn delete_reports_presence() {
+        let js_store = JsBTreeStore::new();
+        ok(js_store.set_bytes("k", b"v").await);
+
+        let deleted = ok(js_store.delete("k").await)
+            .as_bool()
+            .expect("delete should return a boolean");
+        assert!(deleted);
+
+        let deleted_again = ok(js_store.delete("k").await)
+            .as_bool()
+            .expect("delete should return a boolean");
+        assert!(!deleted_again);
+    }
+
+    #[wasm_bindgen_test]
+    async fn json_set_get_roundtrip() {
+        let js_store = JsBTreeStore::new();
+        let doc = serde_json::json!({ "name": "oxkv", "tags": ["a", "b"], "count": 2 });
+        let js_doc = serde_wasm_bindgen::to_value(&doc).expect("serialize to JsValue");
+
+        let inserted = ok(js_store.set("doc", js_doc).await);
+        assert!(inserted.is_null());
+
+        let loaded = ok(js_store.get("doc").await);
+        let roundtripped: serde_json::Value =
+            serde_wasm_bindgen::from_value(loaded).expect("deserialize from JsValue");
+        assert_eq!(roundtripped, doc);
+    }
+
+    #[wasm_bindgen_test]
+    async fn json_set_returns_previous_document() {
+        let js_store = JsBTreeStore::new();
+
+        let first = serde_wasm_bindgen::to_value(&serde_json::json!({ "n": 1 }))
+            .expect("serialize to JsValue");
+        ok(js_store.set("k", first).await);
+
+        let second = serde_wasm_bindgen::to_value(&serde_json::json!({ "n": 2 }))
+            .expect("serialize to JsValue");
+        let previous = ok(js_store.set("k", second).await);
+        let previous: serde_json::Value =
+            serde_wasm_bindgen::from_value(previous).expect("deserialize from JsValue");
+        assert_eq!(previous, serde_json::json!({ "n": 1 }));
+    }
+
+    #[wasm_bindgen_test]
+    async fn json_set_invalid_value_fails() {
+        let js_store = JsBTreeStore::new();
+        // Functions cannot be converted to serde_json values.
+        let invalid = js_sys::Function::new_no_args("");
+        assert!(js_store.set("k", invalid.into()).await.is_err());
+    }
+
+    #[wasm_bindgen_test]
+    async fn gets_bytes_orders_and_paginates() {
+        let js_store = JsBTreeStore::new();
+        for (key, value) in [("a", &b"1"[..]), ("b", &b"2"[..]), ("c", &b"3"[..])] {
+            ok(js_store.set_bytes(key, value).await);
+        }
+
+        let all = entries(js_store.gets_bytes(None, Direction::Next, None, None).await);
+        let keys: Vec<_> = all.iter().map(entry_key).collect();
+        assert_eq!(keys, vec!["a", "b", "c"]);
+        assert_eq!(entry_bytes(&all[0]), b"1");
+
+        let limited = entries(
+            js_store
+                .gets_bytes(Some(2), Direction::Next, None, None)
+                .await,
+        );
+        let keys: Vec<_> = limited.iter().map(entry_key).collect();
+        assert_eq!(keys, vec!["a", "b"]);
+
+        let descending = entries(
+            js_store
+                .gets_bytes(None, Direction::Prev, Some("c".to_owned()), None)
+                .await,
+        );
+        let keys: Vec<_> = descending.iter().map(entry_key).collect();
+        assert_eq!(keys, vec!["c", "b", "a"]);
+
+        let range = entries(
+            js_store
+                .gets_bytes(
+                    None,
+                    Direction::Next,
+                    Some("a".to_owned()),
+                    Some("b".to_owned()),
+                )
+                .await,
+        );
+        let keys: Vec<_> = range.iter().map(entry_key).collect();
+        assert_eq!(keys, vec!["a", "b"]);
+    }
+
+    #[wasm_bindgen_test]
+    async fn gets_bytes_matches_store_cursor_edge_cases() {
+        let js_store = JsBTreeStore::new();
+        for key in ["a", "b", "c"] {
+            ok(js_store.set_bytes(key, key.as_bytes()).await);
+        }
+
+        // Mirrors btree.rs::test_gets_prev_without_start_returns_empty
+        let descending = entries(js_store.gets_bytes(None, Direction::Prev, None, None).await);
+        assert!(descending.is_empty());
+
+        // Mirrors btree.rs::test_gets_prev_with_start_less_than_end_returns_empty
+        let inverted = entries(
+            js_store
+                .gets_bytes(
+                    None,
+                    Direction::Prev,
+                    Some("a".to_owned()),
+                    Some("c".to_owned()),
+                )
+                .await,
+        );
+        assert!(inverted.is_empty());
+
+        // Mirrors btree.rs::test_gets_next_invalid_range
+        let invalid = entries(
+            js_store
+                .gets_bytes(
+                    None,
+                    Direction::Next,
+                    Some("c".to_owned()),
+                    Some("a".to_owned()),
+                )
+                .await,
+        );
+        assert!(invalid.is_empty());
+
+        // Mirrors btree.rs::test_gets_range_end_only
+        let up_to = entries(
+            js_store
+                .gets_bytes(None, Direction::Next, None, Some("b".to_owned()))
+                .await,
+        );
+        let keys: Vec<_> = up_to.iter().map(entry_key).collect();
+        assert_eq!(keys, vec!["a", "b"]);
+
+        // Mirrors btree.rs::test_gets_prev_with_limit
+        let limited_descending = entries(
+            js_store
+                .gets_bytes(Some(2), Direction::Prev, Some("c".to_owned()), None)
+                .await,
+        );
+        let keys: Vec<_> = limited_descending.iter().map(entry_key).collect();
+        assert_eq!(keys, vec!["c", "b"]);
+    }
+
+    #[wasm_bindgen_test]
+    async fn gets_without_query_returns_all_documents() {
+        let js_store = JsBTreeStore::new();
+        for n in 0..3u32 {
+            let doc = serde_wasm_bindgen::to_value(&serde_json::json!({ "n": n }))
+                .expect("serialize to JsValue");
+            ok(js_store.set(&format!("k{n}"), doc).await);
+        }
+
+        let all = entries(js_store.gets(None, Direction::Next, None, None, None).await);
+        assert_eq!(all.len(), 3);
+        assert_eq!(entry_json(&all[0]), serde_json::json!({ "n": 0 }));
+
+        let filtered = entries(
+            js_store
+                .gets(None, Direction::Next, None, None, Some("n:1".to_owned()))
+                .await,
+        );
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(entry_json(&filtered[0]), serde_json::json!({ "n": 1 }));
+    }
+
+    #[wasm_bindgen_test]
+    async fn gets_with_query_limits_matches_not_scanned_entries() {
+        let js_store = JsBTreeStore::new();
+        for n in 0..4u32 {
+            let doc = serde_wasm_bindgen::to_value(&serde_json::json!({ "even": n % 2 == 0 }))
+                .expect("serialize to JsValue");
+            ok(js_store.set(&format!("k{n}"), doc).await);
+        }
+
+        let matches = entries(
+            js_store
+                .gets(
+                    Some(1),
+                    Direction::Next,
+                    None,
+                    None,
+                    Some("even:true".to_owned()),
+                )
+                .await,
+        );
+        assert_eq!(matches.len(), 1);
+        assert_eq!(entry_key(&matches[0]), "k0");
+    }
+
+    #[wasm_bindgen_test]
+    async fn transaction_changes_hidden_until_commit() {
+        let js_store = JsBTreeStore::new();
+        ok(js_store.set_bytes("base", b"original").await);
+
+        let tx = begin_test_tx(&js_store).await;
+
+        ok(tx.set_bytes("staged", b"hidden").await);
+        ok(tx.delete("base").await);
+
+        assert_eq!(
+            ok_bytes(js_store.get_bytes("base").await),
+            Some(b"original".to_vec())
+        );
+        assert_eq!(ok_bytes(js_store.get_bytes("staged").await), None);
+
+        ok(tx.commit().await);
+
+        assert_eq!(ok_bytes(js_store.get_bytes("base").await), None);
+        assert_eq!(
+            ok_bytes(js_store.get_bytes("staged").await),
+            Some(b"hidden".to_vec())
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn transaction_rollback_discards_changes() {
+        let js_store = JsBTreeStore::new();
+
+        let tx = begin_test_tx(&js_store).await;
+        ok(tx.set_bytes("gone", b"x").await);
+        ok(tx.rollback().await);
+
+        assert_eq!(ok_bytes(js_store.get_bytes("gone").await), None);
+    }
+
+    #[wasm_bindgen_test]
+    async fn transaction_read_your_own_writes() {
+        let js_store = JsBTreeStore::new();
+
+        let tx = begin_test_tx(&js_store).await;
+        ok(tx
+            .set(
+                "doc",
+                serde_wasm_bindgen::to_value(&serde_json::json!({ "ok": true }))
+                    .expect("serialize to JsValue"),
+            )
+            .await);
+
+        assert_eq!(
+            ok_bytes(tx.get_bytes("doc").await),
+            Some(br#"{"ok":true}"#.to_vec())
+        );
+
+        let staged = entries(tx.gets_bytes(None, Direction::Next, None, None).await);
+        assert_eq!(staged.len(), 1);
+
+        ok(tx.rollback().await);
+    }
+
+    #[wasm_bindgen_test]
+    async fn exists_reports_key_presence() {
+        let js_store = JsBTreeStore::new();
+
+        let absent = ok(js_store.exists("k").await)
+            .as_bool()
+            .expect("exists should return a boolean");
+        assert!(!absent);
+
+        ok(js_store.set_bytes("k", b"v").await);
+        let present = ok(js_store.exists("k").await)
+            .as_bool()
+            .expect("exists should return a boolean");
+        assert!(present);
+
+        ok(js_store.delete("k").await);
+        let deleted = ok(js_store.exists("k").await)
+            .as_bool()
+            .expect("exists should return a boolean");
+        assert!(!deleted);
+    }
+
+    #[wasm_bindgen_test]
+    async fn transaction_exists_sees_staged_writes() {
+        let js_store = JsBTreeStore::new();
+
+        let tx = begin_test_tx(&js_store).await;
+        ok(tx.set_bytes("staged", b"v").await);
+
+        let in_tx = ok(tx.exists("staged").await)
+            .as_bool()
+            .expect("exists should return a boolean");
+        assert!(in_tx);
+        ok(tx.rollback().await);
+    }
+
+    #[wasm_bindgen_test]
+    async fn committed_transaction_handle_rejects_further_ops() {
+        let js_store = JsBTreeStore::new();
+
+        let tx = begin_test_tx(&js_store).await;
+        let reused = tx.clone();
+        ok(tx.commit().await);
+
+        assert!(reused.get_bytes("k").await.is_err());
+        assert!(reused.exists("k").await.is_err());
+        assert!(begin_test_tx(&js_store).await.inner.lock().await.is_some());
+    }
+
+    #[wasm_bindgen_test]
+    async fn rolled_back_transaction_handle_rejects_further_ops() {
+        let js_store = JsBTreeStore::new();
+
+        let tx = begin_test_tx(&js_store).await;
+        let reused = tx.clone();
+        ok(tx.rollback().await);
+
+        assert!(reused.delete("k").await.is_err());
+    }
+
+    #[wasm_bindgen_test]
+    async fn save_load_roundtrip_across_instances() {
+        let js_store = JsBTreeStore::new();
+        for n in 0..3u32 {
+            ok(js_store
+                .set_bytes(&format!("k{n}"), format!("v{n}").as_bytes())
+                .await);
+        }
+
+        let snapshot = to_bytes(&ok(js_store.save().await));
+        assert!(!snapshot.is_empty());
+
+        let restored = JsBTreeStore::new();
+        let count = ok(restored.load(&snapshot).await);
+        assert_eq!(count.as_f64(), Some(f64::from(3)));
+
+        for n in 0..3u32 {
+            assert_eq!(
+                ok_bytes(restored.get_bytes(&format!("k{n}")).await),
+                Some(format!("v{n}").into_bytes())
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    async fn load_rejects_corrupted_payload() {
+        let js_store = JsBTreeStore::new();
+        assert!(js_store.load(&[1, 2]).await.is_err());
+    }
+
+    #[wasm_bindgen_test]
+    async fn save_empty_store_produces_empty_buffer() {
+        let js_store = JsBTreeStore::new();
+        assert!(to_bytes(&ok(js_store.save().await)).is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    async fn json_documents_persist_as_real_json_in_snapshots() {
+        let js_store = JsBTreeStore::new();
+        let doc = serde_json::json!({
+            "name": "oxkv",
+            "nested": { "ok": true, "n": 42 },
+            "arr": [1, 2, 3]
+        });
+        let js_doc = serde_wasm_bindgen::to_value(&doc).expect("serialize to JsValue");
+        ok(js_store.set("doc", js_doc).await);
+
+        let snapshot = to_bytes(&ok(js_store.save().await));
+        let entries = snapshot_entries(&snapshot);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "doc");
+
+        // The bytes on disk must be the actual JSON document, not a
+        // serialized-opaque-handle placeholder like {}.
+        let stored: serde_json::Value =
+            serde_json::from_slice(&entries[0].1).expect("stored bytes are valid JSON");
+        assert_eq!(stored, doc);
+        assert_ne!(stored, serde_json::json!({}));
+    }
+
+    #[wasm_bindgen_test]
+    async fn committed_transaction_changes_reach_snapshots() {
+        let js_store = JsBTreeStore::new();
+        let tx = begin_test_tx(&js_store).await;
+        ok(tx.set_bytes("k", b"v").await);
+        ok(tx.commit().await);
+
+        let snapshot = to_bytes(&ok(js_store.save().await));
+        let entries = snapshot_entries(&snapshot);
+        assert_eq!(entries, vec![("k".to_owned(), b"v".to_vec())]);
+    }
+}
