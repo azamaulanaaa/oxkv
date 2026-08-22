@@ -11,8 +11,7 @@ RUSTUP_TOOLCHAIN = "{% if os() == 'windows' %}stable-x86_64-pc-windows-msvc{% en
 CARGO_BUILD_TARGET = "{% if os() == 'windows' %}x86_64-pc-windows-msvc{% endif %}"
 
 [tasks]
-build = { run = "cargo-zigbuild build" }
-run = { run = "cargo-zigbuild run" }
-test = { run = "cargo-zigbuild test" }
+cov = { run = "cargo-zigbuild llvm-cov --all-targets" }
+test = { run = "cargo-zigbuild test --all-targets" }
 wasm = { run = "rm -rf pkg && wasm-pack build --target web --release --out-dir pkg" }
 publish-npm = { run = "npm publish ./pkg", depends = ["wasm"] }
