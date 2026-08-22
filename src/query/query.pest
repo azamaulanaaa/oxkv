@@ -1,0 +1,63 @@
+// --- Whitespace Definition ---
+// Includes ideographic space \u3000 per QueryParser.jj spec
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" | "\u{3000}" }
+
+// --- Escaped & Reserved Characters ---
+// Reserved: + - && || ! ( ) { } [ ] ^ " ~ * ? : \ /
+escaped_char = @{ "\\" ~ ANY }
+term_char    = _{ escaped_char | !(WHITESPACE | ":" | "(" | ")" | "[" | "]" | "{" | "}" | "\"" | "^" | "~" | "+" | "-" | "!" | "/" | "AND" | "OR" | "NOT") ~ ANY }
+
+// --- Identifiers & Terms ---
+field_name    = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+unquoted_term = @{ (term_char | "*" | "?")+ }
+
+// Quoted phrases with escaped quote support (\")
+quoted_term    = ${ "\"" ~ phrase_content ~ "\"" }
+phrase_content = @{ (escaped_char | !"\"" ~ ANY)* }
+
+// Regex support: /pattern/ with escaped slash support (\/)
+regex_term    = ${ "/" ~ regex_content ~ "/" }
+regex_content = @{ ("\\/" | !"/" ~ ANY)* }
+
+term = _{ regex_term | quoted_term | unquoted_term }
+
+// --- Modifiers (Fuzzy, Proximity, Boost) ---
+// Note: Spec explicitly forbids whitespace between ~ and distance/edit digits
+fuzzy_slop = @{ "~" ~ ASCII_DIGIT* }
+boost      = @{ "^" ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
+
+modified_term = ${ term ~ fuzzy_slop? ~ boost? }
+
+// --- Ranges ---
+// Keywords 'TO' are strictly valid inside range brackets
+range_bound = _{ quoted_term | unquoted_term }
+inc_range   = { "[" ~ range_bound ~ "TO" ~ range_bound ~ "]" }
+exc_range   = { "{" ~ range_bound ~ "TO" ~ range_bound ~ "}" }
+range_query = _{ (inc_range | exc_range) ~ boost? }
+
+// --- Fielded Search & Field Grouping ---
+field_query = { field_name ~ ":" ~ (range_query | sub_query | modified_term) }
+
+// --- Required / Prohibited Prefixes ---
+// MUST NOT have space after prefix (+term is valid, + term is bare operator error)
+must     = { "+" }
+must_not = { "-" }
+modifier = _{ must | must_not }
+
+// --- Sub-queries & Expressions ---
+sub_query    = { "(" ~ query ~ ")" ~ boost? }
+single_query = { modifier? ~ (field_query | range_query | modified_term | sub_query) }
+
+// --- Boolean Operators (Case-sensitive uppercase only) ---
+and_op = { "AND" | "&&" }
+or_op  = { "OR"  | "||" }
+not_op = { "NOT" | "!" }
+
+binary_op = _{ and_op | or_op }
+
+// --- Top-Level Query Structure ---
+query_item = _{ not_op? ~ single_query }
+query      =  { query_item ~ (binary_op? ~ query_item)* }
+
+// Start/End of Input
+main = _{ SOI ~ query ~ EOI }

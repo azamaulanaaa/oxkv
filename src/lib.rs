@@ -7,3 +7,5 @@ pub mod wasm;
 
 mod store;
 pub use store::*;
+mod query;
+pub use query::*;
