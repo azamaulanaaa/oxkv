@@ -82,6 +82,21 @@ impl JsBTreeStore {
         }
     }
 
+    /// Checks if a key exists in the store.
+    /// # Errors
+    /// * `StoreError` - if an I/O error occurs reading from the store
+    #[wasm_bindgen(return_description = "true when the key exists, false otherwise")]
+    pub async fn exists(
+        &self,
+        #[wasm_bindgen(param_description = "The key to check for existence")] key: &str,
+    ) -> Result<JsValue, JsValue> {
+        let store = self.inner.lock().await;
+        match store.exists(key).await {
+            Ok(exists) => Ok(JsValue::from(exists)),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// Set a key-value pair (inserts if absent, updates if present).
     /// # Errors
     /// * `StoreError` - if an I/O error occurs writing to the store
@@ -379,6 +394,26 @@ impl JsBTreeTx {
                 Ok(arr.into())
             }
             Ok(None) => Ok(JsValue::null()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Checks if a key exists within an active transaction.
+    /// # Errors
+    /// * `StoreError` - if the transaction was already committed or rolled back, or if an I/O error occurs
+    #[wasm_bindgen(
+        return_description = "true when the key exists within the transaction, false otherwise"
+    )]
+    pub async fn exists(
+        &self,
+        #[wasm_bindgen(param_description = "The key to check for existence")] key: &str,
+    ) -> Result<JsValue, JsValue> {
+        let mut guard = self.inner.lock().await;
+        let tx = guard.as_mut().ok_or_else(|| {
+            store::StoreError::Other("transaction already committed or rolled back".into())
+        })?;
+        match tx.exists(key).await {
+            Ok(exists) => Ok(JsValue::from(exists)),
             Err(e) => Err(e.into()),
         }
     }
