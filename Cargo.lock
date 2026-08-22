@@ -260,6 +260,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
+name = "oxkv"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "console_error_panic_hook",
+ "futures",
+ "js-sys",
+ "mockall",
+ "pest",
+ "pest_derive",
+ "redb",
+ "regex",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "strsim",
+ "thiserror",
+ "tokio",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+]
+
+[[package]]
 name = "pest"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -388,30 +412,6 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
-
-[[package]]
-name = "rust-kv"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "console_error_panic_hook",
- "futures",
- "js-sys",
- "mockall",
- "pest",
- "pest_derive",
- "redb",
- "regex",
- "serde",
- "serde-wasm-bindgen",
- "serde_json",
- "strsim",
- "thiserror",
- "tokio",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm-bindgen-test",
-]
 
 [[package]]
 name = "rustversion"

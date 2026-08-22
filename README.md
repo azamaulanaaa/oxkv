@@ -1,6 +1,6 @@
 
 
-# rust-kv
+# oxkv
 
 A transactional key-value store library written in Rust, with optional WebAssembly bindings for JavaScript interop. Features cursor-based pagination, a Lucene-style query engine that matches stored JSON documents, JSON serialization via `serde_json`, and strict linting. All operations are async using `futures::lock::Mutex` to enable concurrent access from WASM call sites.
 
@@ -28,7 +28,7 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 ## Quick Start
 
 ```rust,ignore
-use rust_kv::{BTreeStore, store::*};
+use oxkv::{BTreeStore, store::*};
 
 #[tokio::main]
 async fn main() {
@@ -68,7 +68,7 @@ query string, using `gets`. It mirrors `gets_bytes`: same `limit`, `direction`
 and cursor semantics — when no query is passed it is a plain pass-through.
 
 ```rust,ignore
-use rust_kv::{Direction, GetSetExt};
+use oxkv::{Direction, GetSetExt};
 
 // Find users aged 30-40 tagged "rust", newest keys last, max 10 results
 let matches = store
@@ -121,7 +121,7 @@ wasm-pack build --target web  # or nodejs, bundler, etc.
 ### Querying from JavaScript
 
 ```js
-import init, { BTreeStore } from "./pkg/rust_kv.js";
+import init, { BTreeStore } from "./pkg/oxkv.js";
 
 await init();
 const store = new BTreeStore();
