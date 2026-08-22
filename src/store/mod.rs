@@ -524,7 +524,7 @@ mod tests {
     fn test_store_error_partial_eq_storage() {
         let a = crate::StoreError::Storage("foo".into());
         let b = crate::StoreError::Storage("foo".into());
-        assert!(a == b);
+        assert_eq!(a, b);
         assert_ne!(a, crate::StoreError::Storage("bar".into()));
     }
 
@@ -793,11 +793,11 @@ mod tests {
                 Ok(vec![
                     json_kv(
                         "user1",
-&serde_json::json!({ "name": "Ada", "age": 36, "tags": ["math"] }),
+                        &serde_json::json!({ "name": "Ada", "age": 36, "tags": ["math"] }),
                     ),
                     json_kv(
                         "user2",
-&serde_json::json!({ "name": "Alan", "age": 41, "tags": ["code"] }),
+                        &serde_json::json!({ "name": "Alan", "age": 41, "tags": ["code"] }),
                     ),
                 ])
             });
@@ -839,7 +839,12 @@ mod tests {
             });
 
         let found = mock_store
-            .gets(Some(10), Direction::Prev, (Some("z".into()), Some("a".into())), None)
+            .gets(
+                Some(10),
+                Direction::Prev,
+                (Some("z".into()), Some("a".into())),
+                None,
+            )
             .await
             .expect("gets succeeds");
         assert_eq!(found.len(), 2);
@@ -884,7 +889,12 @@ mod tests {
             });
 
         let found = mock_store
-            .gets(None, Direction::Prev, (None, Some("k9".into())), Some("v:[7 TO 8]"))
+            .gets(
+                None,
+                Direction::Prev,
+                (None, Some("k9".into())),
+                Some("v:[7 TO 8]"),
+            )
             .await
             .expect("gets succeeds");
         let keys: Vec<&str> = found.iter().map(|kv| kv.key.as_str()).collect();

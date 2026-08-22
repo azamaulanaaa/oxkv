@@ -48,8 +48,7 @@ impl RedbStore {
     /// # Errors
     /// Returns an error if the database cannot be created.
     pub fn new_file(path: impl AsRef<Path>) -> Result<Self> {
-        let db = Database::create(path.as_ref())
-            .map_err(|e| StoreError::Storage(e.to_string()))?;
+        let db = Database::create(path.as_ref()).map_err(|e| StoreError::Storage(e.to_string()))?;
 
         Ok(Self { db: Arc::new(db) })
     }

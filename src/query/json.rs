@@ -141,7 +141,8 @@ fn compile_term(term: &TermExpr) -> CompiledTerm {
 }
 
 fn parse_bound(raw: &str) -> Bound {
-    raw.parse::<f64>().map_or_else(|_| Bound::Str(raw.to_string()), Bound::Num)
+    raw.parse::<f64>()
+        .map_or_else(|_| Bound::Str(raw.to_string()), Bound::Num)
 }
 
 /// Lowers a `*`/`?` glob to an anchored, case-insensitive regex.
@@ -295,10 +296,9 @@ where
     match path.split_first() {
         None => check_array_or_leaf(current, predicate),
         Some((head, tail)) => match current {
-            Value::Object(map) => {
-                map.get(head.as_str())
-                    .is_some_and(|next| resolve_path(next, tail, predicate))
-            }
+            Value::Object(map) => map
+                .get(head.as_str())
+                .is_some_and(|next| resolve_path(next, tail, predicate)),
             Value::Array(arr) => arr.iter().any(|item| resolve_path(item, path, predicate)),
             _ => false,
         },
@@ -370,7 +370,9 @@ fn range_matches(start: &Bound, end: &Bound, inclusive: bool, val: &Value) -> bo
     if let (Bound::Num(low), Bound::Num(high)) = (start, end) {
         // Numeric bounds also accept string leaves that parse as numbers
         // (e.g. a ZIP code stored as a string).
-        let v = val.as_f64().or_else(|| val.as_str().and_then(|s| s.parse::<f64>().ok()));
+        let v = val
+            .as_f64()
+            .or_else(|| val.as_str().and_then(|s| s.parse::<f64>().ok()));
         if let Some(v) = v {
             return if inclusive {
                 v >= *low && v <= *high

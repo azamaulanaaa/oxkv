@@ -255,7 +255,12 @@ impl JsBTreeStore {
     ) -> Result<Vec<js_sys::Object>, JsValue> {
         let store = self.inner.lock().await;
         match store
-            .gets(limit, direction.into(), (start_cursor, end_cursor), query.as_deref())
+            .gets(
+                limit,
+                direction.into(),
+                (start_cursor, end_cursor),
+                query.as_deref(),
+            )
             .await
         {
             Ok(kvs) => kvs
@@ -265,12 +270,12 @@ impl JsBTreeStore {
                     let js_key = js_sys::JsString::from(kv.key);
                     // With no query, raw (non-JSON) values may be returned; fall
                     // back to bytes in that case so nothing is silently dropped.
-                    let js_val = if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&kv.value)
-                    {
-                        serde_wasm_bindgen::to_value(&value)?
-                    } else {
-                        js_sys::Uint8Array::from(&kv.value[..]).into()
-                    };
+                    let js_val =
+                        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&kv.value) {
+                            serde_wasm_bindgen::to_value(&value)?
+                        } else {
+                            js_sys::Uint8Array::from(&kv.value[..]).into()
+                        };
                     js_sys::Reflect::set(&obj, &"key".into(), &js_key)?;
                     js_sys::Reflect::set(&obj, &"value".into(), &js_val)?;
                     Ok(obj)

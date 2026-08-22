@@ -1,5 +1,5 @@
-use pest::iterators::{Pair, Pairs};
 use pest::Parser;
+use pest::iterators::{Pair, Pairs};
 
 mod parser;
 pub use parser::{LuceneParser, Rule};
@@ -246,8 +246,12 @@ fn sibling_boost(nodes: &[Pair<'_, Rule>], idx: usize) -> Option<f32> {
 
 fn range_parts(pair: &Pair<'_, Rule>, boost: Option<f32>, inclusive: bool) -> Expression {
     let mut inner = pair.clone().into_inner();
-    let start = inner.next().map_or_else(String::new, |p| unescape(p.as_str()));
-    let end = inner.next().map_or_else(String::new, |p| unescape(p.as_str()));
+    let start = inner
+        .next()
+        .map_or_else(String::new, |p| unescape(p.as_str()));
+    let end = inner
+        .next()
+        .map_or_else(String::new, |p| unescape(p.as_str()));
     Expression::Range {
         start,
         end,
@@ -422,14 +426,22 @@ mod tests {
     #[test]
     fn test_quoted_phrase() {
         let ast = parse_to_ast("\"exact phrase\"");
-        let expected = group(vec![(&None, term("exact phrase", true, false, None, None), &None)]);
+        let expected = group(vec![(
+            &None,
+            term("exact phrase", true, false, None, None),
+            &None,
+        )]);
         assert_eq!(ast, expected);
     }
 
     #[test]
     fn test_quoted_phrase_with_escaped_quote() {
         let ast = parse_to_ast(r#""say \"hi\"""#);
-        let expected = group(vec![(&None, term("say \"hi\"", true, false, None, None), &None)]);
+        let expected = group(vec![(
+            &None,
+            term("say \"hi\"", true, false, None, None),
+            &None,
+        )]);
         assert_eq!(ast, expected);
     }
 
@@ -450,14 +462,22 @@ mod tests {
     #[test]
     fn test_fuzzy_default_edit_distance() {
         let ast = parse_to_ast("roam~");
-        let expected = group(vec![(&None, term("roam", false, false, Some(2), None), &None)]);
+        let expected = group(vec![(
+            &None,
+            term("roam", false, false, Some(2), None),
+            &None,
+        )]);
         assert_eq!(ast, expected);
     }
 
     #[test]
     fn test_fuzzy_explicit_edit_distance() {
         let ast = parse_to_ast("roam~1");
-        let expected = group(vec![(&None, term("roam", false, false, Some(1), None), &None)]);
+        let expected = group(vec![(
+            &None,
+            term("roam", false, false, Some(1), None),
+            &None,
+        )]);
         assert_eq!(ast, expected);
     }
 
@@ -481,7 +501,11 @@ mod tests {
     #[test]
     fn test_quoted_phrase_with_proximity() {
         let ast = parse_to_ast(r#""rust go"~4"#);
-        let expected = group(vec![(&None, term("rust go", true, false, Some(4), None), &None)]);
+        let expected = group(vec![(
+            &None,
+            term("rust go", true, false, Some(4), None),
+            &None,
+        )]);
         assert_eq!(ast, expected);
     }
 
@@ -976,4 +1000,3 @@ mod tests {
         parse_err("field_name!:x");
     }
 }
-
