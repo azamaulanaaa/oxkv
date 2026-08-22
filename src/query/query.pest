@@ -8,7 +8,11 @@ escaped_char = @{ "\\" ~ ANY }
 term_char    = _{ escaped_char | !(WHITESPACE | ":" | "(" | ")" | "[" | "]" | "{" | "}" | "\"" | "^" | "~" | "+" | "-" | "!" | "/" | "AND" | "OR" | "NOT") ~ ANY }
 
 // --- Identifiers & Terms ---
-field_name    = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+// Field names may be dot-separated JSON paths (e.g. "address.city").
+// A backslash escapes any character: "\." addresses a key containing
+// a literal dot, "\\" a literal backslash, "\ " an embedded space, and
+// a leading escape allows names that start with digits or symbols.
+field_name    = @{ (ASCII_ALPHA | "_" | escaped_char) ~ (ASCII_ALPHANUMERIC | "_" | "." | escaped_char)* }
 unquoted_term = @{ (term_char | "*" | "?")+ }
 
 // Quoted phrases with escaped quote support (\")

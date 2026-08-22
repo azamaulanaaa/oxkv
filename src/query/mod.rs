@@ -47,9 +47,10 @@ pub enum BinaryOp {
 pub enum Expression {
     /// A bare term, optionally fuzzy or boosted.
     Term(TermExpr),
-    /// A field-scoped expression (`field:expr`).
+    /// A field-scoped expression (`field:expr`). The field name keeps its
+    /// escapes raw; path splitting and unescaping happen at match time.
     Field {
-        /// The field name before the colon.
+        /// The field name before the colon (e.g. `address.city`, `a\\.b`).
         field: String,
         /// The scoped sub-expression.
         expr: Box<Expression>,
@@ -699,6 +700,34 @@ mod tests {
                     ]),
                     boost: None,
                 }),
+            },
+            &None,
+        )]);
+        assert_eq!(ast, expected);
+    }
+
+    #[test]
+    fn test_escaped_dot_in_field_name_is_preserved() {
+        let ast = parse_to_ast(r"a\.b:value");
+        let expected = group(vec![(
+            &None,
+            Expression::Field {
+                field: r"a\.b".to_string(),
+                expr: Box::new(plain_term("value")),
+            },
+            &None,
+        )]);
+        assert_eq!(ast, expected);
+    }
+
+    #[test]
+    fn test_dotted_field_paths_parse_as_single_field() {
+        let ast = parse_to_ast("address.city:Berlin");
+        let expected = group(vec![(
+            &None,
+            Expression::Field {
+                field: "address.city".to_string(),
+                expr: Box::new(plain_term("Berlin")),
             },
             &None,
         )]);
