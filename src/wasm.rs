@@ -217,6 +217,69 @@ impl JsBTreeStore {
         }
     }
 
+    /// Retrieve JSON documents with cursor-based pagination, optionally filtered
+    /// by a Lucene-style query string.
+    ///
+    /// Mirrors `gets_bytes` (`limit`, `direction`, and cursors carry the same
+    /// semantics). When `query` is omitted this is a pass-through to
+    /// `gets_bytes`. With a query, entries are scanned in the requested order
+    /// and only those whose stored bytes deserialize as JSON satisfying the
+    /// query are returned; non-JSON entries are skipped. When a query is given,
+    /// `limit` caps the number of *matching* entries.
+    ///
+    /// See the `query` module for query syntax (field paths, ranges, wildcards,
+    /// regex, fuzzy, boolean operators).
+    /// # Errors
+    /// * `StoreError` - if the query is invalid or an I/O error occurs
+    #[wasm_bindgen(
+        return_description = "An array of key-value objects where `value` is the parsed JSON document"
+    )]
+    pub async fn gets(
+        &self,
+        #[wasm_bindgen(param_description = "Optional maximum number of results to return")]
+        limit: Option<u32>,
+        #[wasm_bindgen(param_description = "Sort order for pagination — ascending or descending")]
+        direction: Direction,
+        #[wasm_bindgen(
+            param_description = "Optional start key for the range; keys *at* this cursor are included when present"
+        )]
+        start_cursor: Option<String>,
+        #[wasm_bindgen(
+            param_description = "Optional end key for the range; keys *at* this cursor are included when present"
+        )]
+        end_cursor: Option<String>,
+        #[wasm_bindgen(
+            param_description = "Optional Lucene-style query string (e.g. \"age:[30 TO 40] AND tags:rust\")"
+        )]
+        query: Option<String>,
+    ) -> Result<Vec<js_sys::Object>, JsValue> {
+        let store = self.inner.lock().await;
+        match store
+            .gets(limit, direction.into(), (start_cursor, end_cursor), query.as_deref())
+            .await
+        {
+            Ok(kvs) => kvs
+                .into_iter()
+                .map(|kv| {
+                    let obj = js_sys::Object::new();
+                    let js_key = js_sys::JsString::from(kv.key);
+                    // With no query, raw (non-JSON) values may be returned; fall
+                    // back to bytes in that case so nothing is silently dropped.
+                    let js_val = if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&kv.value)
+                    {
+                        serde_wasm_bindgen::to_value(&value)?
+                    } else {
+                        js_sys::Uint8Array::from(&kv.value[..]).into()
+                    };
+                    js_sys::Reflect::set(&obj, &"key".into(), &js_key)?;
+                    js_sys::Reflect::set(&obj, &"value".into(), &js_val)?;
+                    Ok(obj)
+                })
+                .collect(),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// Begin a new write transaction. The returned handle lets you stage CRUD operations
     /// that are invisible to other readers until `commit` is called.
     /// # Errors

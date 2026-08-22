@@ -14,6 +14,8 @@
 use async_trait::async_trait;
 use thiserror::Error;
 
+use crate::query::{eval as eval_json_query, parse as parse_query};
+
 pub use btree::{BTreeStore, BTreeTx};
 mod btree;
 pub use redb::{RedbStore, RedbTx};
@@ -382,6 +384,86 @@ pub trait GetSetExt: GetSet {
             None => Ok(None),
         }
     }
+
+    /// Retrieves JSON documents with cursor-based pagination, optionally
+    /// filtered by a query string.
+    ///
+    /// This mirrors [`GetSet::gets_bytes`]: the `limit`, `direction`, and
+    /// `cursor` parameters carry identical semantics. When `query` is `None`
+    /// this is a direct pass-through to [`gets_bytes`][GetSet::gets_bytes].
+    ///
+    /// When a query is provided (Lucene-style syntax parsed by
+    /// [`crate::parse`]), entries are scanned in the requested order and an
+    /// entry matches when its stored bytes deserialize as a
+    /// `serde_json::Value` that satisfies the query. Entries whose values are
+    /// not valid JSON are skipped. Here `limit` caps the number of *matching*
+    /// entries returned; scanning continues across batches until the limit is
+    /// reached or the range is exhausted.
+    ///
+    /// Matching is evaluated with [`crate::eval`]; see the `query` module docs
+    /// for the full matching semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] if the query is invalid or retrieval fails.
+    async fn gets(
+        &self,
+        limit: Option<u32>,
+        direction: Direction,
+        cursor: (Option<String>, Option<String>),
+        query: Option<&str>,
+    ) -> Result<Vec<KeyValue>> {
+        const BATCH_SIZE: u32 = 256;
+
+        let Some(query) = query else {
+            return self.gets_bytes(limit, direction, cursor).await;
+        };
+
+        let max_results = limit.map_or(usize::MAX, |l| usize::try_from(l).unwrap_or(usize::MAX));
+        let ast = parse_query(query).map_err(StoreError::Other)?;
+        let mut results = Vec::new();
+        let mut page_cursor: Option<String> = cursor.0.clone();
+
+        loop {
+            let batch = self
+                .gets_bytes(
+                    Some(BATCH_SIZE),
+                    direction,
+                    (page_cursor.clone(), cursor.1.clone()),
+                )
+                .await?;
+
+            if batch.is_empty() {
+                break;
+            }
+
+            let last_key = batch.last().map(|kv| kv.key.clone());
+            let is_last_batch = batch.len() < BATCH_SIZE as usize;
+
+            for kv in batch {
+                // Skip duplicate processing when the cursor bound is inclusive
+                if page_cursor.as_deref() == Some(kv.key.as_str()) {
+                    continue;
+                }
+
+                let matches = serde_json::from_slice::<serde_json::Value>(&kv.value)
+                    .is_ok_and(|value| eval_json_query(&ast, &value));
+                if matches {
+                    results.push(kv);
+                    if results.len() >= max_results {
+                        break;
+                    }
+                }
+            }
+
+            if is_last_batch || results.len() >= max_results {
+                break;
+            }
+            page_cursor = last_key;
+        }
+
+        Ok(results)
+    }
 }
 
 impl<T: GetSet> GetSetExt for T {}
@@ -593,5 +675,219 @@ mod tests {
         // Truncated value payload
         let bad_val_payload = vec![1, 0, 0, 0, b'a', 5, 0, 0, 0, b'x'];
         assert!(mock_store.load(&bad_val_payload).await.is_err());
+    }
+
+    fn json_kv(key: &str, value: &serde_json::Value) -> KeyValue {
+        KeyValue {
+            key: key.to_string(),
+            value: serde_json::to_vec(&value).expect("serializable"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_gets_with_query_matches_only_valid_json_documents() {
+        let mut mock_store = MockStore::new();
+        mock_store
+            .expect_gets_bytes()
+            .times(1)
+            .withf(|limit, dir, cursor| {
+                *limit == Some(256) && *dir == Direction::Next && cursor.0.is_none()
+            })
+            .returning(|_, _, _| {
+                Ok(vec![
+                    json_kv("match", &serde_json::json!({ "lang": "rust" })),
+                    KeyValue {
+                        key: "invalid".to_string(),
+                        value: b"not json".to_vec(),
+                    },
+                    json_kv("other", &serde_json::json!({ "lang": "go" })),
+                    KeyValue {
+                        key: "scalar".to_string(),
+                        value: serde_json::to_vec(&serde_json::json!("rust")).unwrap(),
+                    },
+                ])
+            });
+
+        let found = mock_store
+            .gets(None, Direction::Next, (None, None), Some("lang:rust"))
+            .await
+            .expect("gets succeeds");
+        let keys: Vec<&str> = found.iter().map(|kv| kv.key.as_str()).collect();
+        assert_eq!(keys, ["match"]);
+    }
+
+    #[tokio::test]
+    async fn test_gets_paginates_through_full_batches() {
+        let mut mock_store = MockStore::new();
+
+        mock_store
+            .expect_gets_bytes()
+            .times(1)
+            .withf(|limit, dir, cursor| {
+                *limit == Some(256) && *dir == Direction::Next && cursor.0.is_none()
+            })
+            .returning(|_, _, _| {
+                Ok((0..256)
+                    .map(|i| {
+                        json_kv(
+                            &format!("k{i:03}"),
+                            &serde_json::json!({ "ok": i % 2 == 0 }),
+                        )
+                    })
+                    .collect())
+            });
+
+        mock_store
+            .expect_gets_bytes()
+            .times(1)
+            .withf(|limit, dir, cursor| {
+                *limit == Some(256)
+                    && *dir == Direction::Next
+                    && cursor.0.as_deref() == Some("k255")
+            })
+            .returning(|_, _, _| Ok(Vec::new()));
+
+        let found = mock_store
+            .gets(None, Direction::Next, (None, None), Some("ok:true"))
+            .await
+            .expect("gets succeeds");
+        assert_eq!(found.len(), 128);
+        assert_eq!(found[0].key, "k000");
+        assert_eq!(found[127].key, "k254");
+    }
+
+    #[tokio::test]
+    async fn test_gets_on_empty_store_returns_empty() {
+        let mut mock_store = MockStore::new();
+        mock_store
+            .expect_gets_bytes()
+            .times(1)
+            .returning(|_, _, _| Ok(Vec::new()));
+
+        let found = mock_store
+            .gets(None, Direction::Next, (None, None), Some("anything"))
+            .await
+            .expect("gets succeeds");
+        assert!(found.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_gets_with_invalid_query_returns_error_without_scanning() {
+        let mut mock_store = MockStore::new();
+        // No gets_bytes expectation: the scan must never start.
+        mock_store.expect_gets_bytes().never();
+
+        let result = mock_store
+            .gets(None, Direction::Next, (None, None), Some("a AND"))
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_gets_supports_field_paths_and_ranges() {
+        let mut mock_store = MockStore::new();
+        mock_store
+            .expect_gets_bytes()
+            .times(1)
+            .returning(|_, _, _| {
+                Ok(vec![
+                    json_kv(
+                        "user1",
+&serde_json::json!({ "name": "Ada", "age": 36, "tags": ["math"] }),
+                    ),
+                    json_kv(
+                        "user2",
+&serde_json::json!({ "name": "Alan", "age": 41, "tags": ["code"] }),
+                    ),
+                ])
+            });
+
+        let young = mock_store
+            .gets(
+                None,
+                Direction::Next,
+                (None, None),
+                Some(r"name:?da AND age:[30 TO 40]"),
+            )
+            .await
+            .expect("gets succeeds");
+        assert_eq!(young.len(), 1);
+        assert_eq!(young[0].key, "user1");
+    }
+
+    #[tokio::test]
+    async fn test_gets_without_query_passes_through_to_gets_bytes() {
+        let mut mock_store = MockStore::new();
+        mock_store
+            .expect_gets_bytes()
+            .times(1)
+            .withf(|limit, dir, cursor| {
+                *limit == Some(10)
+                    && *dir == Direction::Prev
+                    && cursor.0.as_deref() == Some("z")
+                    && cursor.1.as_deref() == Some("a")
+            })
+            .returning(|_, _, _| {
+                // Non-JSON values are returned untouched when no query is given
+                Ok(vec![
+                    KeyValue {
+                        key: "b".to_string(),
+                        value: b"raw bytes".to_vec(),
+                    },
+                    json_kv("c", &serde_json::json!({ "lang": "rust" })),
+                ])
+            });
+
+        let found = mock_store
+            .gets(Some(10), Direction::Prev, (Some("z".into()), Some("a".into())), None)
+            .await
+            .expect("gets succeeds");
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].value, b"raw bytes".to_vec());
+    }
+
+    #[tokio::test]
+    async fn test_gets_with_query_limits_matched_results() {
+        let mut mock_store = MockStore::new();
+        mock_store
+            .expect_gets_bytes()
+            .times(1)
+            .returning(|_, _, _| {
+                Ok((0..5)
+                    .map(|i| json_kv(&format!("k{i}"), &serde_json::json!({ "hit": true })))
+                    .collect())
+            });
+
+        let found = mock_store
+            .gets(Some(2), Direction::Next, (None, None), Some("hit:true"))
+            .await
+            .expect("gets succeeds");
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].key, "k0");
+        assert_eq!(found[1].key, "k1");
+    }
+
+    #[tokio::test]
+    async fn test_gets_with_query_respects_direction_and_range() {
+        let mut mock_store = MockStore::new();
+        mock_store
+            .expect_gets_bytes()
+            .times(1)
+            .withf(|_, dir, cursor| {
+                *dir == Direction::Prev && cursor.0.is_none() && cursor.1.as_deref() == Some("k9")
+            })
+            .returning(|_, _, _| {
+                Ok(vec![
+                    json_kv("k8", &serde_json::json!({ "v": 8 })),
+                    json_kv("k7", &serde_json::json!({ "v": 7 })),
+                ])
+            });
+
+        let found = mock_store
+            .gets(None, Direction::Prev, (None, Some("k9".into())), Some("v:[7 TO 8]"))
+            .await
+            .expect("gets succeeds");
+        let keys: Vec<&str> = found.iter().map(|kv| kv.key.as_str()).collect();
+        assert_eq!(keys, ["k8", "k7"]);
     }
 }
