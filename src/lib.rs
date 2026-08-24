@@ -1,4 +1,5 @@
-//! A minimal WASM library template with strict linting.
+//! A transactional key-value store with WASM bindings and Lucene-style JSON
+//! queries.
 #![allow(clippy::multiple_crate_versions)]
 
 /// Wasm Bindings
