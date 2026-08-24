@@ -160,14 +160,14 @@ pub trait StoreView: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns a [`StoreError`] if the underlying storage fails.
+    /// Returns a [`StoreError`](super::StoreError) if the underlying storage fails.
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>>;
 
     /// Checks whether the given key is visible in this view.
     ///
     /// # Errors
     ///
-    /// Returns a [`StoreError`] if the underlying storage fails.
+    /// Returns a [`StoreError`](super::StoreError) if the underlying storage fails.
     async fn has(&self, key: &str) -> Result<bool>;
 }
 
@@ -207,7 +207,7 @@ pub trait Validator: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns a [`StoreError`] to reject the write; the error is propagated
+    /// Returns a [`StoreError`](super::StoreError) to reject the write; the error is propagated
     /// to the caller of the mutating method (or to `commit`, during the
     /// commit-time re-validation pass).
     async fn validate(&self, ctx: &dyn StoreView, key: &str, value: &[u8]) -> Result<()>;
@@ -233,7 +233,7 @@ pub trait Observer: Send + Sync {
     /// so an observer may inspect related keys without racing the write.
     ///
     /// Observers must not call back into the same store (see the
-    /// [module documentation](self) about reentrancy).
+    /// module documentation about reentrancy).
     async fn on_change(&self, ctx: &dyn StoreView, event: &ChangeEvent);
 }
 

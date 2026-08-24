@@ -44,7 +44,7 @@ impl RedbStore {
     ///
     /// The database is stored on disk with an LRU page cache (default 1 GiB).
     /// Only pages that are actively accessed during tree traversal are loaded into RAM,
-    /// unlike `new()` which loads all data into memory via [`InMemoryBackend`].
+    /// unlike `new()` which loads all data into memory via redb's `InMemoryBackend`.
     ///
     /// # Errors
     /// Returns an error if the database cannot be created.
