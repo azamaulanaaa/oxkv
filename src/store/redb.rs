@@ -62,10 +62,13 @@ impl GetSet for RedbStore {
             .begin_read()
             .map_err(|e| StoreError::Storage(e.to_string()))?;
         match open_table_read(&tx)? {
-            Some(table) => match table.get(key) {
-                Ok(Some(value)) => Ok(Some(value.value().to_vec())),
-                _ => Ok(None),
-            },
+            Some(table) => {
+                let value = table
+                    .get(key)
+                    .map_err(|e| StoreError::Storage(e.to_string()))?
+                    .map(|v| v.value().to_vec());
+                Ok(value)
+            }
             None => Ok(None),
         }
     }
@@ -77,14 +80,11 @@ impl GetSet for RedbStore {
             .map_err(|e| StoreError::Storage(e.to_string()))?;
         match open_table_read(&tx)? {
             Some(table) => {
-                // get_bytes uses the same pattern: handle TableDoesNotExist separately, then propagate other errors
-                let result = table
+                let found = table
                     .get(key)
-                    .map_err(|e| StoreError::Storage(e.to_string()));
-                match result {
-                    Ok(Some(_)) => Ok(true),
-                    _ => Ok(false),
-                }
+                    .map_err(|e| StoreError::Storage(e.to_string()))?
+                    .is_some();
+                Ok(found)
             }
             None => Ok(false),
         }
@@ -330,10 +330,13 @@ impl RedbTx {
 impl GetSet for RedbTx {
     async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
         match self.tx.open_table(TABLE) {
-            Ok(table) => match table.get(key) {
-                Ok(Some(value)) => Ok(Some(value.value().to_vec())),
-                _ => Ok(None),
-            },
+            Ok(table) => {
+                let value = table
+                    .get(key)
+                    .map_err(|e| StoreError::Storage(e.to_string()))?
+                    .map(|v| v.value().to_vec());
+                Ok(value)
+            }
             Err(redb::TableError::TableDoesNotExist(_)) => Ok(None),
             Err(e) => Err(StoreError::Storage(e.to_string())),
         }
