@@ -364,13 +364,13 @@ impl GetSet for RedbTx {
         Ok(removed.is_some())
     }
 
-    async fn set_bytes(&mut self, key: &str, _value: &[u8]) -> Result<Option<Vec<u8>>> {
+    async fn set_bytes(&mut self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
         let mut table = self.open_table()?;
 
         // insert returns the previous value on update, None on new insertion.
         // After commit(), redb's MVCC makes this visible to subsequent ReadTransactions.
         match table
-            .insert(key, _value)
+            .insert(key, value)
             .map_err(|e| StoreError::Storage(e.to_string()))?
         {
             Some(prev) => Ok(Some(prev.value().to_vec())),
