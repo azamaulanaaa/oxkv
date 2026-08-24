@@ -86,13 +86,15 @@ impl GetSet for BTreeTx {
     }
 
     async fn delete(&mut self, key: &str) -> Result<bool> {
-        let existed = self.has(key).await?;
+        // Single lookup: consult the staged overlay first, then the store.
+        let existed = match self.overlay.get(key) {
+            Some(staged) => staged.is_some(),
+            None => self.store.read().unwrap().contains_key(key),
+        };
         if existed {
             self.overlay.insert(key.to_string(), None);
-            Ok(true)
-        } else {
-            Ok(false)
         }
+        Ok(existed)
     }
 
     async fn set_bytes(&mut self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
@@ -222,208 +224,192 @@ fn build_prev(
     }
 }
 
+/// Returns `true` when `len` already satisfies the configured limit.
+fn limit_reached(limit: Option<usize>, len: usize) -> bool {
+    limit.is_some_and(|lim| len >= lim)
+}
+
+type SideItem<'a> = (&'a String, &'a Vec<u8>);
+type SideIter<'a> = Box<dyn Iterator<Item = SideItem<'a>> + 'a>;
+
+fn limit_of(limit: Option<u32>) -> Option<usize> {
+    limit.map(|l| l as usize)
+}
+
+/// Store-side iterator for the given cursor and direction, excluding every
+/// key present in the overlay (the overlay value wins there, even deletions).
+fn store_side<'a>(
+    store: &'a BTreeMap<String, Vec<u8>>,
+    cursor: &(Option<String>, Option<String>),
+    overlay_keys: &'a HashSet<&'a String>,
+    forward: bool,
+) -> SideIter<'a> {
+    let (start, end) = (&cursor.0, &cursor.1);
+    let ordered = |s: &String, e: &String| if forward { s <= e } else { s >= e };
+
+    let base: SideIter<'a> = match (start, end) {
+        (Some(s), Some(e)) => {
+            if ordered(s, e) {
+                let (lo, hi) = if forward { (s, e) } else { (e, s) };
+                if forward {
+                    Box::new(store.range(lo.clone()..=hi.clone()))
+                } else {
+                    Box::new(store.range(lo.clone()..=hi.clone()).rev())
+                }
+            } else {
+                Box::new(std::iter::empty())
+            }
+        }
+        (Some(s), None) => {
+            if forward {
+                Box::new(store.range(s.clone()..))
+            } else {
+                Box::new(store.range(..=s.clone()).rev())
+            }
+        }
+        (None, Some(e)) => {
+            if forward {
+                Box::new(store.range(..=e.clone()))
+            } else {
+                // Descending traversal needs a starting point.
+                Box::new(std::iter::empty())
+            }
+        }
+        (None, None) => {
+            if forward {
+                Box::new(store.iter())
+            } else {
+                Box::new(std::iter::empty())
+            }
+        }
+    };
+
+    Box::new(base.filter(move |(k, _)| !overlay_keys.contains(k)))
+}
+
+/// Overlay-side iterator for the given cursor and direction, skipping
+/// tombstoned keys (staged deletes produce no items).
+fn overlay_side<'a>(
+    overlay: &'a BTreeMap<String, Option<Vec<u8>>>,
+    cursor: &(Option<String>, Option<String>),
+    forward: bool,
+) -> SideIter<'a> {
+    let (start, end) = (&cursor.0, &cursor.1);
+    let ordered = |s: &String, e: &String| if forward { s <= e } else { s >= e };
+
+        let base: Box<dyn Iterator<Item = (&'a String, &'a Option<Vec<u8>>)> + 'a> =
+        match (start, end) {
+        (Some(s), Some(e)) => {
+            if ordered(s, e) {
+                let (lo, hi) = if forward { (s, e) } else { (e, s) };
+                if forward {
+                    Box::new(overlay.range(lo.clone()..=hi.clone()))
+                } else {
+                    Box::new(overlay.range(lo.clone()..=hi.clone()).rev())
+                }
+            } else {
+                Box::new(std::iter::empty())
+            }
+        }
+        (Some(s), None) => {
+            if forward {
+                Box::new(overlay.range(s.clone()..))
+            } else {
+                Box::new(overlay.range(..=s.clone()).rev())
+            }
+        }
+        (None, Some(e)) => {
+            if forward {
+                Box::new(overlay.range(..=e.clone()))
+            } else {
+                Box::new(std::iter::empty())
+            }
+        }
+        (None, None) => {
+            if forward {
+                Box::new(overlay.iter())
+            } else {
+                Box::new(std::iter::empty())
+            }
+        }
+    };
+
+    Box::new(base.filter_map(|(k, v)| v.as_ref().map(|val| (k, val))))
+}
+
+/// Merges two sorted side iterators into owned key-value pairs, walking in
+/// the requested direction and stopping as soon as `limit` is reached.
+fn merge_sides(
+    mut store: std::iter::Peekable<SideIter<'_>>,
+    mut overlay: std::iter::Peekable<SideIter<'_>>,
+    limit: Option<usize>,
+    forward: bool,
+) -> Vec<KeyValue> {
+    let mut out = Vec::new();
+    loop {
+        if limit_reached(limit, out.len()) {
+            break;
+        }
+        let take_store = match (store.peek(), overlay.peek()) {
+            (None, None) => break,
+            (None, Some(_)) => false,
+            (Some(_), None) => true,
+            (Some((store_key, _)), Some((overlay_key, _))) => {
+                if forward {
+                    store_key.as_str() <= overlay_key.as_str()
+                } else {
+                    store_key.as_str() >= overlay_key.as_str()
+                }
+            }
+        };
+        let (key, value) = if take_store {
+            store.next().unwrap()
+        } else {
+            overlay.next().unwrap()
+        };
+        out.push(KeyValue {
+            key: key.clone(),
+            value: value.clone(),
+        });
+    }
+    out
+}
+
 /// Builds a vector of `KeyValue` in ascending order merging store and overlay.
+///
+/// Both sides are consumed lazily, so a small `limit` never materializes the
+/// whole matching range.
 fn build_next_overlay(
     store: &BTreeMap<String, Vec<u8>>,
     overlay: &BTreeMap<String, Option<Vec<u8>>>,
     cursor: &(Option<String>, Option<String>),
     limit: Option<u32>,
 ) -> Vec<KeyValue> {
-    let limit = limit.map(|l| l as usize);
-    let overwritten_keys: HashSet<&String> = overlay.keys().collect();
-
-    let store_items: Vec<(&String, &Vec<u8>)> = match (&cursor.0, &cursor.1) {
-        (Some(start), Some(end)) => {
-            if start > end {
-                return Vec::new();
-            }
-            store
-                .range(start.clone()..=end.clone())
-                .filter(|(k, _)| !overwritten_keys.contains(k))
-                .collect()
-        }
-        (Some(start), None) => store
-            .range(start.clone()..)
-            .filter(|(k, _)| !overwritten_keys.contains(k))
-            .collect(),
-        (None, Some(end)) => store
-            .range(..=end.clone())
-            .filter(|(k, _)| !overwritten_keys.contains(k))
-            .collect(),
-        (None, None) => store
-            .iter()
-            .filter(|(k, _)| !overwritten_keys.contains(k))
-            .collect(),
-    };
-
-    let overlay_items: Vec<(&String, &Vec<u8>)> = match (&cursor.0, &cursor.1) {
-        (Some(start), Some(end)) => {
-            if start > end {
-                return Vec::new();
-            }
-            overlay
-                .range(start.clone()..=end.clone())
-                .filter_map(|(k, v)| v.as_ref().map(|val| (k, val)))
-                .collect()
-        }
-        (Some(start), None) => overlay
-            .range(start.clone()..)
-            .filter_map(|(k, v)| v.as_ref().map(|val| (k, val)))
-            .collect(),
-        (None, Some(end)) => overlay
-            .range(..=end.clone())
-            .filter_map(|(k, v)| v.as_ref().map(|val| (k, val)))
-            .collect(),
-        (None, None) => overlay
-            .iter()
-            .filter_map(|(k, v)| v.as_ref().map(|val| (k, val)))
-            .collect(),
-    };
-
-    let mut merged = Vec::with_capacity(store_items.len() + overlay_items.len());
-    let mut i = 0;
-    let mut j = 0;
-
-    while i < store_items.len() && j < overlay_items.len() {
-        if limit.is_some_and(|lim| merged.len() >= lim) {
-            break;
-        }
-        if store_items[i].0 <= overlay_items[j].0 {
-            merged.push(KeyValue {
-                key: store_items[i].0.clone(),
-                value: store_items[i].1.clone(),
-            });
-            i += 1;
-        } else {
-            merged.push(KeyValue {
-                key: overlay_items[j].0.clone(),
-                value: overlay_items[j].1.clone(),
-            });
-            j += 1;
-        }
-    }
-
-    while i < store_items.len() {
-        if limit.is_some_and(|lim| merged.len() >= lim) {
-            break;
-        }
-        merged.push(KeyValue {
-            key: store_items[i].0.clone(),
-            value: store_items[i].1.clone(),
-        });
-        i += 1;
-    }
-
-    while j < overlay_items.len() {
-        if limit.is_some_and(|lim| merged.len() >= lim) {
-            break;
-        }
-        merged.push(KeyValue {
-            key: overlay_items[j].0.clone(),
-            value: overlay_items[j].1.clone(),
-        });
-        j += 1;
-    }
-
-    merged
+    let overlay_keys: HashSet<&String> = overlay.keys().collect();
+    merge_sides(
+        store_side(store, cursor, &overlay_keys, true).peekable(),
+        overlay_side(overlay, cursor, true).peekable(),
+        limit_of(limit),
+        true,
+    )
 }
 
 /// Builds a vector of `KeyValue` in descending order merging store and overlay.
+///
+/// Semantics mirror [`build_next_overlay`].
 fn build_prev_overlay(
     store: &BTreeMap<String, Vec<u8>>,
     overlay: &BTreeMap<String, Option<Vec<u8>>>,
     cursor: &(Option<String>, Option<String>),
     limit: Option<u32>,
 ) -> Vec<KeyValue> {
-    let limit = limit.map(|l| l as usize);
-    let (start_opt, end_opt) = cursor;
-
-    let Some(start) = start_opt else {
-        return Vec::new();
-    };
-
-    let overwritten_keys: HashSet<&String> = overlay.keys().collect();
-
-    let store_items: Vec<(&String, &Vec<u8>)> = if let Some(end) = end_opt {
-        if start < end {
-            return Vec::new();
-        }
-        store
-            .range(end.clone()..=start.clone())
-            .rev()
-            .filter(|(k, _)| !overwritten_keys.contains(k))
-            .collect()
-    } else {
-        store
-            .range(..=start.clone())
-            .rev()
-            .filter(|(k, _)| !overwritten_keys.contains(k))
-            .collect()
-    };
-
-    let overlay_items: Vec<(&String, &Vec<u8>)> = if let Some(end) = end_opt {
-        if start < end {
-            return Vec::new();
-        }
-        overlay
-            .range(end.clone()..=start.clone())
-            .rev()
-            .filter_map(|(k, v)| v.as_ref().map(|val| (k, val)))
-            .collect()
-    } else {
-        overlay
-            .range(..=start.clone())
-            .rev()
-            .filter_map(|(k, v)| v.as_ref().map(|val| (k, val)))
-            .collect()
-    };
-
-    let mut merged = Vec::with_capacity(store_items.len() + overlay_items.len());
-    let mut i = 0;
-    let mut j = 0;
-
-    while i < store_items.len() && j < overlay_items.len() {
-        if limit.is_some_and(|lim| merged.len() >= lim) {
-            break;
-        }
-        if store_items[i].0 >= overlay_items[j].0 {
-            merged.push(KeyValue {
-                key: store_items[i].0.clone(),
-                value: store_items[i].1.clone(),
-            });
-            i += 1;
-        } else {
-            merged.push(KeyValue {
-                key: overlay_items[j].0.clone(),
-                value: overlay_items[j].1.clone(),
-            });
-            j += 1;
-        }
-    }
-
-    while i < store_items.len() {
-        if limit.is_some_and(|lim| merged.len() >= lim) {
-            break;
-        }
-        merged.push(KeyValue {
-            key: store_items[i].0.clone(),
-            value: store_items[i].1.clone(),
-        });
-        i += 1;
-    }
-
-    while j < overlay_items.len() {
-        if limit.is_some_and(|lim| merged.len() >= lim) {
-            break;
-        }
-        merged.push(KeyValue {
-            key: overlay_items[j].0.clone(),
-            value: overlay_items[j].1.clone(),
-        });
-        j += 1;
-    }
-
-    merged
+    let overlay_keys: HashSet<&String> = overlay.keys().collect();
+    merge_sides(
+        store_side(store, cursor, &overlay_keys, false).peekable(),
+        overlay_side(overlay, cursor, false).peekable(),
+        limit_of(limit),
+        false,
+    )
 }
 
 #[cfg(test)]
