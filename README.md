@@ -11,6 +11,8 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 - **JSON serialization** — extension methods for inserting and retrieving `serde_json::Value` types via JSON, stored as raw bytes
 - **WASM bindings** — thread-safe wrappers in `src/wasm.rs` expose every store method to JavaScript as async promises
 - **Extensible backends** — the crate defines three traits (`GetSet`, `Transaction`, `Store`) that any backend can implement; ships with an in-memory B-tree backend and a persistent [Redb](https://github.com/cberner/redb) backend
+- **Validation hooks** — reject invalid writes before they reach storage, scoped to a single key, a key prefix, or the whole store
+- **Reactivity** — watch keys or prefixes and observe every committed change via channels or observer traits; rolled-back transactions never notify
 - **Save/Load** — serialize the entire store contents into a single contiguous `Uint8Array` and reconstruct it from binary data
 - **Strict linting** — all warnings and clippy lints are enforced at the crate level
 
@@ -23,6 +25,9 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 | [`store::Store`] | Extends `GetSet` with `begin_tx` — starts a write transaction |
 | [`store::GetSetExt`] | Convenience methods: `set`, `get` (JSON-serialized) and `gets` (paginated JSON retrieval with optional query filtering) |
 | [`store::StoreExt`] | Save/Load the entire store contents as binary |
+| [`store::Validator`] | Validates writes before they are stored (attach per key, prefix, or globally) |
+| [`store::Observer`] | Receives change notifications after they become durable |
+| [`store::HookStore`] | Decorator adding validators and change watching to any store |
 
 ## Quick Start
 
@@ -107,6 +112,78 @@ Invalid queries return a `StoreError::Other`; entries whose values are not
 valid JSON are skipped during scans (or returned untouched by pass-through
 calls without a query).
 
+## Hooks and Reactivity
+
+Wrap any backend in a `HookStore` to validate values before they are stored
+and to listen for changes:
+
+```rust,ignore
+use oxkv::{BTreeStore, HookStore, Scope};
+use oxkv::store::{ChangeEvent, ChangeKind, Scope, Validator};
+
+struct RequireJson(Scope);
+
+#[async_trait::async_trait]
+impl Validator for RequireJson {
+    fn scope(&self) -> Scope {
+        self.0.clone()
+    }
+
+    async fn validate(
+        &self,
+        _ctx: &dyn oxkv::StoreView,
+        key: &str,
+        value: &[u8],
+    ) -> oxkv::Result<()> {
+        serde_json::from_slice::<serde_json::Value>(value)
+            .map(|_| ())
+            .map_err(|e| format!("key `{key}` requires JSON: {e}").into())
+    }
+}
+
+let mut store = HookStore::new(BTreeStore::default());
+
+// Only values under "doc:" must be JSON
+store.add_validator(RequireJson(Scope::Prefix("doc:".into())));
+
+// Subscribe to changes of a single key
+let mut rx = store.watch("user:42");
+
+store.set_bytes("user:42", b"hello").await.unwrap();
+let event: ChangeEvent = rx.try_recv().unwrap();
+assert_eq!(event.kind, ChangeKind::Set);
+assert_eq!(event.old_value, None);
+assert_eq!(event.new_value, Some(b"hello".to_vec()));
+```
+
+- Validators run before every write, including transactional staging; an
+  error rejects the write without touching the underlying store. Validators
+  receive a read-only `StoreView` so rules can compare against other keys �
+  inside a transaction it reflects the transaction's own staged writes.
+  Staged writes are re-validated at commit time, so staging-time decisions
+  cannot be invalidated by later writes in the same transaction; during
+  that pass the key being validated shows its pre-transaction value, so
+  absence-based rules behave correctly. Validators are snapshotted when a
+  transaction begins; later registrations do not affect open transactions.
+- Every `ChangeEvent` carries the key, the change kind, and the old and new
+  values when they are observable, so observers never need to re-read the
+  store.
+- Watchers (`watch`, `watch_prefix`, `watch_all`) receive one event per
+  committed change over a bounded channel (256 events); a consumer that
+  falls behind misses events rather than stalling writers, and dropping the
+  receiver unsubscribes.
+- Transactions broadcast once per commit and never on rollback; staged
+  events for the same key collapse into the final one while preserving the
+  original pre-transaction value.
+- For callback-style consumption implement the `Observer` trait instead of
+  using channels. Observers receive the same read-only `StoreView`, resolved
+  to committed state as of after the change. Matching observers run
+  concurrently with each other, but writes await their completion; use
+  channels for fire-and-forget reactivity.
+
+Hooks must not call back into the same store: stores guard their state with
+locks, so reentrant hook calls can deadlock.
+
 ## WASM Bindings
 
 The WASM module in `src/wasm.rs` provides thread-safe wrappers for `BTreeStore`, exposing every store method to JavaScript as async promises.
@@ -179,6 +256,7 @@ wasm-pack build --target web   # or nodejs, bundler, etc.
 - `src/store/mod.rs` — core traits (`GetSet`, `Transaction`, `Store`, `GetSetExt`, `StoreExt`) and error types
 - `src/store/btree.rs` — in-memory B-tree backend with transaction overlay support
 - `src/store/redb.rs` — persistent backend built on Redb with transaction isolation
+- `src/store/hooks.rs` — `HookStore` decorator providing validation hooks and change notifications
 - `src/query/mod.rs` — query AST types and the pest-based parser (`query/query.pest` grammar)
 - `src/query/json.rs` — compiled-query matcher evaluating queries against `serde_json::Value` documents
 

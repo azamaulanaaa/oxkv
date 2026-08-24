@@ -15,6 +15,7 @@ const TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("data");
 // ============================================================================
 
 /// A redb-backed key-value store using an in-memory storage backend for testing.
+#[derive(Clone)]
 pub struct RedbStore {
     db: Arc<Database>,
 }

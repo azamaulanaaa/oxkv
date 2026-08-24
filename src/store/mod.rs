@@ -18,6 +18,10 @@ use crate::query::{eval as eval_json_query, parse as parse_query};
 
 pub use btree::{BTreeStore, BTreeTx};
 mod btree;
+pub use hooks::{
+    ChangeEvent, ChangeKind, HookStore, HookTx, Observer, Scope, StoreView, Validator,
+};
+mod hooks;
 pub use redb::{RedbStore, RedbTx};
 mod redb;
 

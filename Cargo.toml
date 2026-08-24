@@ -14,6 +14,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 async-trait = "0.1"
+futures = { version = "0.3", default-features = false, features = ["std"] }
 pest = "2.9.0"
 pest_derive = "2.9.0"
 redb = "4.2.0"
@@ -31,7 +32,6 @@ tokio = { version = "1.53.1", features = ["test-util", "macros"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 console_error_panic_hook = "0.1"
-futures = { version = "0.3", default-features = false, features = ["std"] }
 js-sys = "0.3"
 serde-wasm-bindgen = "0.6"
 
