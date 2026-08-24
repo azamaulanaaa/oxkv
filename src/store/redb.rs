@@ -73,7 +73,7 @@ impl GetSet for RedbStore {
         }
     }
 
-    async fn exists(&self, key: &str) -> Result<bool> {
+    async fn has(&self, key: &str) -> Result<bool> {
         let tx = self
             .db
             .begin_read()
@@ -342,7 +342,7 @@ impl GetSet for RedbTx {
         }
     }
 
-    async fn exists(&self, key: &str) -> Result<bool> {
+    async fn has(&self, key: &str) -> Result<bool> {
         match self.tx.open_table(TABLE) {
             Ok(table) => match table
                 .get(key)
@@ -700,7 +700,7 @@ mod tests {
         let val = store.get_bytes("nonexistent").await.unwrap();
         assert_eq!(val, None);
 
-        let exists = store.exists("nonexistent").await.unwrap();
+        let exists = store.has("nonexistent").await.unwrap();
         assert!(!exists);
     }
 
@@ -718,15 +718,15 @@ mod tests {
     async fn test_exists_after_set_and_delete() {
         let mut store = new_store();
         // Key does not exist yet
-        assert!(!store.exists("key1").await.unwrap());
+        assert!(!store.has("key1").await.unwrap());
 
         // After set, key should exist
         store.set_bytes("key1", b"value1").await.unwrap();
-        assert!(store.exists("key1").await.unwrap());
+        assert!(store.has("key1").await.unwrap());
 
         // After delete, key should not exist again
         store.delete("key1").await.unwrap();
-        assert!(!store.exists("key1").await.unwrap());
+        assert!(!store.has("key1").await.unwrap());
     }
 
     /// Tests `RedbStore::new()` constructor creates a valid in-memory database.
@@ -735,7 +735,7 @@ mod tests {
         let store = RedbStore::new().unwrap();
         // A freshly constructed store should behave like an empty store
         assert!(store.get_bytes("any").await.unwrap().is_none());
-        assert!(!store.exists("any").await.unwrap());
+        assert!(!store.has("any").await.unwrap());
     }
 
     /// Tests transactional `RedbTx` operations: `get_bytes`, `exists`, `delete`, `set_bytes` inside tx.
@@ -752,8 +752,8 @@ mod tests {
         assert_eq!(val, Some(b"apple".to_vec()));
 
         // exists in tx
-        assert!(tx.exists("b2").await.unwrap());
-        assert!(!tx.exists("missing").await.unwrap());
+        assert!(tx.has("b2").await.unwrap());
+        assert!(!tx.has("missing").await.unwrap());
 
         // delete in tx — should return true and the value is gone within this tx scope
         let del = tx.delete("c1").await.unwrap();
@@ -910,7 +910,7 @@ mod tests {
 
         // The outer store must NOT see this uncommitted change (MVCC isolation)
         assert_eq!(store.get_bytes("isolated_key").await.unwrap(), None);
-        assert!(!store.exists("isolated_key").await.unwrap());
+        assert!(!store.has("isolated_key").await.unwrap());
 
         writer.commit().await.unwrap();
 

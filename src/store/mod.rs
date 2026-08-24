@@ -122,7 +122,7 @@ pub trait GetSet {
     /// # Errors
     ///
     /// Returns a [`StoreError`] if the underlying storage fails.
-    async fn exists(&self, key: &str) -> Result<bool>;
+    async fn has(&self, key: &str) -> Result<bool>;
 
     /// Deletes the key-value pair for the given key.
     ///
@@ -478,7 +478,7 @@ mod tests {
         #[async_trait]
         impl GetSet for Transaction {
             async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>>;
-            async fn exists(&self, key: &str) -> Result<bool>;
+            async fn has(&self, key: &str) -> Result<bool>;
             async fn delete(&mut self, key: &str) -> Result<bool>;
             async fn set_bytes(&mut self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>>;
             async fn gets_bytes(
@@ -502,7 +502,7 @@ mod tests {
         #[async_trait]
         impl GetSet for Store {
             async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>>;
-            async fn exists(&self, key: &str) -> Result<bool>;
+            async fn has(&self, key: &str) -> Result<bool>;
             async fn delete(&mut self, key: &str) -> Result<bool>;
             async fn set_bytes(&mut self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>>;
             async fn gets_bytes(

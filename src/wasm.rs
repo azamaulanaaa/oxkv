@@ -98,12 +98,12 @@ impl JsBTreeStore {
     /// # Errors
     /// * `StoreError` - if an I/O error occurs reading from the store
     #[wasm_bindgen(return_description = "true when the key exists, false otherwise")]
-    pub async fn exists(
+    pub async fn has(
         &self,
         #[wasm_bindgen(param_description = "The key to check for existence")] key: &str,
     ) -> Result<JsValue, JsValue> {
         let store = self.inner.lock().await;
-        match store.exists(key).await {
+        match store.has(key).await {
             Ok(exists) => Ok(JsValue::from(exists)),
             Err(e) => Err(e.into()),
         }
@@ -414,7 +414,7 @@ impl JsBTreeTx {
     #[wasm_bindgen(
         return_description = "true when the key exists within the transaction, false otherwise"
     )]
-    pub async fn exists(
+    pub async fn has(
         &self,
         #[wasm_bindgen(param_description = "The key to check for existence")] key: &str,
     ) -> Result<JsValue, JsValue> {
@@ -422,7 +422,7 @@ impl JsBTreeTx {
         let tx = guard.as_mut().ok_or_else(|| {
             store::StoreError::Other("transaction already committed or rolled back".into())
         })?;
-        match tx.exists(key).await {
+        match tx.has(key).await {
             Ok(exists) => Ok(JsValue::from(exists)),
             Err(e) => Err(e.into()),
         }
@@ -1018,19 +1018,19 @@ mod tests {
     async fn exists_reports_key_presence() {
         let js_store = JsBTreeStore::new();
 
-        let absent = ok(js_store.exists("k").await)
+        let absent = ok(js_store.has("k").await)
             .as_bool()
             .expect("exists should return a boolean");
         assert!(!absent);
 
         ok(js_store.set_bytes("k", b"v").await);
-        let present = ok(js_store.exists("k").await)
+        let present = ok(js_store.has("k").await)
             .as_bool()
             .expect("exists should return a boolean");
         assert!(present);
 
         ok(js_store.delete("k").await);
-        let deleted = ok(js_store.exists("k").await)
+        let deleted = ok(js_store.has("k").await)
             .as_bool()
             .expect("exists should return a boolean");
         assert!(!deleted);
@@ -1043,7 +1043,7 @@ mod tests {
         let tx = begin_test_tx(&js_store).await;
         ok(tx.set_bytes("staged", b"v").await);
 
-        let in_tx = ok(tx.exists("staged").await)
+        let in_tx = ok(tx.has("staged").await)
             .as_bool()
             .expect("exists should return a boolean");
         assert!(in_tx);
@@ -1059,7 +1059,7 @@ mod tests {
         ok(tx.commit().await);
 
         assert!(reused.get_bytes("k").await.is_err());
-        assert!(reused.exists("k").await.is_err());
+        assert!(reused.has("k").await.is_err());
         assert!(begin_test_tx(&js_store).await.inner.lock().await.is_some());
     }
 

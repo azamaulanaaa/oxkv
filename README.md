@@ -1,5 +1,4 @@
 
-
 # oxkv
 
 A transactional key-value store library written in Rust, with optional WebAssembly bindings for JavaScript interop. Features cursor-based pagination, a Lucene-style query engine that matches stored JSON documents, JSON serialization via `serde_json`, and strict linting. All operations are async using `futures::lock::Mutex` to enable concurrent access from WASM call sites.
@@ -18,8 +17,8 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 ## Core Traits
 
 | Trait | Purpose |
-|-------|---------|
-| [`store::GetSet`] | Basic key-value operations: `get_bytes`, `set_bytes`, `delete`, `exists` (paginated via `gets_bytes`) |
+| ------- | --------- |
+| [`store::GetSet`] | Basic key-value operations: `get_bytes`, `set_bytes`, `delete`, `has` (paginated via `gets_bytes`) |
 | [`store::Transaction`] | Extends `GetSet` with `commit` and `rollback` for atomic batches |
 | [`store::Store`] | Extends `GetSet` with `begin_tx` — starts a write transaction |
 | [`store::GetSetExt`] | Convenience methods: `set`, `get` (JSON-serialized) and `gets` (paginated JSON retrieval with optional query filtering) |
@@ -89,7 +88,7 @@ for kv in &matches {
 ### Query Syntax
 
 | Feature | Example | Notes |
-|---------|---------|-------|
+| --------- | --------- | ------- |
 | Plain term (case-insensitive) | `rust` | matches any leaf value anywhere in the document |
 | Field-scoped term | `lang:rust` | dot-separated paths descend into objects (`address.city:Berlin`) and fan out across arrays (`tags:kv`) |
 | Quoted phrase (exact, case-sensitive) | `title:"Rust Programming"` | whole-value equality |
@@ -193,4 +192,3 @@ Dual-licensed under either of:
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
 dual licensed as above, without any additional terms or conditions.
-
