@@ -90,6 +90,49 @@ for kv in &matches {
 }
 ```
 
+### How Matching Works
+
+Queries have two layers. Anything **outside a field scope** is forgiving,
+Google-style search over every text value in the document; anything with a
+`field:` prefix keeps precise, whole-value semantics.
+
+```rust,ignore
+let doc = json!({
+    "bio": "i am born on 2000",
+    "lang": "rust",
+    "tags": ["systems", "kv"],
+    "address": { "city": "Berlin" }
+});
+
+// Unscoped - searches every leaf, tolerates typos:
+//   bare terms match word tokens fuzzily (Levenshtein <= 2 by default)
+//   quoted phrases match as case-insensitive substrings
+assert!(matches(doc, "born"));        // token hit
+assert!(matches(doc, "boren"));       // typo within default slop
+assert!(matches(doc, "\"am born on\"")); // phrase containment, any case
+assert!(matches(doc, "berlin"));      // found at any depth, any case
+
+// Field-scoped - exact whole-value comparison:
+assert!(matches(doc, "lang:rust"));
+assert!(!matches(doc, "bio:born"));           // no substring for scoped terms
+assert!(matches(doc, "bio:\"i am born on 2000\"")); // exact phrase
+```
+
+Rules of thumb:
+
+- **Unscoped bare term** → any word token of any text value within edit
+  distance 2 (override per-term with `~N`). Numbers compare as their text.
+- **Unscoped quoted phrase** → case-insensitive containment anywhere in a
+  value.
+- **Field-scoped** → the value must match as a whole: plain terms are
+  case-insensitive equality, quoted phrases are exact + case-sensitive, and
+  wildcards, regex, fuzzy, ranges, and calendar dates all apply to the
+  resolved leaf.
+- **Date-shaped values** (`2025-03-08`, timestamps with `Z` or offsets)
+  always route to UTC calendar-interval comparison, in both scopes.
+- Operators are **uppercase** (`AND`, `OR`, `NOT`) — lowercase `and` is an
+  ordinary search term.
+
 ### Query Syntax
 
 | Feature | Example | Notes |
@@ -106,8 +149,8 @@ for kv in &matches {
 | Calendar date range | `created:[2025-01-01 TO 2025-12-31]`, `created:2025-03` | ISO-8601-shaped bounds compare as UTC calendar intervals instead of text; partial literals cover their whole period, so a day literal matches any timestamp that day; offsets are normalized to UTC and naive times read as UTC; non-date strings keep classic comparison |
 | Boolean operators | `a AND b OR c` | `AND` binds tighter than `OR`; `&&`, `\|\|` aliases; a missing operator defaults to `OR` |
 | Occurrence prefixes | `+required -excluded NOT banned` | without explicit operators: all `+` must match, no `-`/`NOT` may match, at least one optional clause must match |
-| Sub-queries | `(rust OR go) AND stars:>0` | parenthesized groups, optionally field-scoped (`tags:(rust OR go)`) |
-| Escapes | `a\.b:x` | `\.` addresses a key containing a literal dot; escapes work in terms and field names |
+| Sub-queries | `(rust OR go) AND age:[18 TO 30]` | parenthesized groups, optionally field-scoped (`tags:(rust OR go)`) |
+| Escapes | `a\.b:x` | rarely needed: quotes are literal containers (`"all-in-one"`, `"plus + plus"`); backslash remains for `\"` inside phrases, `\/` inside regex, and dots in field names |
 
 Invalid queries return a `StoreError::Other`; entries whose values are not
 valid JSON are skipped during scans (or returned untouched by pass-through
