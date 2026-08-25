@@ -9,8 +9,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  checks:
+    name: Lint & Test
+    # Gate: both publish jobs wait for fmt/clippy/test and wasm tests.
+    uses: ./.github/workflows/ci.yml
+
   publish-crate:
     name: Publish to crates.io
+    needs: checks
     runs-on: ubuntu-latest
     container:
       image: rust:1
@@ -24,6 +30,7 @@ jobs:
 
   publish-npm:
     name: Publish WASM to npm
+    needs: checks
     runs-on: ubuntu-latest
     permissions:
       id-token: write
