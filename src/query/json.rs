@@ -23,6 +23,13 @@
 //!   wildcards; quoted terms are exact and case-sensitive; `/regex/` terms use
 //!   the regex crate; fuzzy `term~N` uses Levenshtein distance; boosts are
 //!   accepted by the parser but do not affect boolean matching.
+//! - **Calendar dates**: bounds or plain terms shaped like ISO-8601 dates
+//!   (`2025`, `2025-03`, `2025-03-08`, full timestamps with optional `Z` or
+//!   `±HH:MM`) compare as UTC calendar intervals instead of text. Granularity
+//!   comes from the literal's precision, so `created:[2025 TO 2026]` matches
+//!   every timestamp inside those years and `created:2025-03-08` matches any
+//!   instant on that day. Naive datetimes (no offset) are read as UTC.
+//!   Non-date-shaped strings keep the classic comparison behavior.
 
 use regex::Regex;
 use serde_json::Value;
@@ -59,6 +66,8 @@ enum CompiledExpr {
         end: Bound,
         inclusive: bool,
     },
+    /// Calendar-aware interval comparison for ISO-8601-shaped operands.
+    Date(DateInterval),
     SubQuery(Box<CompiledQuery>),
 }
 
@@ -101,7 +110,10 @@ fn compile_item(item: &super::QueryItem) -> CompiledItem {
 
 fn compile_expr(expr: &Expression) -> CompiledExpr {
     match expr {
-        Expression::Term(term) => CompiledExpr::Term(compile_term(term)),
+        Expression::Term(term) => match date_term(term) {
+            Some(interval) => CompiledExpr::Date(interval),
+            None => CompiledExpr::Term(compile_term(term)),
+        },
         Expression::Field { field, expr } => CompiledExpr::Field {
             path: split_field_path(field),
             expr: Box::new(compile_expr(expr)),
@@ -111,11 +123,17 @@ fn compile_expr(expr: &Expression) -> CompiledExpr {
             end,
             inclusive,
             ..
-        } => CompiledExpr::Range {
-            start: parse_bound(start),
-            end: parse_bound(end),
-            inclusive: *inclusive,
-        },
+        } => {
+            if let Some(interval) = date_interval(start, end, *inclusive) {
+                CompiledExpr::Date(interval)
+            } else {
+                CompiledExpr::Range {
+                    start: parse_bound(start),
+                    end: parse_bound(end),
+                    inclusive: *inclusive,
+                }
+            }
+        }
         Expression::SubQuery { query, .. } => {
             CompiledExpr::SubQuery(Box::new(compile_query(query)))
         }
@@ -143,6 +161,229 @@ fn compile_term(term: &TermExpr) -> CompiledTerm {
 fn parse_bound(raw: &str) -> Bound {
     raw.parse::<f64>()
         .map_or_else(|_| Bound::Str(raw.to_string()), Bound::Num)
+}
+
+/// Granularity carried by an ISO-8601 date literal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DatePrecision {
+    Year,
+    Month,
+    Day,
+    Minute,
+    Second,
+}
+
+impl DatePrecision {
+    /// Whether the literal identifies at least a whole calendar month.
+    /// Year-only literals stay on the text path so numeric-looking leaves
+    /// keep their existing textual/numeric matching behavior.
+    fn at_least_month(self) -> bool {
+        !matches!(self, Self::Year)
+    }
+}
+
+/// A successfully parsed ISO-8601 date literal.
+struct DateLit {
+    /// UTC seconds at the literal's start instant.
+    ts: i64,
+    precision: DatePrecision,
+    year: i32,
+    month: u32,
+}
+
+const SECS_PER_DAY: i64 = 86_400;
+
+fn digit(b: &[u8], i: usize) -> Option<u32> {
+    match b.get(i) {
+        Some(&c) if c.is_ascii_digit() => Some(u32::from(c - b'0')),
+        _ => None,
+    }
+}
+
+fn digits(b: &[u8], i: usize, n: usize) -> Option<u32> {
+    (0..n).try_fold(0u32, |acc, k| Some(acc * 10 + digit(b, i + k)?))
+}
+
+fn expect(b: &[u8], i: usize, c: u8) -> Option<()> {
+    (b.get(i) == Some(&c)).then_some(())
+}
+
+/// Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm).
+fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
+    let y = i64::from(if m <= 2 { y - 1 } else { y });
+    let m = i64::from(m);
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + i64::from(d) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+impl DateLit {
+    /// UTC seconds at the start of the unit following this literal.
+    fn next_start(&self) -> i64 {
+        match self.precision {
+            DatePrecision::Year => days_from_civil(self.year + 1, 1, 1) * SECS_PER_DAY,
+            DatePrecision::Month => {
+                let (y, m) = if self.month == 12 {
+                    (self.year + 1, 1)
+                } else {
+                    (self.year, self.month + 1)
+                };
+                days_from_civil(y, m, 1) * SECS_PER_DAY
+            }
+            DatePrecision::Day => self.ts + SECS_PER_DAY,
+            DatePrecision::Minute => self.ts + 60,
+            DatePrecision::Second => self.ts + 1,
+        }
+    }
+}
+
+/// Parses the accepted ISO-8601 shapes: `YYYY`, `YYYY-MM`, `YYYY-MM-DD`,
+/// and `YYYY-MM-DD[T| ]HH:MM[:SS[.fff]]` with optional `Z` or `±HH:MM`.
+/// Naive datetimes are read as UTC.
+///
+/// Day-of-month is validated loosely (`01-31`); impossible dates such as
+/// February 30th roll forward harmlessly inside the interval arithmetic.
+/// Returns `None` for anything else — including plain numbers — so callers
+/// keep ordinary string/number comparison untouched when this fails.
+fn parse_date_literal(raw: &str) -> Option<DateLit> {
+    let b = raw.as_bytes();
+    let (year, month, day) = parse_ymd(b)?;
+    let mut lit = DateLit {
+        ts: days_from_civil(year, month, day) * SECS_PER_DAY,
+        precision: match b.len() {
+            0..=4 => DatePrecision::Year,
+            5..=7 => DatePrecision::Month,
+            _ => DatePrecision::Day,
+        },
+        year,
+        month,
+    };
+    if b.len() > 10 {
+        let (secs, precision) = parse_time_zone(b)?;
+        lit.ts += secs;
+        lit.precision = precision;
+    }
+    Some(lit)
+}
+
+/// Parses the date part: `YYYY`, `YYYY-MM`, or `YYYY-MM-DD`. Longer inputs
+/// must still be a valid date prefix. Missing parts default to the first of
+/// the unit (`2025-03` means March 1st).
+fn parse_ymd(b: &[u8]) -> Option<(i32, u32, u32)> {
+    if b.len() < 4 {
+        return None;
+    }
+    let year = i32::try_from(digits(b, 0, 4)?).ok()?;
+    if b.len() == 4 {
+        return Some((year, 1, 1));
+    }
+
+    expect(b, 4, b'-')?;
+    let month = digits(b, 5, 2)?;
+    if !(1..=12).contains(&month) {
+        return None;
+    }
+    if b.len() == 7 {
+        return Some((year, month, 1));
+    }
+
+    expect(b, 7, b'-')?;
+    let day = digits(b, 8, 2)?;
+    if !(1..=31).contains(&day) {
+        return None;
+    }
+    Some((year, month, day))
+}
+
+/// Parses the time-and-zone suffix starting at byte 10
+/// (`T|t|<space>HH:MM[:SS[.fff]]` with optional trailing `Z` or `±HH:MM`).
+/// Returns the seconds to add to local midnight and the resulting precision.
+fn parse_time_zone(b: &[u8]) -> Option<(i64, DatePrecision)> {
+    match b[10] {
+        b'T' | b't' | b' ' => {}
+        _ => return None,
+    }
+    let hour = digits(b, 11, 2)?;
+    if hour > 23 || b.get(13) != Some(&b':') {
+        return None;
+    }
+    let minute = digits(b, 14, 2)?;
+    if minute > 59 {
+        return None;
+    }
+    let mut secs = i64::from(hour) * 3600 + i64::from(minute) * 60;
+    let mut precision = DatePrecision::Minute;
+
+    let mut i = 16;
+    if b.get(i) == Some(&b':') {
+        let second = digits(b, 17, 2)?;
+        if second > 59 {
+            return None;
+        }
+        secs += i64::from(second);
+        precision = DatePrecision::Second;
+        i = 19;
+    }
+    if b.get(i) == Some(&b'.') {
+        i += 1;
+        while b.get(i).is_some_and(u8::is_ascii_digit) {
+            i += 1;
+        }
+    }
+
+    match b.get(i) {
+        None => {}
+        Some(&z) if (z == b'Z' || z == b'z') && i + 1 == b.len() => {}
+        Some(&sign) if sign == b'+' || sign == b'-' => {
+            let oh = digits(b, i + 1, 2)?;
+            if oh > 23 || b.get(i + 3) != Some(&b':') {
+                return None;
+            }
+            let om = digits(b, i + 4, 2)?;
+            if om > 59 || i + 6 != b.len() {
+                return None;
+            }
+            let mag = i64::from(oh) * 3600 + i64::from(om) * 60;
+            secs -= if sign == b'-' { -mag } else { mag };
+        }
+        _ => return None,
+    }
+
+    Some((secs, precision))
+}
+
+/// Half-open UTC-second interval `[start, end)` derived from a pair of
+/// ISO-8601-shaped bounds.
+struct DateInterval {
+    start: i64,
+    end: i64,
+}
+
+/// Builds a calendar interval from range bounds when both parse as ISO-8601
+/// dates; `None` keeps the classic string/number comparison path.
+fn date_interval(start: &str, end: &str, inclusive: bool) -> Option<DateInterval> {
+    let lo = parse_date_literal(start)?;
+    let hi = parse_date_literal(end)?;
+    Some(DateInterval {
+        start: if inclusive { lo.ts } else { lo.next_start() },
+        end: if inclusive { hi.next_start() } else { hi.ts },
+    })
+}
+
+/// Routes plain (unquoted, non-regex, non-fuzzy) terms whose value carries at
+/// least month precision to calendar equality over that period.
+fn date_term(term: &TermExpr) -> Option<DateInterval> {
+    if term.is_quoted || term.is_regex || term.fuzzy_slop.is_some() {
+        return None;
+    }
+    let lit = parse_date_literal(&term.value)?;
+    lit.precision.at_least_month().then_some(DateInterval {
+        start: lit.ts,
+        end: lit.next_start(),
+    })
 }
 
 /// Lowers a `*`/`?` glob to an anchored, case-insensitive regex.
@@ -272,7 +513,20 @@ fn eval_expr(expr: &CompiledExpr, doc: &Value, current_path: &[String]) -> bool 
         } => match_leaf_value(doc, current_path, &|val| {
             range_matches(start, end, *inclusive, val)
         }),
+        CompiledExpr::Date(interval) => {
+            match_leaf_value(doc, current_path, &|val| date_leaf_matches(val, interval))
+        }
         CompiledExpr::SubQuery(query) => query.matches_in(doc, current_path),
+    }
+}
+
+/// A leaf matches a calendar interval when it parses as an ISO-8601 instant
+/// falling inside it. Non-date leaves (including plain numbers) never match.
+fn date_leaf_matches(val: &Value, interval: &DateInterval) -> bool {
+    match val {
+        Value::String(text) => parse_date_literal(text)
+            .is_some_and(|lit| lit.ts >= interval.start && lit.ts < interval.end),
+        _ => false,
     }
 }
 
@@ -555,6 +809,56 @@ mod tests {
     fn test_top_level_range_scans_anywhere() {
         let doc = sample_doc();
         assert!(eval_q("[30 TO 45]", &doc));
+    }
+
+    // --- Calendar dates (ISO-8601 shaped) ---
+
+    #[test]
+    fn test_date_ranges_use_calendar_intervals() {
+        let doc = json!({ "at": "2025-03-08T09:30:00Z" });
+        assert!(eval_q("at:2025-03-08", &doc));
+        assert!(eval_q("at:2025-03", &doc));
+        assert!(eval_q("at:[2025-01-01 TO 2025-12-31]", &doc));
+        assert!(eval_q("at:[2025-03 TO 2025-03]", &doc));
+        assert!(!eval_q("at:2025-03-09", &doc));
+        assert!(!eval_q("at:2025-04", &doc));
+        assert!(eval_q("at:{2025-03-01 TO 2025-03-09}", &doc));
+        assert!(!eval_q("at:{2025-03-08 TO 2025-03-10}", &doc));
+    }
+
+    #[test]
+    fn test_date_offsets_normalize_to_utc() {
+        let doc = json!({ "at": "2025-03-08T00:30:00+02:00" }); // 2025-03-07T22:30Z
+        assert!(eval_q("at:2025-03-07", &doc));
+        assert!(!eval_q("at:2025-03-08", &doc));
+    }
+
+    #[test]
+    fn test_naive_datetimes_read_as_utc() {
+        let doc = json!({ "at": "2025-03-08 22:30" });
+        assert!(eval_q("at:2025-03-08", &doc));
+        assert!(!eval_q("at:2025-03-09", &doc));
+    }
+
+    #[test]
+    fn test_non_date_strings_keep_lexicographic_ranges() {
+        let doc = sample_doc();
+        assert!(eval_q("address.city:[A TO Zurich]", &doc));
+        assert!(!eval_q("name:[A TO B]", &doc));
+    }
+
+    #[test]
+    fn test_malformed_dates_fall_back_to_text_comparison() {
+        let doc = json!({ "v": "2025-3-8" });
+        assert!(eval_q("v:\"2025-3-8\"", &doc));
+        assert!(!eval_q("v:[2025-01-01 TO 2025-12-31]", &doc));
+    }
+
+    #[test]
+    fn test_year_only_terms_keep_text_matching() {
+        let doc = json!({ "v": "2025", "w": 2025 });
+        assert!(eval_q("v:2025", &doc));
+        assert!(eval_q("w:2025", &doc));
     }
 
     // --- Field paths, arrays, scoping ---

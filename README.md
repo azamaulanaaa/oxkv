@@ -103,6 +103,7 @@ for kv in &matches {
 | Boost | `rust^2.5` | parsed but ignored for boolean matching |
 | Inclusive range | `age:[30 TO 40]` | numeric bounds also match numeric-looking strings |
 | Exclusive range | `date:{2020 TO 2024}` | lexicographic comparison for non-numeric values |
+| Calendar date range | `created:[2025-01-01 TO 2025-12-31]`, `created:2025-03` | ISO-8601-shaped bounds compare as UTC calendar intervals instead of text; partial literals cover their whole period, so a day literal matches any timestamp that day; offsets are normalized to UTC and naive times read as UTC; non-date strings keep classic comparison |
 | Boolean operators | `a AND b OR c` | `AND` binds tighter than `OR`; `&&`, `\|\|` aliases; a missing operator defaults to `OR` |
 | Occurrence prefixes | `+required -excluded NOT banned` | without explicit operators: all `+` must match, no `-`/`NOT` may match, at least one optional clause must match |
 | Sub-queries | `(rust OR go) AND stars:>0` | parenthesized groups, optionally field-scoped (`tags:(rust OR go)`) |

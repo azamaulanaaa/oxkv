@@ -64,7 +64,7 @@ fn corpus(n: usize) -> Vec<Value> {
 }
 
 /// One representative query per engine feature: `(kind, query string)`.
-const QUERIES: [(&str, &str); 12] = [
+const QUERIES: [(&str, &str); 14] = [
     ("term", "rust"),
     ("field_term", "lang:rust"),
     ("phrase", r#"id:"doc-000042""#),
@@ -72,7 +72,13 @@ const QUERIES: [(&str, &str); 12] = [
     ("regex", r"id:/doc-\d{3}/"),
     ("fuzzy", "lang:rust~1"),
     ("range_numeric", "age:[30 TO 40]"),
-    ("range_lexicographic", r"created:{2020 TO 2022}"),
+    // Bounds are deliberately not ISO-8601 shaped, so this exercises the
+    // classic string-comparison path.
+    ("range_lexicographic", "id:[doc-000000 TO doc-049999]"),
+    // Calendar-aware comparison over the same field shape as
+    // range_lexicographic; run both to quantify date-matching overhead.
+    ("range_date_iso", "created:[2021-01-01 TO 2022-12-31]"),
+    ("date_term_day", "created:2021-06-15"),
     ("boolean_operators", "+lang:go AND -active:false"),
     ("sub_query", "tags:(t1 OR t2)"),
     ("nested_field", "address.city:Berlin"),

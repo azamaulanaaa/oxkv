@@ -3,9 +3,11 @@
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" | "\u{3000}" }
 
 // --- Escaped & Reserved Characters ---
-// Reserved: + - && || ! ( ) { } [ ] ^ " ~ * ? : \ /
+// Reserved: + && || ! ( ) { } [ ] ^ " ~ * ? : \ /
+// '-' is reserved only at item start (MustNot prefix); inside terms and
+// range bounds it is legal (ISO dates `2025-03-08`, negatives `-5`).
 escaped_char = @{ "\\" ~ ANY }
-term_char    = _{ escaped_char | !(WHITESPACE | ":" | "(" | ")" | "[" | "]" | "{" | "}" | "\"" | "^" | "~" | "+" | "-" | "!" | "/" | "AND" | "OR" | "NOT") ~ ANY }
+term_char    = _{ escaped_char | !(WHITESPACE | ":" | "(" | ")" | "[" | "]" | "{" | "}" | "\"" | "^" | "~" | "+" | "!" | "/" | "AND" | "OR" | "NOT") ~ ANY }
 
 // --- Identifiers & Terms ---
 // Field names may be dot-separated JSON paths (e.g. "address.city").
