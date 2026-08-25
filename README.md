@@ -244,6 +244,50 @@ wasm-pack build --target web
 wasm-pack test --node
 ```
 
+## Benchmarking
+
+Criterion benchmarks live in [`benches/kv_bench.rs`](benches/kv_bench.rs) and
+cover both shipped backends (`btree_mem`, `redb_mem`) at two store sizes:
+1,000 and 1,000,000 items.
+
+```bash
+cargo bench --bench kv_bench                     # everything (slow - see note)
+cargo bench --bench kv_bench 1000                # quick sweep of the 1k groups
+cargo bench --bench kv_bench point_update        # just the changes matrix
+cargo bench --bench kv_bench 1000000items_100    # one specific cell of the matrix
+```
+
+The filter is a plain substring match on benchmark names. Results land in
+`target/criterion/` as HTML reports; re-running a filter compares against the
+previous run and flags regressions/improvements automatically.
+
+### Workloads
+
+| Group | Measures |
+| --------- | ----------- |
+| `seq_insert/{backend}/{n}` | building a store from scratch — every key inserted sequentially |
+| `random_get/{backend}/{n}` | reading every item in scattered (prime-stride) order |
+| `page_fetch_100/…` | one paginated range fetch of 100 entries from rotating start cursors |
+| `point_update/{backend}/{n}items_{m}changes` | updating an existing store: 1k-item stores take 1 and 10 changes; 1M-item stores take 1, 100, and 1,000 |
+| `tx_commit_batch_1000/…` | committing a pre-staged 1,000-write transaction (staging is untimed, so this isolates durability cost) |
+| `seq_delete/{backend}/{n}` | deleting every key from a freshly built store (capped at 100k to keep per-iteration rebuilds sane) |
+
+Setup work (populating stores for read/update benchmarks, staging
+transactions) runs in untimed warmup or setup phases, so measured numbers
+count only the operation under test.
+
+### Runtime notes
+
+- The 1,000-item groups complete in about a minute total.
+- The 1M btree groups take a few minutes each.
+- `seq_insert/redb_mem/1000000` is **very slow** (every one of the 1M writes
+  commits individually, which is oxkv's durability contract). Run it
+  deliberately via its filter when you want that number:
+
+  ```bash
+  cargo bench --bench kv_bench seq_insert/redb_mem/1000000
+  ```
+
 ## Building for WebAssembly
 
 ```bash
