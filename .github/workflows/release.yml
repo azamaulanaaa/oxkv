@@ -54,6 +54,9 @@ jobs:
           registry-url: https://registry.npmjs.org
       # Trusted Publishing (OIDC) requires npm >= 11.5.0; node 24 usually
       # ships a compatible npm, but pin-latest removes any doubt.
+      # NOTE: this is not optional long-term - GitHub deprecated
+      # 2FA-bypass granular tokens for direct publishing (~Jan 2027,
+      # github.blog 2026-07-08), making OIDC the only automated path.
       - name: Install recent npm
         run: npm install -g npm@latest
       - run: rm -rf pkg && wasm-pack build --target web --release --out-dir pkg
