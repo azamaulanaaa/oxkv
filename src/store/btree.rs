@@ -297,8 +297,8 @@ fn overlay_side<'a>(
     let (start, end) = (&cursor.0, &cursor.1);
     let ordered = |s: &String, e: &String| if forward { s <= e } else { s >= e };
 
-        let base: Box<dyn Iterator<Item = (&'a String, &'a Option<Vec<u8>>)> + 'a> =
-        match (start, end) {
+    let base: Box<dyn Iterator<Item = (&'a String, &'a Option<Vec<u8>>)> + 'a> = match (start, end)
+    {
         (Some(s), Some(e)) => {
             if ordered(s, e) {
                 let (lo, hi) = if forward { (s, e) } else { (e, s) };

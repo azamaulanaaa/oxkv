@@ -628,7 +628,10 @@ fn numeric_literal(kind: &TermKind) -> Option<f64> {
         // Numeric leaves stay precise: a parseable target compares as a
         // number instead of fuzzily against rendered digits.
         TermKind::Contains(text)
-        | TermKind::FuzzyToken { target: text, slop: _ } => text.parse::<f64>().ok(),
+        | TermKind::FuzzyToken {
+            target: text,
+            slop: _,
+        } => text.parse::<f64>().ok(),
         _ => None,
     }
 }
@@ -638,8 +641,9 @@ fn match_string_kind(kind: &TermKind, text: &str) -> bool {
         TermKind::Glob(Some(re)) | TermKind::Pattern(Some(re)) => re.is_match(text),
         TermKind::Glob(None) | TermKind::Pattern(None) => false,
         TermKind::Contains(needle) => text.to_lowercase().contains(needle),
-        TermKind::FuzzyToken { target, slop } => tokens_ci(text)
-            .any(|token| levenshtein(target, token) <= *slop),
+        TermKind::FuzzyToken { target, slop } => {
+            tokens_ci(text).any(|token| levenshtein(target, token) <= *slop)
+        }
     }
 }
 

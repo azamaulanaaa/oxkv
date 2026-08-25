@@ -20,9 +20,9 @@
 
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use oxkv::{eval, parse};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const SMALL: usize = 1_000;
 const LARGE: usize = 100_000;

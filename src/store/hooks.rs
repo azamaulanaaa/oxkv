@@ -288,8 +288,12 @@ async fn notify(subscribers: &Mutex<Subscribers>, view: &dyn StoreView, event: C
             .collect::<Vec<_>>()
     };
 
-    futures::future::join_all(observers.iter().map(|observer| observer.on_change(view, &event)))
-        .await;
+    futures::future::join_all(
+        observers
+            .iter()
+            .map(|observer| observer.on_change(view, &event)),
+    )
+    .await;
 }
 
 /// A [`StoreView`] for the commit-time re-validation pass: shows the
@@ -632,12 +636,7 @@ mod tests {
             self.0.clone()
         }
 
-        async fn validate(
-            &self,
-            _ctx: &dyn StoreView,
-            _key: &str,
-            _value: &[u8],
-        ) -> Result<()> {
+        async fn validate(&self, _ctx: &dyn StoreView, _key: &str, _value: &[u8]) -> Result<()> {
             Err(StoreError::Other("rejected".into()))
         }
     }

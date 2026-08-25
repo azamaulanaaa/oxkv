@@ -25,7 +25,7 @@ use std::hint::black_box;
 use std::time::Duration;
 
 use criterion::measurement::WallTime;
-use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
+use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use oxkv::{BTreeStore, Direction, GetSet, RedbStore, Store, Transaction};
 
 const SMALL: usize = 1_000;
@@ -92,12 +92,8 @@ where
     group.finish();
 }
 
-fn random_get<S>(
-    rt: &tokio::runtime::Runtime,
-    c: &mut Criterion,
-    backend: &str,
-    n: usize,
-) where
+fn random_get<S>(rt: &tokio::runtime::Runtime, c: &mut Criterion, backend: &str, n: usize)
+where
     S: GetSet + Default,
 {
     let mut group = c.benchmark_group(format!("random_get/{backend}/{n}"));
@@ -127,12 +123,8 @@ fn random_get<S>(
     group.finish();
 }
 
-fn page_fetch<S>(
-    rt: &tokio::runtime::Runtime,
-    c: &mut Criterion,
-    backend: &str,
-    n: usize,
-) where
+fn page_fetch<S>(rt: &tokio::runtime::Runtime, c: &mut Criterion, backend: &str, n: usize)
+where
     S: GetSet + Default,
 {
     let mut group = c.benchmark_group(format!("page_fetch_{PAGE}/{backend}/{n}"));
@@ -145,8 +137,7 @@ fn page_fetch<S>(
 
     // Rotate through distinct start cursors instead of always reading the
     // same page, so cached tree paths do not flatter the numbers.
-    let starts: Vec<String> =
-        (0..128usize).map(|j| key((j * 7919 + n / 2) % n)).collect();
+    let starts: Vec<String> = (0..128usize).map(|j| key((j * 7919 + n / 2) % n)).collect();
 
     group.bench_function("fetch", |b| {
         let mut j = 0usize;
@@ -160,12 +151,7 @@ fn page_fetch<S>(
             });
             rt.block_on(async {
                 black_box(
-                    s
-                        .gets_bytes(
-                            Some(PAGE),
-                            Direction::Next,
-                            (Some(start), None),
-                        )
+                    s.gets_bytes(Some(PAGE), Direction::Next, (Some(start), None))
                         .await
                         .expect("gets_bytes"),
                 );
@@ -212,12 +198,8 @@ where
     group.finish();
 }
 
-fn seq_delete<S>(
-    rt: &tokio::runtime::Runtime,
-    c: &mut Criterion,
-    backend: &str,
-    requested: usize,
-) where
+fn seq_delete<S>(rt: &tokio::runtime::Runtime, c: &mut Criterion, backend: &str, requested: usize)
+where
     S: GetSet + Default,
 {
     let n = requested.min(DELETE_CAP);
@@ -268,7 +250,9 @@ fn point_update<S>(
 ) where
     S: GetSet + Default,
 {
-    let mut group = crit.benchmark_group(format!("point_update/{backend}/{items}items_{changes}changes"));
+    let mut group = crit.benchmark_group(format!(
+        "point_update/{backend}/{items}items_{changes}changes"
+    ));
     configure(&mut group, changes);
     let keys: Vec<String> = (0..items).map(key).collect();
 
