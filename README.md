@@ -94,9 +94,9 @@ for kv in &matches {
 
 | Feature | Example | Notes |
 | --------- | --------- | ------- |
-| Plain term (case-insensitive) | `rust` | matches any leaf value anywhere in the document |
+| Plain term | `rust` | unscoped: fuzzy word-token match (slop 2) across text values, so `carrs` still finds `cars`; field-scoped: whole-value case-insensitive |
 | Field-scoped term | `lang:rust` | dot-separated paths descend into objects (`address.city:Berlin`) and fan out across arrays (`tags:kv`) |
-| Quoted phrase (exact, case-sensitive) | `title:"Rust Programming"` | whole-value equality |
+| Quoted phrase | `"memory safe"` | unscoped: case-insensitive substring containment; field-scoped: exact, case-sensitive whole-value |
 | Wildcards | `name:r*`, `j?va` | `*` and `?`, case-insensitive |
 | Regex | `email:/@gmail\.com$/` | Rust `regex` crate syntax |
 | Fuzzy | `name:Jon~1` | Levenshtein distance ≤ slop; bare `~` defaults to 2 |

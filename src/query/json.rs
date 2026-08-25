@@ -13,16 +13,21 @@
 //!   `-prohibited`/`NOT` item may match, and at least one optional item must
 //!   match if any are present. A group of only required/prohibited items
 //!   matches when its constraints hold.
-//! - **Unscoped terms** match any leaf value anywhere in the document;
+//! - **Unscoped terms** search every leaf value in the document, Google
+//!   style: bare terms match fuzzily against word tokens of text values
+//!   (Levenshtein distance <= 2 by default, so `carrs` still finds `cars`),
+//!   and quoted phrases match as case-insensitive substrings (`"born on"`
+//!   finds `"i am born on 2000"`).
 //!   **field-scoped terms** resolve dot-separated paths, fanning out across
 //!   arrays (`tags:kv` matches `["rust", "kv"]`, `a.b:2` matches nested
 //!   objects). A backslash escapes the next character in a field name:
 //!   `a\\.b:1` addresses a JSON key literally named `a.b`, while `a.b:1`
 //!   descends into `{"a": {"b": 1}}`.
-//! - **Terms**: unquoted terms match case-insensitively and support `*`/`?`
-//!   wildcards; quoted terms are exact and case-sensitive; `/regex/` terms use
-//!   the regex crate; fuzzy `term~N` uses Levenshtein distance; boosts are
-//!   accepted by the parser but do not affect boolean matching.
+//! - **Terms**: whole-value comparison applies to field-scoped terms —
+//!   unquoted are case-insensitive with `*`/`?` wildcard support; quoted are
+//!   exact and case-sensitive; `/regex/` terms use the regex crate; fuzzy
+//!   `term~N` uses Levenshtein distance; boosts are accepted by the parser
+//!   but do not affect boolean matching.
 //! - **Calendar dates**: bounds or plain terms shaped like ISO-8601 dates
 //!   (`2025`, `2025-03`, `2025-03-08`, full timestamps with optional `Z` or
 //!   `±HH:MM`) compare as UTC calendar intervals instead of text. Granularity
@@ -91,6 +96,12 @@ enum TermKind {
     Pattern(Option<Regex>),
     /// Fuzzy term: Levenshtein distance within `slop`.
     Fuzzy { target: String, slop: usize },
+    /// Unscoped quoted phrase: case-insensitive containment anywhere in the
+    /// value.
+    Contains(String),
+    /// Unscoped bare term: any word token of the value within Levenshtein
+    /// `slop` of the lowercased target.
+    FuzzyToken { target: String, slop: usize },
 }
 
 fn compile_query(query: &Query) -> CompiledQuery {
@@ -104,19 +115,24 @@ fn compile_item(item: &super::QueryItem) -> CompiledItem {
     CompiledItem {
         prefix: item.prefix.clone(),
         op: item.op.clone(),
-        expr: compile_expr(&item.expr),
+        expr: compile_expr(&item.expr, false),
     }
 }
 
-fn compile_expr(expr: &Expression) -> CompiledExpr {
+fn compile_expr(expr: &Expression, scoped: bool) -> CompiledExpr {
     match expr {
-        Expression::Term(term) => match date_term(term) {
-            Some(interval) => CompiledExpr::Date(interval),
-            None => CompiledExpr::Term(compile_term(term)),
-        },
+        Expression::Term(term) => {
+            if let Some(interval) = date_term(term) {
+                CompiledExpr::Date(interval)
+            } else if scoped {
+                CompiledExpr::Term(compile_term(term))
+            } else {
+                CompiledExpr::Term(compile_unscoped_term(term))
+            }
+        }
         Expression::Field { field, expr } => CompiledExpr::Field {
             path: split_field_path(field),
-            expr: Box::new(compile_expr(expr)),
+            expr: Box::new(compile_expr(expr, true)),
         },
         Expression::Range {
             start,
@@ -161,6 +177,34 @@ fn compile_term(term: &TermExpr) -> CompiledTerm {
 fn parse_bound(raw: &str) -> Bound {
     raw.parse::<f64>()
         .map_or_else(|_| Bound::Str(raw.to_string()), Bound::Num)
+}
+
+/// Compiles terms appearing outside any field scope. These power the
+/// "search that just works" layer: bare terms become token-level fuzzy
+/// matches with default slop 2, and quoted phrases become case-insensitive
+/// substring predicates. Regex and wildcard kinds keep their whole-value
+/// behavior; date-shaped literals are routed to calendar intervals before
+/// this runs.
+fn compile_unscoped_term(term: &TermExpr) -> CompiledTerm {
+    let kind = if term.is_regex {
+        TermKind::Pattern(Regex::new(&term.value).ok())
+    } else if term.is_quoted {
+        TermKind::Contains(term.value.to_lowercase())
+    } else if term.value.contains('*') || term.value.contains('?') {
+        TermKind::Glob(glob_regex(&term.value))
+    } else {
+        TermKind::FuzzyToken {
+            target: term.value.to_lowercase(),
+            slop: usize::from(term.fuzzy_slop.unwrap_or(2)),
+        }
+    };
+    CompiledTerm { kind }
+}
+
+/// Splits text into lowercase alphanumeric word tokens for unscoped matching.
+fn tokens_ci(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|token| !token.is_empty())
 }
 
 /// Granularity carried by an ISO-8601 date literal.
@@ -617,6 +661,9 @@ fn match_string_kind(kind: &TermKind, text: &str) -> bool {
             target.chars().count().abs_diff(text.chars().count()) <= *slop
                 && levenshtein(target, text) <= *slop
         }
+        TermKind::Contains(needle) => text.to_lowercase().contains(needle),
+        TermKind::FuzzyToken { target, slop } => tokens_ci(text)
+            .any(|token| levenshtein(target, token) <= *slop),
     }
 }
 
@@ -687,11 +734,38 @@ mod tests {
     }
 
     #[test]
-    fn test_quoted_term_is_exact_and_case_sensitive() {
+    fn test_scoped_quoted_terms_remain_exact_and_case_sensitive() {
         let doc = sample_doc();
-        assert!(eval_q("\"Rust Programming\"", &doc));
-        assert!(!eval_q("\"rust programming\"", &doc));
-        assert!(!eval_q("\"Rust\"", &doc));
+        assert!(eval_q("name:\"Rust Programming\"", &doc));
+        assert!(!eval_q("name:\"rust programming\"", &doc));
+        assert!(!eval_q("name:\"Rust\"", &doc));
+    }
+
+    #[test]
+    fn test_unscoped_quoted_phrases_match_substrings() {
+        let doc = json!({ "bio": "I ride my motorbike daily" });
+        assert!(eval_q("\"motorbike\"", &doc));
+        assert!(eval_q("\"ride my motorbike\"", &doc));
+        assert!(eval_q("\"MOTORBIKE\"", &doc)); // containment is case-insensitive
+        assert!(!eval_q("\"motorbike daily!\"", &doc));
+    }
+
+    #[test]
+    fn test_unscoped_bare_terms_fuzzy_match_tokens_in_prose() {
+        let doc = json!({ "bio": "i am born on 2000 somewhere" });
+        assert!(eval_q("born", &doc));
+        assert!(eval_q("boren", &doc)); // typo within default slop 2
+        assert!(eval_q("2000", &doc));
+        assert!(eval_q("2055", &doc)); // two substitutions away
+        assert!(!eval_q("xyzzyq", &doc));
+    }
+
+    #[test]
+    fn test_field_scoped_terms_keep_whole_value_semantics() {
+        let doc = json!({ "bio": "i am born on 2000" });
+        assert!(!eval_q("bio:born", &doc));
+        assert!(eval_q("bio:\"i am born on 2000\"", &doc));
+        assert!(eval_q("bio:*born*", &doc)); // wildcard idiom still works
     }
 
     #[test]
