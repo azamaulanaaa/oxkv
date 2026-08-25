@@ -52,6 +52,10 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+      # Trusted Publishing (OIDC) requires npm >= 11.5.0; node 24 usually
+      # ships a compatible npm, but pin-latest removes any doubt.
+      - name: Install recent npm
+        run: npm install -g npm@latest
       - run: rm -rf pkg && wasm-pack build --target web --release --out-dir pkg
       - name: Publish to npm
-        run: npm publish ./pkg
+        run: npm publish ./pkg --provenance
