@@ -92,9 +92,10 @@ for kv in &matches {
 
 ### How Matching Works
 
-Queries have two layers. Anything **outside a field scope** is forgiving,
-Google-style search over every text value in the document; anything with a
-`field:` prefix keeps precise, whole-value semantics.
+Scoping selects **which leaf** is examined — not how it matches. Bare terms
+and quoted phrases behave identically whether unscoped or field-scoped:
+unscoped terms search every leaf in the document; `field:` paths descend into
+objects (`address.city`) and fan out across arrays (`tags`).
 
 ```rust,ignore
 let doc = json!({
@@ -104,32 +105,31 @@ let doc = json!({
     "address": { "city": "Berlin" }
 });
 
-// Unscoped - searches every leaf, tolerates typos:
-//   bare terms match word tokens fuzzily (Levenshtein <= 2 by default)
-//   quoted phrases match as case-insensitive substrings
+// Bare terms match word tokens fuzzily (Levenshtein <= 2 by default):
 assert!(matches(doc, "born"));        // token hit
 assert!(matches(doc, "boren"));       // typo within default slop
-assert!(matches(doc, "\"am born on\"")); // phrase containment, any case
-assert!(matches(doc, "berlin"));      // found at any depth, any case
+assert!(matches(doc, "bio:born"));    // scoped: same matching, one leaf
+assert!(matches(doc, "carrs"));       // typos are tolerated everywhere
 
-// Field-scoped - exact whole-value comparison:
-assert!(matches(doc, "lang:rust"));
-assert!(!matches(doc, "bio:born"));           // no substring for scoped terms
-assert!(matches(doc, "bio:\"i am born on 2000\"")); // exact phrase
+// Quoted phrases match as case-insensitive substrings:
+assert!(matches(doc, "\"am born on\""));
+assert!(matches(doc, "address.city:\"berlin\""));
+
+// Numbers with parseable targets compare numerically:
+assert!(matches(doc, "age:30"));      // exact even though matching is fuzzy
 ```
 
 Rules of thumb:
 
-- **Unscoped bare term** → any word token of any text value within edit
-  distance 2 (override per-term with `~N`). Numbers compare as their text.
-- **Unscoped quoted phrase** → case-insensitive containment anywhere in a
-  value.
-- **Field-scoped** → the value must match as a whole: plain terms are
-  case-insensitive equality, quoted phrases are exact + case-sensitive, and
-  wildcards, regex, fuzzy, ranges, and calendar dates all apply to the
-  resolved leaf.
+- **Bare term** → any word token of the value within edit distance 2
+  (override per-term with `~N`; note transpositions count as two edits).
+- **Quoted phrase** → case-insensitive containment anywhere in the value.
+- **Wildcards** (`rus*`, `j?va`) → anchored whole-value globs.
+- **Regex** (`/pattern/`) → substring search via the regex crate.
+- **Numbers** stay precise: a numeric term against a numeric leaf compares
+  as a number, not fuzzily as text.
 - **Date-shaped values** (`2025-03-08`, timestamps with `Z` or offsets)
-  always route to UTC calendar-interval comparison, in both scopes.
+  always route to UTC calendar-interval comparison.
 - Operators are **uppercase** (`AND`, `OR`, `NOT`) — lowercase `and` is an
   ordinary search term.
 
@@ -137,9 +137,9 @@ Rules of thumb:
 
 | Feature | Example | Notes |
 | --------- | --------- | ------- |
-| Plain term | `rust` | unscoped: fuzzy word-token match (slop 2) across text values, so `carrs` still finds `cars`; field-scoped: whole-value case-insensitive |
+| Plain term | `rust`, `lang:rust` | fuzzy word-token match (slop 2), so `carrs` still finds `cars`; scoping selects which leaves are searched |
 | Field-scoped term | `lang:rust` | dot-separated paths descend into objects (`address.city:Berlin`) and fan out across arrays (`tags:kv`) |
-| Quoted phrase | `"memory safe"` | unscoped: case-insensitive substring containment; field-scoped: exact, case-sensitive whole-value |
+| Quoted phrase | `"memory safe"`, `title:"rust prog"` | case-insensitive substring containment in any scope |
 | Wildcards | `name:r*`, `j?va` | `*` and `?`, case-insensitive |
 | Regex | `email:/@gmail\.com$/` | Rust `regex` crate syntax |
 | Fuzzy | `name:Jon~1` | Levenshtein distance ≤ slop; bare `~` defaults to 2 |

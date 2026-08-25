@@ -13,21 +13,20 @@
 //!   `-prohibited`/`NOT` item may match, and at least one optional item must
 //!   match if any are present. A group of only required/prohibited items
 //!   matches when its constraints hold.
-//! - **Unscoped terms** search every leaf value in the document, Google
-//!   style: bare terms match fuzzily against word tokens of text values
-//!   (Levenshtein distance <= 2 by default, so `carrs` still finds `cars`),
-//!   and quoted phrases match as case-insensitive substrings (`"born on"`
-//!   finds `"i am born on 2000"`).
-//!   **field-scoped terms** resolve dot-separated paths, fanning out across
-//!   arrays (`tags:kv` matches `["rust", "kv"]`, `a.b:2` matches nested
-//!   objects). A backslash escapes the next character in a field name:
-//!   `a\\.b:1` addresses a JSON key literally named `a.b`, while `a.b:1`
-//!   descends into `{"a": {"b": 1}}`.
-//! - **Terms**: whole-value comparison applies to field-scoped terms —
-//!   unquoted are case-insensitive with `*`/`?` wildcard support; quoted are
-//!   exact and case-sensitive; `/regex/` terms use the regex crate; fuzzy
-//!   `term~N` uses Levenshtein distance; boosts are accepted by the parser
-//!   but do not affect boolean matching.
+//! - **Terms** match uniformly regardless of scoping — scoping selects which
+//!   leaf is examined, not how it matches. Bare terms match fuzzily against
+//!   word tokens of text values (Levenshtein distance <= 2 by default,
+//!   overridable with `~N`, so `carrs` still finds `cars`); quoted phrases
+//!   are case-insensitive substring containment (`"born on"` finds
+//!   `"i am born on 2000"`); `*`/`?` wildcards are anchored globs;
+//!   `/regex/` terms use the regex crate; boosts are accepted by the parser
+//!   but do not affect boolean matching. Numeric leaves compare numerically
+//!   whenever the term parses as a number.
+//! - **Field scopes** resolve dot-separated paths, fanning out across arrays
+//!   (`tags:kv` matches `["rust", "kv"]`, `a.b:2` matches nested objects);
+//!   unscoped terms search every leaf in the document. A backslash escapes
+//!   the next character in a field name: `a\\.b:1` addresses a JSON key
+//!   literally named `a.b`, while `a.b:1` descends into `{"a": {"b": 1}}`.
 //! - **Calendar dates**: bounds or plain terms shaped like ISO-8601 dates
 //!   (`2025`, `2025-03`, `2025-03-08`, full timestamps with optional `Z` or
 //!   `±HH:MM`) compare as UTC calendar intervals instead of text. Granularity
@@ -86,21 +85,14 @@ struct CompiledTerm {
 }
 
 enum TermKind {
-    /// Quoted phrase: exact, case-sensitive whole-value equality.
-    Exact(String),
-    /// Unquoted word: case-insensitive whole-value equality.
-    IgnoreCase(String),
     /// Unquoted term with `*`/`?`: anchored, case-insensitive glob.
     Glob(Option<Regex>),
     /// `/regex/` term: user-provided pattern, case-sensitive.
     Pattern(Option<Regex>),
-    /// Fuzzy term: Levenshtein distance within `slop`.
-    Fuzzy { target: String, slop: usize },
-    /// Unscoped quoted phrase: case-insensitive containment anywhere in the
-    /// value.
+    /// Quoted phrase: case-insensitive containment anywhere in the value.
     Contains(String),
-    /// Unscoped bare term: any word token of the value within Levenshtein
-    /// `slop` of the lowercased target.
+    /// Bare term: any word token of the value within Levenshtein `slop` of
+    /// the lowercased target. Default slop is 2.
     FuzzyToken { target: String, slop: usize },
 }
 
@@ -115,24 +107,22 @@ fn compile_item(item: &super::QueryItem) -> CompiledItem {
     CompiledItem {
         prefix: item.prefix.clone(),
         op: item.op.clone(),
-        expr: compile_expr(&item.expr, false),
+        expr: compile_expr(&item.expr),
     }
 }
 
-fn compile_expr(expr: &Expression, scoped: bool) -> CompiledExpr {
+fn compile_expr(expr: &Expression) -> CompiledExpr {
     match expr {
         Expression::Term(term) => {
             if let Some(interval) = date_term(term) {
                 CompiledExpr::Date(interval)
-            } else if scoped {
-                CompiledExpr::Term(compile_term(term))
             } else {
-                CompiledExpr::Term(compile_unscoped_term(term))
+                CompiledExpr::Term(compile_term(term))
             }
         }
         Expression::Field { field, expr } => CompiledExpr::Field {
             path: split_field_path(field),
-            expr: Box::new(compile_expr(expr, true)),
+            expr: Box::new(compile_expr(expr)),
         },
         Expression::Range {
             start,
@@ -156,20 +146,28 @@ fn compile_expr(expr: &Expression, scoped: bool) -> CompiledExpr {
     }
 }
 
+/// Compiles a term uniformly regardless of scoping: scoping selects *which*
+/// leaf to search, not how it matches. Bare terms are token-level fuzzy with
+/// default slop 2, quoted phrases are case-insensitive containment, and
+/// wildcards/regex keep their anchored whole-value behavior. Date-shaped
+/// literals are routed to calendar intervals before this runs.
 fn compile_term(term: &TermExpr) -> CompiledTerm {
     let kind = if term.is_regex {
         TermKind::Pattern(Regex::new(&term.value).ok())
+    } else if term.is_quoted {
+        TermKind::Contains(term.value.to_lowercase())
     } else if let Some(slop) = term.fuzzy_slop {
-        TermKind::Fuzzy {
-            target: term.value.clone(),
+        TermKind::FuzzyToken {
+            target: term.value.to_lowercase(),
             slop: usize::from(slop),
         }
-    } else if !term.is_quoted && (term.value.contains('*') || term.value.contains('?')) {
+    } else if term.value.contains('*') || term.value.contains('?') {
         TermKind::Glob(glob_regex(&term.value))
-    } else if term.is_quoted {
-        TermKind::Exact(term.value.clone())
     } else {
-        TermKind::IgnoreCase(term.value.to_lowercase())
+        TermKind::FuzzyToken {
+            target: term.value.to_lowercase(),
+            slop: 2,
+        }
     };
     CompiledTerm { kind }
 }
@@ -182,25 +180,6 @@ fn parse_bound(raw: &str) -> Bound {
 /// Compiles terms appearing outside any field scope. These power the
 /// "search that just works" layer: bare terms become token-level fuzzy
 /// matches with default slop 2, and quoted phrases become case-insensitive
-/// substring predicates. Regex and wildcard kinds keep their whole-value
-/// behavior; date-shaped literals are routed to calendar intervals before
-/// this runs.
-fn compile_unscoped_term(term: &TermExpr) -> CompiledTerm {
-    let kind = if term.is_regex {
-        TermKind::Pattern(Regex::new(&term.value).ok())
-    } else if term.is_quoted {
-        TermKind::Contains(term.value.to_lowercase())
-    } else if term.value.contains('*') || term.value.contains('?') {
-        TermKind::Glob(glob_regex(&term.value))
-    } else {
-        TermKind::FuzzyToken {
-            target: term.value.to_lowercase(),
-            slop: usize::from(term.fuzzy_slop.unwrap_or(2)),
-        }
-    };
-    CompiledTerm { kind }
-}
-
 /// Splits text into lowercase alphanumeric word tokens for unscoped matching.
 fn tokens_ci(text: &str) -> impl Iterator<Item = &str> {
     text.split(|c: char| !c.is_alphanumeric())
@@ -646,21 +625,18 @@ fn number_matches(kind: &TermKind, value: Option<f64>, rendered: &str) -> bool {
 
 fn numeric_literal(kind: &TermKind) -> Option<f64> {
     match kind {
-        TermKind::Exact(text) | TermKind::IgnoreCase(text) => text.parse::<f64>().ok(),
+        // Numeric leaves stay precise: a parseable target compares as a
+        // number instead of fuzzily against rendered digits.
+        TermKind::Contains(text)
+        | TermKind::FuzzyToken { target: text, slop: _ } => text.parse::<f64>().ok(),
         _ => None,
     }
 }
 
 fn match_string_kind(kind: &TermKind, text: &str) -> bool {
     match kind {
-        TermKind::Exact(expected) => text == expected,
-        TermKind::IgnoreCase(expected) => text.to_lowercase() == *expected,
         TermKind::Glob(Some(re)) | TermKind::Pattern(Some(re)) => re.is_match(text),
         TermKind::Glob(None) | TermKind::Pattern(None) => false,
-        TermKind::Fuzzy { target, slop } => {
-            target.chars().count().abs_diff(text.chars().count()) <= *slop
-                && levenshtein(target, text) <= *slop
-        }
         TermKind::Contains(needle) => text.to_lowercase().contains(needle),
         TermKind::FuzzyToken { target, slop } => tokens_ci(text)
             .any(|token| levenshtein(target, token) <= *slop),
@@ -734,11 +710,12 @@ mod tests {
     }
 
     #[test]
-    fn test_scoped_quoted_terms_remain_exact_and_case_sensitive() {
+    fn test_quoted_phrases_are_case_insensitive_containment() {
         let doc = sample_doc();
         assert!(eval_q("name:\"Rust Programming\"", &doc));
-        assert!(!eval_q("name:\"rust programming\"", &doc));
-        assert!(!eval_q("name:\"Rust\"", &doc));
+        assert!(eval_q("name:\"rust programming\"", &doc));
+        assert!(eval_q("name:\"Rust\"", &doc));
+        assert!(!eval_q("name:\"C++ Guide\"", &doc));
     }
 
     #[test]
@@ -761,11 +738,14 @@ mod tests {
     }
 
     #[test]
-    fn test_field_scoped_terms_keep_whole_value_semantics() {
+    fn test_field_scoped_terms_use_token_matching() {
         let doc = json!({ "bio": "i am born on 2000" });
-        assert!(!eval_q("bio:born", &doc));
-        assert!(eval_q("bio:\"i am born on 2000\"", &doc));
+        // Scoping selects WHICH leaf to search, not how it matches.
+        assert!(eval_q("bio:born", &doc));
+        assert!(eval_q("bio:boren", &doc));
+        assert!(eval_q("bio:\"born on\"", &doc));
         assert!(eval_q("bio:*born*", &doc)); // wildcard idiom still works
+        assert!(!eval_q("bio:xyzzyq", &doc));
     }
 
     #[test]
@@ -801,9 +781,13 @@ mod tests {
     #[test]
     fn test_fuzzy_terms() {
         let doc = sample_doc();
+        // Targets lowercase before comparison, so case differences cost zero.
+        assert!(eval_q("lang:Rust~0", &doc));
         assert!(eval_q("lang:Rust~1", &doc));
+        // Plain Levenshtein has no transposition support ("ruts" -> "rust"
+        // costs 2), so a real one-edit typo is an insertion/substitution.
+        assert!(eval_q("lang:rutt~1", &doc));
         assert!(eval_q("lang:Rust~2", &doc));
-        assert!(!eval_q("lang:Rust~0", &doc));
         assert!(!eval_q("lang:python~2", &doc));
     }
 
@@ -991,18 +975,19 @@ mod tests {
 
     #[test]
     fn test_and_binds_tighter_than_or() {
-        let doc = json!({ "x": "1", "y": "2" });
-        assert!(eval_q("x:1 OR y:2 AND z:9", &doc));
-        assert!(!eval_q("x:9 OR y:2 AND z:9", &doc));
-        assert!(eval_q("x:1 AND y:2 OR z:9", &doc));
+        // Distinct long words keep fuzzy-token matching from blurring values.
+        let doc = json!({ "x": "alpha", "y": "beta", "z": "gamma" });
+        assert!(eval_q("x:alpha OR y:beta AND z:omega", &doc));
+        assert!(!eval_q("x:omega OR y:beta AND z:omega", &doc));
+        assert!(eval_q("x:alpha AND y:beta OR z:omega", &doc));
     }
 
     #[test]
     fn test_missing_operator_defaults_to_or() {
-        let doc = json!({ "x": "1", "y": "2" });
-        assert!(eval_q("x:1 y:2", &doc));
-        assert!(eval_q("x:1 y:9", &doc));
-        assert!(!eval_q("x:9 y:8", &doc));
+        let doc = json!({ "x": "alpha", "y": "beta" });
+        assert!(eval_q("x:alpha y:beta", &doc));
+        assert!(eval_q("x:alpha y:omega", &doc)); // one matching clause suffices
+        assert!(!eval_q("x:omega y:omega", &doc));
     }
 
     #[test]
@@ -1025,9 +1010,9 @@ mod tests {
 
     #[test]
     fn test_sub_query_grouping_respects_parens() {
-        let doc = json!({ "x": "1", "y": "2", "z": "3" });
-        assert!(eval_q("(x:9 OR y:2) AND z:3", &doc));
-        assert!(!eval_q("x:9 OR y:2 AND z:9", &doc));
+        let doc = json!({ "x": "alpha", "y": "beta", "z": "gamma" });
+        assert!(eval_q("(x:omega OR y:beta) AND z:gamma", &doc));
+        assert!(!eval_q("x:omega OR y:beta AND z:omega", &doc));
     }
 
     // --- Occurrence mode (no explicit operators) ---
