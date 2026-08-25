@@ -257,6 +257,21 @@ cargo bench --bench kv_bench point_update        # just the changes matrix
 cargo bench --bench kv_bench 1000000items_100    # one specific cell of the matrix
 ```
 
+Query-engine benchmarks live in [`benches/query_bench.rs`](benches/query_bench.rs)
+and measure the Lucene-style parser and matcher in isolation — no backend
+store involved:
+
+```bash
+cargo bench --bench query_bench                      # all query benches
+cargo bench --bench query_bench query_parse          # parsing only, per feature
+cargo bench --bench query_bench query_match/1000docs # matching a 1k-doc corpus
+cargo bench --bench query_bench query_match/regex    # one query kind, both corpora
+```
+
+`query_parse/{kind}` parses one representative query string per engine
+feature; `query_match/{kind}/{n}docs` evaluates a pre-parsed query over a
+generated corpus of 1,000 or 100,000 JSON documents.
+
 The filter is a plain substring match on benchmark names. Results land in
 `target/criterion/` as HTML reports; re-running a filter compares against the
 previous run and flags regressions/improvements automatically.

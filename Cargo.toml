@@ -28,6 +28,10 @@ thiserror = "2"
 name = "kv_bench"
 harness = false
 
+[[bench]]
+name = "query_bench"
+harness = false
+
 [dev-dependencies]
 criterion = "0.7"
 mockall = "0.15"
