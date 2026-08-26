@@ -1,7 +1,7 @@
 
 # oxkv
 
-A transactional key-value store library written in Rust, with optional WebAssembly bindings for JavaScript interop. Features cursor-based pagination, a Lucene-style query engine that matches stored JSON documents, JSON serialization via `serde_json`, and strict linting. All operations are async using `futures::lock::Mutex` to enable concurrent access from WASM call sites.
+A transactional key-value store library written in Rust, with optional WebAssembly bindings for JavaScript interop. Features cursor-based pagination, a Lucene-style query engine that matches stored JSON documents, JSON serialization via `serde_json`, streaming snapshot export/import, optional OpenTelemetry instrumentation, and strict linting. All operations are async using `futures::lock::Mutex` to enable concurrent access from WASM call sites.
 
 ## Features
 
@@ -14,6 +14,8 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 - **Validation hooks** — reject invalid writes before they reach storage, scoped to a single key, a key prefix, or the whole store
 - **Reactivity** — watch keys or prefixes and observe every committed change via channels or observer traits; rolled-back transactions never notify
 - **Save/Load** — serialize the entire store contents into a single contiguous `Uint8Array` and reconstruct it from binary data
+- **Streaming snapshots** — same wire format as an incremental byte stream: memory stays bounded regardless of store size on both Rust (via `futures::Stream`) and JavaScript (native `ReadableStream`)
+- **OpenTelemetry** — opt-in `OtelStore` decorator emitting spans and metrics around every operation; the crate ships API-only, so your application plugs in any SDK/exporter
 - **Strict linting** — all warnings and clippy lints are enforced at the crate level
 
 ## Core Traits
@@ -24,10 +26,11 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 | [`store::Transaction`] | Extends `GetSet` with `commit` and `rollback` for atomic batches |
 | [`store::Store`] | Extends `GetSet` with `begin_tx` — starts a write transaction |
 | [`store::GetSetExt`] | Convenience methods: `set`, `get` (JSON-serialized) and `gets` (paginated JSON retrieval with optional query filtering) |
-| [`store::StoreExt`] | Save/Load the entire store contents as binary |
+| [`store::StoreExt`] | Save/Load the entire store contents as binary; `save_stream` streams it as byte chunks |
 | [`store::Validator`] | Validates writes before they are stored (attach per key, prefix, or globally) |
 | [`store::Observer`] | Receives change notifications after they become durable |
 | [`store::HookStore`] | Decorator adding validators and change watching to any store |
+| [`store::OtelStore`] | Feature-gated decorator adding OpenTelemetry traces and metrics to any store |
 
 ## Quick Start
 
@@ -228,6 +231,74 @@ assert_eq!(event.new_value, Some(b"hello".to_vec()));
 Hooks must not call back into the same store: stores guard their state with
 locks, so reentrant hook calls can deadlock.
 
+## Streaming Snapshots
+
+`save`/`load` materialize the whole snapshot in memory. For large stores,
+stream the same wire format instead:
+
+```rust,ignore
+use futures::{StreamExt, TryStreamExt};
+use oxkv::load_stream;
+
+// Serialize lazily: only one page of entries is held at a time.
+let mut chunks = store.save_stream();
+let mut file = std::fs::File::create("snapshot.oxkv")?;
+while let Some(chunk) = chunks.next().await {
+    file.write_all(&chunk?)?;
+}
+
+// Restore from any source of byte chunks — boundaries may split anywhere,
+// decoding is incremental and writes are staged in one transaction that is
+// committed only on success. Chunk errors fold into StoreError via Into.
+let file_stream = tokio_util::io::ReaderStream::new(
+    tokio::fs::File::open("snapshot.oxkv").await?,
+)
+.map_err(|e| oxkv::StoreError::Other(e.to_string()));
+let count = load_stream(&mut store, file_stream).await?;
+```
+
+Chunk boundaries always fall between records (`[u32 key len][key][u32 value
+len][value]`), so chunks concatenate to exactly what `save` returns and each
+decodes independently.
+
+## OpenTelemetry (feature `otel`)
+
+Enable the `otel` feature and wrap any backend:
+
+```rust,ignore
+use oxkv::{BTreeStore, OtelStore};
+
+let mut store = OtelStore::new(BTreeStore::default());
+// every operation below now emits spans + metrics; without an SDK installed
+// everything resolves to no-ops and the store behaves as a passthrough
+```
+
+The crate depends on the OpenTelemetry **API** only — no SDK or exporter. Your
+application installs providers globally before the first store operation:
+
+```rust,ignore
+let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+    .with_batch_exporter(opentelemetry_otlp::SpanExporter::builder().with_tonic().build()?)
+    .build();
+opentelemetry::global::set_tracer_provider(tracer_provider);
+// same idea for metrics via SdkMeterProvider / set_meter_provider
+```
+
+What you get per operation (`get`, `has`, `set`, `delete`, `gets`, `begin_tx`,
+`commit`, `rollback`):
+
+- One span named after the operation with `db.system = "oxkv"`,
+  `db.operation.name`, `oxkv.key` (single-key ops), `oxkv.existed` and
+  `oxkv.items`. Failures record an `exception` event plus `Error` status.
+- Spans root at the caller's current span, so store activity nests inside your
+  request traces; `commit`/`rollback` become children of their `begin_tx`.
+- Metrics under the meter `"oxkv"`: `oxkv.store.operations` counter
+  (`db.operation.name`, `oxkv.outcome` = `ok`/`error`) and
+  `oxkv.store.operation.duration` histogram in seconds.
+
+Decorators compose: `OtelStore::new(HookStore::new(RedbStore::new()?))` measures
+the full validation pipeline.
+
 ## WASM Bindings
 
 The WASM module in `src/wasm.rs` provides thread-safe wrappers for `BTreeStore`, exposing every store method to JavaScript as async promises.
@@ -260,6 +331,23 @@ const results = await store.gets(
 for (const { key, value } of results) {
     console.log(key, value); // value is the parsed JSON document
 }
+```
+
+### Streaming Snapshots from JavaScript
+
+Snapshot export/import works over native JS streams — pipe straight to a file,
+network upload or IndexedDB without buffering the whole store:
+
+```js
+// Export: ReadableStream of Uint8Array chunks
+const stream = store.saveStream();
+await stream.pipeTo(WritableStream.from(await fileHandle.createWritable()));
+
+// Import: any ReadableStream of Uint8Array chunks; chunk boundaries are
+// arbitrary and nothing is committed unless the entire payload decodes
+const fileStream = (await fileHandle.getFile()).stream();
+const count = await store.loadStream(fileStream);
+console.log(`restored ${count} entries`);
 ```
 
 ## Prerequisites
@@ -360,6 +448,7 @@ wasm-pack build --target web   # or nodejs, bundler, etc.
 - `src/store/btree.rs` — in-memory B-tree backend with transaction overlay support
 - `src/store/redb.rs` — persistent backend built on Redb with transaction isolation
 - `src/store/hooks.rs` — `HookStore` decorator providing validation hooks and change notifications
+- `src/store/otel.rs` — `OtelStore` decorator emitting OpenTelemetry spans and metrics (feature `otel`)
 - `src/query/mod.rs` — query AST types and the pest-based parser (`query/query.pest` grammar)
 - `src/query/json.rs` — compiled-query matcher evaluating queries against `serde_json::Value` documents
 
