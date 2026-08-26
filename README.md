@@ -257,9 +257,14 @@ let file_stream = tokio_util::io::ReaderStream::new(
 let count = load_stream(&mut store, file_stream).await?;
 ```
 
-Chunk boundaries always fall between records (`[u32 key len][key][u32 value
-len][value]`), so chunks concatenate to exactly what `save` returns and each
-decodes independently.
+Every snapshot starts with an 8-byte header — magic `"OXKV"` plus a
+little-endian format version — followed by length-prefixed records
+(`[u32 key len][key][u32 value len][value]`). Loaders validate the header
+before accepting any record: foreign payloads and unsupported future versions
+are rejected with a descriptive error instead of being mis-parsed, so format
+evolution is trackable. Chunk boundaries always fall between records, so
+chunks concatenate to exactly what `save` returns and each decodes
+independently.
 
 ## OpenTelemetry (feature `otel`)
 

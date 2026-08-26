@@ -305,6 +305,24 @@ pub trait StoreExt: Store {
     }
 }
 
+/// Magic bytes prefixing every snapshot: ASCII `"OXKV"`.
+const SNAPSHOT_MAGIC: [u8; 4] = *b"OXKV";
+
+/// Wire-format version written by this build and accepted by the load paths.
+///
+/// Bump on any incompatible change to the header or record layout; loaders
+/// reject other versions with a descriptive error instead of mis-parsing.
+const SNAPSHOT_VERSION: u32 = 1;
+
+/// Length of the snapshot header: magic bytes + little-endian version.
+const SNAPSHOT_HEADER_LEN: usize = SNAPSHOT_MAGIC.len() + 4;
+
+/// Appends the snapshot header (magic + version) to `buffer`.
+fn write_snapshot_header(buffer: &mut Vec<u8>) {
+    buffer.extend_from_slice(&SNAPSHOT_MAGIC);
+    buffer.extend_from_slice(&SNAPSHOT_VERSION.to_le_bytes());
+}
+
 /// Loads key-value pairs directly from an arbitrary source of byte chunks into
 /// `store`, inside one transaction committed on success.
 ///
@@ -322,7 +340,8 @@ pub trait StoreExt: Store {
 /// # Errors
 ///
 /// Returns a [`StoreError`] if any chunk errors (`E: Into<StoreError>`), the
-/// payload is malformed, the stream ends mid-record, or writing fails.
+/// payload is not an oxkv snapshot, its format version is unsupported, the
+/// stream ends mid-header or mid-record, or writing fails.
 ///
 /// Note that the returned future is only `Send` when the chunk stream is: this
 /// is inferred per call site rather than imposed by a trait, so non-`Send`
@@ -343,6 +362,12 @@ where
         let chunk = item.map_err(Into::into)?;
         decoder.push(chunk.as_ref());
 
+        // Validate and consume the versioned header before any record is
+        // accepted; unknown producers are rejected up-front.
+        if !decoder.header_validated && !decoder.validate_header()? {
+            continue; // header still arriving
+        }
+
         while let Some((key, value)) = decoder.next_record()? {
             tx.set_bytes(&key, &value).await?;
             count += 1;
@@ -350,6 +375,11 @@ where
         decoder.compact();
     }
 
+    if !decoder.header_validated {
+        return Err(StoreError::Serialization(
+            "Truncated snapshot header at end of input".into(),
+        ));
+    }
     if !decoder.is_empty() {
         return Err(StoreError::Serialization(
             "Truncated record at end of input".into(),
@@ -388,10 +418,14 @@ pub struct SaveStream<'a, S> {
 
 impl<'a, S> SaveStream<'a, S> {
     fn new(inner: &'a S) -> Self {
+        let mut buffer = Vec::with_capacity(SAVE_CHUNK_TARGET);
+        // The header leads every stream so even an empty store produces a
+        // valid, version-identifiable artifact.
+        write_snapshot_header(&mut buffer);
         Self {
             inner,
             cursor: None,
-            buffer: Vec::with_capacity(SAVE_CHUNK_TARGET),
+            buffer,
             pending: None,
             exhausted: false,
         }
@@ -504,6 +538,8 @@ fn encode_record(buffer: &mut Vec<u8>, key: &str, value: &[u8]) -> Result<()> {
 struct RecordDecoder {
     buf: Vec<u8>,
     pos: usize,
+    /// Set once the snapshot header (magic + version) has been validated.
+    header_validated: bool,
 }
 
 impl RecordDecoder {
@@ -511,6 +547,7 @@ impl RecordDecoder {
         Self {
             buf: Vec::new(),
             pos: 0,
+            header_validated: false,
         }
     }
 
@@ -521,6 +558,35 @@ impl RecordDecoder {
     /// True when no undecoded bytes remain.
     fn is_empty(&self) -> bool {
         self.pos >= self.buf.len()
+    }
+
+    /// Validates and consumes the snapshot header once enough bytes have
+    /// arrived. Returns `Ok(false)` while more bytes are needed; an error
+    /// means the payload can never be a snapshot this build accepts.
+    fn validate_header(&mut self) -> Result<bool> {
+        let avail = &self.buf[self.pos..];
+        if avail.len() >= SNAPSHOT_MAGIC.len() && avail[..SNAPSHOT_MAGIC.len()] != SNAPSHOT_MAGIC {
+            return Err(StoreError::Serialization(
+                "not an oxkv snapshot: missing OXKV magic".into(),
+            ));
+        }
+        if avail.len() < SNAPSHOT_HEADER_LEN {
+            return Ok(false); // header still arriving; magic already plausible
+        }
+        let version = u32::from_le_bytes([
+            avail[SNAPSHOT_MAGIC.len()],
+            avail[SNAPSHOT_MAGIC.len() + 1],
+            avail[SNAPSHOT_MAGIC.len() + 2],
+            avail[SNAPSHOT_MAGIC.len() + 3],
+        ]);
+        if version != SNAPSHOT_VERSION {
+            return Err(StoreError::Serialization(format!(
+                "unsupported oxkv snapshot version {version} (this build reads version {SNAPSHOT_VERSION})"
+            )));
+        }
+        self.pos += SNAPSHOT_HEADER_LEN;
+        self.header_validated = true;
+        Ok(true)
     }
 
     /// Attempts to decode the next complete record; returns `Ok(None)` while
@@ -838,7 +904,10 @@ mod tests {
             .returning(|_, _, _| Ok(vec![]));
 
         let bytes = mock_store.save().await.unwrap();
-        assert!(bytes.is_empty());
+        // Even an empty store yields a valid, version-identifiable artifact.
+        let mut expected = Vec::new();
+        write_snapshot_header(&mut expected);
+        assert_eq!(bytes, expected);
     }
 
     #[tokio::test]
@@ -847,6 +916,7 @@ mod tests {
 
         // Craft a binary payload for single key-value ("key1", "val1")
         let mut payload = Vec::new();
+        write_snapshot_header(&mut payload);
         // key len = 4, key = "key1"
         payload.extend_from_slice(&4u32.to_le_bytes());
         payload.extend_from_slice(b"key1");
@@ -1124,12 +1194,22 @@ mod tests {
     // -- streaming save/load -------------------------------------------------
 
     /// Encodes records the same way the save path does, for building payloads.
-    fn encode_records(pairs: &[(&str, &[u8])]) -> Vec<u8> {
+    /// Builds a complete snapshot payload (header + records) for feeding the
+    /// load paths.
+    fn encode_snapshot(pairs: &[(&str, &[u8])]) -> Vec<u8> {
         let mut buf = Vec::new();
+        write_snapshot_header(&mut buf);
         for (key, value) in pairs {
             encode_record(&mut buf, key, value).unwrap();
         }
         buf
+    }
+
+    /// Raw header bytes for an arbitrary format version.
+    fn raw_header(version: u32) -> Vec<u8> {
+        let mut header = SNAPSHOT_MAGIC.to_vec();
+        header.extend_from_slice(&version.to_le_bytes());
+        header
     }
 
     #[tokio::test]
@@ -1199,12 +1279,12 @@ mod tests {
         all_pairs.push(("k000512", b"tail"));
         all_pairs.push(("k000513", b"tail"));
         all_pairs.push(("k000514", b"tail"));
-        let expected = encode_records(&all_pairs);
+        let expected = encode_snapshot(&all_pairs);
         assert_eq!(streamed, expected);
     }
 
     #[tokio::test]
-    async fn test_save_stream_on_empty_store_yields_nothing() {
+    async fn test_save_stream_on_empty_store_yields_header_only() {
         let mut mock_store = MockStore::new();
         mock_store
             .expect_gets_bytes()
@@ -1212,6 +1292,9 @@ mod tests {
             .returning(|_, _, _| Ok(vec![]));
 
         let mut chunks = mock_store.save_stream();
+        // Exactly one chunk: the header alone is a complete empty snapshot.
+        let first = chunks.next().await.unwrap().unwrap();
+        assert_eq!(first.len(), SNAPSHOT_HEADER_LEN);
         assert!(chunks.next().await.is_none());
     }
 
@@ -1222,7 +1305,7 @@ mod tests {
             ("kk".into(), Vec::new()),
             ("kkk-longer-key".into(), vec![7u8; 40]),
         ];
-        let payload = encode_records(
+        let payload = encode_snapshot(
             &pairs
                 .iter()
                 .map(|(k, v)| (k.as_str(), v.as_slice()))
@@ -1267,7 +1350,7 @@ mod tests {
             ("kk2", b"".as_slice()),
             ("k3", b"xyz"),
         ];
-        let payload = encode_records(&pairs);
+        let payload = encode_snapshot(&pairs);
 
         let pair_count = pairs.len();
         for split in 1..payload.len() {
@@ -1318,12 +1401,85 @@ mod tests {
         });
 
         // A complete record followed by a dangling length header.
-        let mut payload = encode_records(&[("k", b"v")]);
+        let mut payload = encode_snapshot(&[("k", b"v")]);
         payload.extend_from_slice(&99u32.to_le_bytes());
 
         let err = load_stream(
             &mut mock_store,
             stream::iter([Ok::<Vec<u8>, StoreError>(payload)]),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, StoreError::Serialization(_)));
+    }
+
+    #[tokio::test]
+    async fn test_load_stream_rejects_foreign_magic_before_any_writes() {
+        let mut mock_store = MockStore::new();
+        mock_store.expect_begin_tx().once().returning(|| {
+            let mut tx = MockTransaction::new();
+            tx.expect_set_bytes().never();
+            tx.expect_commit().never();
+            Ok(tx)
+        });
+
+        // Structurally plausible payload with the wrong magic.
+        let mut payload = b"JUNK".to_vec();
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend(encode_snapshot(&[("k", b"v")])[SNAPSHOT_HEADER_LEN..].to_vec());
+
+        let err = load_stream(
+            &mut mock_store,
+            stream::iter([Ok::<Vec<u8>, StoreError>(payload)]),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, StoreError::Serialization(ref msg) if msg.contains("magic")),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_load_stream_rejects_unknown_format_version() {
+        let mut mock_store = MockStore::new();
+        mock_store.expect_begin_tx().once().returning(|| {
+            let mut tx = MockTransaction::new();
+            tx.expect_set_bytes().never();
+            tx.expect_commit().never();
+            Ok(tx)
+        });
+
+        let mut payload = raw_header(SNAPSHOT_VERSION + 1);
+        payload.extend(encode_snapshot(&[("k", b"v")])[SNAPSHOT_HEADER_LEN..].to_vec());
+
+        let err = load_stream(
+            &mut mock_store,
+            stream::iter([Ok::<Vec<u8>, StoreError>(payload)]),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, StoreError::Serialization(ref msg)
+                if msg.contains("unsupported oxkv snapshot version")),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_load_stream_rejects_truncated_header() {
+        let mut mock_store = MockStore::new();
+        mock_store.expect_begin_tx().once().returning(|| {
+            let mut tx = MockTransaction::new();
+            tx.expect_set_bytes().never();
+            tx.expect_commit().never();
+            Ok(tx)
+        });
+
+        // Only three of the eight header bytes ever arrive.
+        let err = load_stream(
+            &mut mock_store,
+            stream::iter([Ok::<Vec<u8>, StoreError>(b"OXK".to_vec())]),
         )
         .await
         .unwrap_err();

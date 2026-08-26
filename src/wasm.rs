@@ -740,6 +740,15 @@ mod tests {
         let mut entries = Vec::new();
         let mut data = snapshot;
 
+        // Validate and skip the snapshot header before parsing records.
+        assert!(
+            data.len() >= 8 && &data[..4] == b"OXKV",
+            "snapshot missing OXKV magic"
+        );
+        let version = u32::from_le_bytes(data[4..8].try_into().expect("exactly 4 bytes"));
+        assert_eq!(version, 1, "unexpected snapshot format version");
+        data = &data[8..];
+
         while !data.is_empty() {
             let key_len = u32::from_le_bytes(
                 take(&mut data, 4, "truncated key length header in snapshot")
@@ -1241,9 +1250,12 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    async fn save_empty_store_produces_empty_buffer() {
+    async fn save_empty_store_produces_header_only_buffer() {
         let js_store = JsBTreeStore::new();
-        assert!(to_bytes(&ok(js_store.save().await)).is_empty());
+        // Even an empty store yields a valid, version-identifiable snapshot.
+        let mut expected = b"OXKV".to_vec();
+        expected.extend_from_slice(&1u32.to_le_bytes());
+        assert_eq!(to_bytes(&ok(js_store.save().await)), expected);
     }
 
     #[wasm_bindgen_test]
