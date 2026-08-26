@@ -564,9 +564,15 @@ mod tests {
     struct SharedSpanExporter(Arc<Mutex<Vec<SpanData>>>);
 
     impl SpanExporter for SharedSpanExporter {
-        async fn export(&self, batch: Vec<SpanData>) -> OTelSdkResult {
+        // Synchronous body: the batch is appended immediately, so we return an
+        // already-ready future rather than declaring the method `async` (which
+        // clippy::unused_async_trait_impl correctly flags as needless).
+        fn export(
+            &self,
+            batch: Vec<SpanData>,
+        ) -> impl std::future::Future<Output = OTelSdkResult> + Send {
             self.0.lock().unwrap().extend(batch);
-            Ok(())
+            std::future::ready(Ok(()))
         }
     }
 
