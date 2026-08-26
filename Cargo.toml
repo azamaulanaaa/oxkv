@@ -1,11 +1,11 @@
 [package]
 name = "oxkv"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
-description = "A transactional key-value store with WASM bindings, cursor pagination."
+description = "A transactional key-value store with WASM bindings, cursor pagination, streaming snapshots, and optional OpenTelemetry instrumentation."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/azamaulanaaa/oxkv"
-keywords = ["wasm", "keyvalue", "kv-store", "transaction"]
+keywords = ["wasm", "keyvalue", "kv-store", "transaction", "opentelemetry"]
 categories = ["wasm", "database", "data-structures"]
 readme = "README.md"
 
