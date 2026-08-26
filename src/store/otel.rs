@@ -533,11 +533,9 @@ impl<T: Transaction + Send + Sync> Transaction for OtelTx<T> {
 // ---------------------------------------------------------------------------
 // Tests
 //
-// Delegation tests run against whatever global providers happen to be
-// installed (none, in CI): they verify the decorator preserves semantics.
-// Emission tests install a real SDK provider exactly once via `fixture()` and
-// filter exported data by per-test unique keys, so parallel tests cannot
-// interfere with each other's assertions.
+// Gated on native targets only: the SDK-based emission tests install global
+// providers, and the opentelemetry_sdk dev-dependency is native-only (its
+// rand/getrandom chain needs a wasm-specific backend we don't ship).
 //
 // `await_holding_lock` is intentional: `telemetry_lock` serializes each test's
 // whole body because telemetry flows through process-global providers. Each
@@ -545,7 +543,7 @@ impl<T: Transaction + Send + Sync> Transaction for OtelTx<T> {
 // blocked behind the guard while it is held across an await point.
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, feature = "otel", not(target_arch = "wasm32")))]
 #[allow(clippy::await_holding_lock)]
 mod tests {
     use std::collections::HashMap;

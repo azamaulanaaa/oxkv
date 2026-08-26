@@ -46,21 +46,19 @@ name = "query_bench"
 harness = false
 
 [dev-dependencies]
-# Only used by the `otel` feature's tests (real SDK provider + in-memory
-# exporter); declared unconditionally because dev-dependencies cannot be gated
-# on a feature of this crate.
+mockall = "0.15"
+tokio = { version = "1.53.1", features = ["test-util", "macros"] }
+
+# Criterion pulls in Rayon, which does not compile for wasm32; benches are a
+# native-only concern. Same for the OpenTelemetry SDK used by the `otel`
+# feature's tests (its rand/getrandom chain needs a wasm-specific backend).
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = "0.7"
 opentelemetry_sdk = { version = "0.32", default-features = false, features = [
   "trace",
   "metrics",
   "testing",
 ] }
-mockall = "0.15"
-tokio = { version = "1.53.1", features = ["test-util", "macros"] }
-
-# Criterion pulls in Rayon, which does not compile for wasm32; benches are a
-# native-only concern.
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-criterion = "0.7"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
@@ -68,6 +66,8 @@ wasm-bindgen-futures = "0.4"
 console_error_panic_hook = "0.1"
 js-sys = "0.3"
 serde-wasm-bindgen = "0.6"
+wasm-streams = "0.6"
+web-sys = { version = "0.3", features = ["ReadableStream"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"

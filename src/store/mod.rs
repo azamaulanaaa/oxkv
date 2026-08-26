@@ -11,7 +11,12 @@
 //!
 //! All operations return a [`Result`] with a [`StoreError`] on failure.
 
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
 use async_trait::async_trait;
+use futures::stream::{self, Stream, StreamExt};
 use thiserror::Error;
 
 use crate::query::{eval as eval_json_query, parse as parse_query};
@@ -244,115 +249,320 @@ pub trait Store: GetSet {
 pub trait StoreExt: Store {
     /// Serializes all key-value pairs into a single contiguous `Vec<u8>`.
     ///
+    /// Equivalent to concatenating every chunk yielded by
+    /// [`save_stream`](Self::save_stream). For large stores prefer streaming
+    /// directly to the destination instead.
+    ///
     /// # Errors
     ///
     /// Returns a [`StoreError`] if retrieval fails.
-    async fn save(&self) -> Result<Vec<u8>> {
-        const BATCH_SIZE: u32 = 256;
-        let mut buffer = Vec::with_capacity(4096);
-        let mut cursor: Option<String> = None;
-
-        loop {
-            let batch = self
-                .gets_bytes(Some(BATCH_SIZE), Direction::Next, (cursor.clone(), None))
-                .await?;
-
-            if batch.is_empty() {
-                break;
-            }
-
-            let is_last_batch = batch.len() < BATCH_SIZE as usize;
-            let mut processed = 0;
-
-            for kv in &batch {
-                // Avoid duplicate processing if cursor bound is inclusive
-                if cursor.as_deref() == Some(&kv.key) {
-                    continue;
-                }
-
-                let k_bytes = kv.key.as_bytes();
-                let key_len = u32::try_from(k_bytes.len())
-                    .map_err(|e| StoreError::Serialization(e.to_string()))?;
-                let val_len = u32::try_from(kv.value.len())
-                    .map_err(|e| StoreError::Serialization(e.to_string()))?;
-
-                buffer.extend_from_slice(&key_len.to_le_bytes());
-                buffer.extend_from_slice(k_bytes);
-                buffer.extend_from_slice(&val_len.to_le_bytes());
-                buffer.extend_from_slice(&kv.value);
-                processed += 1;
-            }
-
-            if is_last_batch || processed == 0 {
-                break;
-            }
-            cursor = batch.last().map(|kv| kv.key.clone());
+    async fn save(&self) -> Result<Vec<u8>>
+    where
+        // Required to drive the SaveStream returned by save_stream.
+        Self: Sync + Sized,
+    {
+        let mut out = Vec::with_capacity(4096);
+        let mut chunks = self.save_stream();
+        while let Some(chunk) = chunks.next().await {
+            out.extend_from_slice(&chunk?);
         }
+        Ok(out)
+    }
 
-        Ok(buffer)
+    /// Streams the store's serialized form as byte chunks.
+    ///
+    /// The returned [`futures::Stream`] paginates through the store lazily and
+    /// yields chunks of at least 16 KiB (except for the final chunk), so memory
+    /// use stays bounded regardless of store size. Chunks concatenate to exactly
+    /// what [`save`](Self::save) returns; boundaries always fall between whole
+    /// records, so each chunk can be decoded independently downstream.
+    fn save_stream(&self) -> Pin<Box<dyn Stream<Item = Result<Vec<u8>>> + Send + '_>>
+    where
+        // The returned stream must itself be Send, which requires the inner
+        // batch-read future (&self) to be Send; Sized because the concrete
+        // SaveStream is boxed here.
+        Self: Sync + Sized,
+    {
+        Box::pin(SaveStream::new(self))
     }
 
     /// Loads all key-value pairs directly from a `&[u8]` slice into the store.
     ///
+    /// Equivalent to [`load_stream`](fn@load_stream) over a single chunk.
+    ///
     /// # Errors
     ///
     /// Returns a [`StoreError`] if the payload is malformed or writing fails.
-    async fn load(&mut self, mut data: &[u8]) -> Result<usize> {
-        let mut tx = self.begin_tx()?;
-        let mut count = 0;
-
-        while !data.is_empty() {
-            // Read key length
-            if data.len() < 4 {
-                return Err(StoreError::Serialization(
-                    "Truncated key length header".into(),
-                ));
-            }
-            let key_len_bytes: [u8; 4] = data[..4].try_into().map_err(|e| {
-                StoreError::Serialization(format!("Invalid key length header: {e}"))
-            })?;
-            let key_len = usize::try_from(u32::from_le_bytes(key_len_bytes))
-                .map_err(|e| StoreError::Serialization(e.to_string()))?;
-            data = &data[4..];
-
-            // Read key slice
-            if data.len() < key_len {
-                return Err(StoreError::Serialization("Truncated key data".into()));
-            }
-            let key = std::str::from_utf8(&data[..key_len])?;
-            data = &data[key_len..];
-
-            // Read value length
-            if data.len() < 4 {
-                return Err(StoreError::Serialization(
-                    "Truncated value length header".into(),
-                ));
-            }
-            let val_len_bytes: [u8; 4] = data[..4].try_into().map_err(|e| {
-                StoreError::Serialization(format!("Invalid value length header: {e}"))
-            })?;
-            let val_len = usize::try_from(u32::from_le_bytes(val_len_bytes))
-                .map_err(|e| StoreError::Serialization(e.to_string()))?;
-            data = &data[4..];
-
-            // Read value slice
-            if data.len() < val_len {
-                return Err(StoreError::Serialization("Truncated value data".into()));
-            }
-            let val = &data[..val_len];
-            data = &data[val_len..];
-
-            // Insert into the transaction without cloning
-            tx.set_bytes(key, val).await?;
-            count += 1;
-        }
-
-        tx.commit().await?;
-        Ok(count)
+    async fn load(&mut self, data: &[u8]) -> Result<usize>
+    where
+        Self: Sized,
+    {
+        load_stream(
+            self,
+            stream::iter(std::iter::once(Ok::<_, StoreError>(data))),
+        )
+        .await
     }
 }
 
+/// Loads key-value pairs directly from an arbitrary source of byte chunks into
+/// `store`, inside one transaction committed on success.
+///
+/// This is the streaming counterpart of [`StoreExt::load`]. Chunks may split
+/// anywhere — mid-header, mid-key, mid-value — and arrive in any size; decoding
+/// is fully incremental, so memory stays bounded by the largest pending record
+/// rather than the total payload. Typical sources: files, network bodies, or
+/// JS `ReadableStream`s bridged via `wasm-streams` (see the WASM bindings).
+///
+/// A failure leaves `store` untouched: the transaction is dropped without
+/// commit, discarding all staged writes.
+///
+/// Returns the number of records loaded.
+///
+/// # Errors
+///
+/// Returns a [`StoreError`] if any chunk errors (`E: Into<StoreError>`), the
+/// payload is malformed, the stream ends mid-record, or writing fails.
+///
+/// Note that the returned future is only `Send` when the chunk stream is: this
+/// is inferred per call site rather than imposed by a trait, so non-`Send`
+/// sources (such as `wasm-streams` adapters on `wasm32`) are accepted there.
+pub async fn load_stream<T, C, E, S>(store: &mut T, chunks: S) -> Result<usize>
+where
+    T: Store + ?Sized,
+    C: AsRef<[u8]>,
+    E: Into<StoreError>,
+    S: Stream<Item = std::result::Result<C, E>> + Unpin,
+{
+    let mut tx = store.begin_tx()?;
+    let mut count = 0usize;
+    let mut decoder = RecordDecoder::new();
+    let mut chunks = chunks;
+
+    while let Some(item) = chunks.next().await {
+        let chunk = item.map_err(Into::into)?;
+        decoder.push(chunk.as_ref());
+
+        while let Some((key, value)) = decoder.next_record()? {
+            tx.set_bytes(&key, &value).await?;
+            count += 1;
+        }
+        decoder.compact();
+    }
+
+    if !decoder.is_empty() {
+        return Err(StoreError::Serialization(
+            "Truncated record at end of input".into(),
+        ));
+    }
+
+    tx.commit().await?;
+    Ok(count)
+}
+
 impl<T: Store> StoreExt for T {}
+
+/// Target size above which [`SaveStream`] flushes its internal buffer.
+const SAVE_CHUNK_TARGET: usize = 16 * 1024;
+
+/// Batch size used for paginated reads while streaming a save.
+const SAVE_BATCH_SIZE: u32 = 256;
+
+/// In-flight batch read held by [`SaveStream`] between polls.
+type PendingBatch<'a> = Pin<Box<dyn Future<Output = Result<Vec<KeyValue>>> + Send + 'a>>;
+
+/// A [`futures::Stream`] yielding the store's serialization as byte chunks.
+///
+/// Created via [`StoreExt::save_stream`]. Records are emitted in ascending key
+/// order; boundaries always fall between records, so each chunk decodes
+/// independently. Reading is lazy: nothing is fetched until polled, and only
+/// one page of 256 entries is held at a time.
+#[must_use = "streams do nothing unless polled"]
+pub struct SaveStream<'a, S> {
+    inner: &'a S,
+    cursor: Option<String>,
+    buffer: Vec<u8>,
+    pending: Option<PendingBatch<'a>>,
+    exhausted: bool,
+}
+
+impl<'a, S> SaveStream<'a, S> {
+    fn new(inner: &'a S) -> Self {
+        Self {
+            inner,
+            cursor: None,
+            buffer: Vec::with_capacity(SAVE_CHUNK_TARGET),
+            pending: None,
+            exhausted: false,
+        }
+    }
+}
+
+impl<S> Stream for SaveStream<'_, S>
+where
+    S: GetSet + Sync,
+{
+    type Item = Result<Vec<u8>>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+
+        loop {
+            // Drain the in-flight batch read first.
+            if let Some(fut) = this.pending.as_mut() {
+                match fut.as_mut().poll(cx) {
+                    Poll::Ready(batch) => {
+                        this.pending = None;
+                        let batch = match batch {
+                            Ok(batch) => batch,
+                            Err(e) => {
+                                this.exhausted = true;
+                                return Poll::Ready(Some(Err(e)));
+                            }
+                        };
+
+                        if batch.is_empty() {
+                            this.exhausted = true;
+                        } else {
+                            let mut last_key = None;
+                            let mut processed = 0;
+                            for kv in &batch {
+                                // Skip the inclusive lower bound carried over from
+                                // the previous page.
+                                if this.cursor.as_deref() == Some(kv.key.as_str()) {
+                                    continue;
+                                }
+                                match encode_record(&mut this.buffer, &kv.key, &kv.value) {
+                                    Ok(()) => {
+                                        processed += 1;
+                                        last_key = Some(kv.key.clone());
+                                    }
+                                    Err(e) => {
+                                        this.exhausted = true;
+                                        return Poll::Ready(Some(Err(e)));
+                                    }
+                                }
+                            }
+                            this.cursor = last_key;
+
+                            let is_last_batch = batch.len() < SAVE_BATCH_SIZE as usize;
+                            // Also stop when everything was skipped to avoid
+                            // re-fetching the same inclusive-cursor page forever.
+                            if is_last_batch || processed == 0 {
+                                this.exhausted = true;
+                            }
+                        }
+                    }
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+
+            // Yield once enough data has accumulated.
+            if this.buffer.len() >= SAVE_CHUNK_TARGET {
+                return Poll::Ready(Some(Ok(std::mem::take(&mut this.buffer))));
+            }
+
+            if this.exhausted {
+                return if this.buffer.is_empty() {
+                    Poll::Ready(None)
+                } else {
+                    Poll::Ready(Some(Ok(std::mem::take(&mut this.buffer))))
+                };
+            }
+
+            // Fetch the next page. The future borrows the inner store, which is
+            // why SaveStream carries a lifetime instead of owning its source.
+            let inner = this.inner;
+            let cursor = this.cursor.clone();
+            this.pending = Some(Box::pin(async move {
+                inner
+                    .gets_bytes(Some(SAVE_BATCH_SIZE), Direction::Next, (cursor, None))
+                    .await
+            }));
+        }
+    }
+}
+
+/// Appends one length-prefixed record (`[u32 key len][key][u32 value len][value]`)
+/// to `buffer`.
+fn encode_record(buffer: &mut Vec<u8>, key: &str, value: &[u8]) -> Result<()> {
+    let key_len = u32::try_from(key.len())
+        .map_err(|e| StoreError::Serialization(format!("key too long: {e}")))?;
+    let val_len = u32::try_from(value.len())
+        .map_err(|e| StoreError::Serialization(format!("value too long: {e}")))?;
+
+    buffer.reserve(8 + key.len() + value.len());
+    buffer.extend_from_slice(&key_len.to_le_bytes());
+    buffer.extend_from_slice(key.as_bytes());
+    buffer.extend_from_slice(&val_len.to_le_bytes());
+    buffer.extend_from_slice(value);
+    Ok(())
+}
+
+/// Incremental decoder for the save/load record format, tolerant of arbitrary
+/// chunk boundaries.
+struct RecordDecoder {
+    buf: Vec<u8>,
+    pos: usize,
+}
+
+impl RecordDecoder {
+    fn new() -> Self {
+        Self {
+            buf: Vec::new(),
+            pos: 0,
+        }
+    }
+
+    fn push(&mut self, chunk: &[u8]) {
+        self.buf.extend_from_slice(chunk);
+    }
+
+    /// True when no undecoded bytes remain.
+    fn is_empty(&self) -> bool {
+        self.pos >= self.buf.len()
+    }
+
+    /// Attempts to decode the next complete record; returns `Ok(None)` while
+    /// more bytes are needed.
+    fn next_record(&mut self) -> Result<Option<(String, Vec<u8>)>> {
+        let avail = &self.buf[self.pos..];
+        if avail.len() < 4 {
+            return Ok(None);
+        }
+        let key_len = u32::from_le_bytes([avail[0], avail[1], avail[2], avail[3]]) as usize;
+        if avail.len() < 4 + key_len {
+            return Ok(None);
+        }
+        let value_start = 4 + key_len;
+        if avail.len() < value_start + 4 {
+            return Ok(None);
+        }
+        let val_len = u32::from_le_bytes([
+            avail[value_start],
+            avail[value_start + 1],
+            avail[value_start + 2],
+            avail[value_start + 3],
+        ]) as usize;
+        if avail.len() < value_start + 4 + val_len {
+            return Ok(None);
+        }
+
+        let key = std::str::from_utf8(&avail[4..value_start])?.to_string();
+        let value = avail[value_start + 4..value_start + 4 + val_len].to_vec();
+        self.pos += value_start + 4 + val_len;
+        Ok(Some((key, value)))
+    }
+
+    /// Drops fully consumed prefix bytes. Called between chunks so the buffer
+    /// never grows beyond the largest pending record plus one chunk.
+    fn compact(&mut self) {
+        if self.pos > 0 && self.pos * 2 >= self.buf.len() {
+            self.buf.drain(..self.pos);
+            self.pos = 0;
+        }
+    }
+}
 
 /// Extension methods for common serialization formats (BINCODE).
 ///
@@ -478,6 +688,8 @@ impl<T: GetSet> GetSetExt for T {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use super::*;
 
     mockall::mock! {
@@ -907,5 +1119,310 @@ mod tests {
             .expect("gets succeeds");
         let keys: Vec<&str> = found.iter().map(|kv| kv.key.as_str()).collect();
         assert_eq!(keys, ["k8", "k7"]);
+    }
+
+    // -- streaming save/load -------------------------------------------------
+
+    /// Encodes records the same way the save path does, for building payloads.
+    fn encode_records(pairs: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        for (key, value) in pairs {
+            encode_record(&mut buf, key, value).unwrap();
+        }
+        buf
+    }
+
+    #[tokio::test]
+    async fn test_save_stream_chunks_concatenate_to_expected_encoding() {
+        let mut mock_store = MockStore::new();
+        // Two full pages plus a short final page forces multiple fetches and
+        // exercises the inclusive-cursor skip between pages.
+        let page = |offset: usize| -> Vec<KeyValue> {
+            (0..SAVE_BATCH_SIZE)
+                .map(|i| KeyValue {
+                    key: format!("k{:06}", offset + i as usize),
+                    value: format!("v{}", offset + i as usize).into_bytes(),
+                })
+                .collect()
+        };
+        mock_store
+            .expect_gets_bytes()
+            .times(1)
+            .withf(|limit, dir, cursor| {
+                *limit == Some(SAVE_BATCH_SIZE) && *dir == Direction::Next && cursor.0.is_none()
+            })
+            .returning(move |_, _, _| Ok(page(0)));
+        mock_store
+            .expect_gets_bytes()
+            .times(1)
+            .withf(|limit, dir, cursor| {
+                *limit == Some(SAVE_BATCH_SIZE)
+                    && *dir == Direction::Next
+                    && cursor.0.as_deref() == Some("k000255")
+            })
+            .returning(move |_, _, _| Ok(page(256)));
+        mock_store
+            .expect_gets_bytes()
+            .times(1)
+            .withf(|limit, dir, cursor| {
+                *limit == Some(SAVE_BATCH_SIZE)
+                    && *dir == Direction::Next
+                    && cursor.0.as_deref() == Some("k000511")
+            })
+            .returning(|_, _, _| {
+                Ok((0..3)
+                    .map(|i| KeyValue {
+                        key: format!("k{:06}", 512 + i),
+                        value: b"tail".to_vec(),
+                    })
+                    .collect())
+            });
+
+        let streamed = {
+            let mut collected = Vec::new();
+            let mut chunks = mock_store.save_stream();
+            while let Some(chunk) = chunks.next().await {
+                collected.extend_from_slice(&chunk.unwrap());
+            }
+            collected
+        };
+        // Compare against an independently encoded payload rather than calling
+        // save(), whose pagination would exhaust the mock's one-shot pages.
+        let mut all_pairs: Vec<(&str, &[u8])> = (0..512)
+            .map(|i| {
+                let key: &str = &*Box::leak(format!("k{i:06}").into_boxed_str());
+                let val: &[u8] = &*Box::leak(format!("v{i}").into_bytes().into_boxed_slice());
+                // Leak is fine in tests; keeps lifetimes simple.
+                (key, val)
+            })
+            .collect();
+        all_pairs.push(("k000512", b"tail"));
+        all_pairs.push(("k000513", b"tail"));
+        all_pairs.push(("k000514", b"tail"));
+        let expected = encode_records(&all_pairs);
+        assert_eq!(streamed, expected);
+    }
+
+    #[tokio::test]
+    async fn test_save_stream_on_empty_store_yields_nothing() {
+        let mut mock_store = MockStore::new();
+        mock_store
+            .expect_gets_bytes()
+            .once()
+            .returning(|_, _, _| Ok(vec![]));
+
+        let mut chunks = mock_store.save_stream();
+        assert!(chunks.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_load_stream_survives_single_byte_chunks() {
+        let pairs: Vec<(String, Vec<u8>)> = vec![
+            ("a".into(), b"apple".to_vec()),
+            ("kk".into(), Vec::new()),
+            ("kkk-longer-key".into(), vec![7u8; 40]),
+        ];
+        let payload = encode_records(
+            &pairs
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_slice()))
+                .collect::<Vec<_>>(),
+        );
+
+        let pair_count = pairs.len();
+        for chunk_size in [1usize, 2, 3, 4, 5, 7, 11] {
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let mut mock_store = MockStore::new();
+            let tx_log = Arc::clone(&log);
+            mock_store.expect_begin_tx().once().returning(move || {
+                let mut tx = MockTransaction::new();
+                let log = Arc::clone(&tx_log);
+                tx.expect_set_bytes()
+                    .times(pair_count)
+                    .withf(move |key: &str, value: &[u8]| {
+                        log.lock().unwrap().push((key.to_string(), value.to_vec()));
+                        true
+                    })
+                    .returning(|_, _| Ok(None));
+                tx.expect_commit().once().returning(|| Ok(()));
+                Ok(tx)
+            });
+
+            let chunks = payload
+                .chunks(chunk_size)
+                .map(<[u8]>::to_vec)
+                .map(Ok::<_, StoreError>);
+            let loaded = load_stream(&mut mock_store, stream::iter(chunks))
+                .await
+                .unwrap();
+            assert_eq!(loaded, pairs.len(), "chunk_size {chunk_size}");
+            assert_eq!(*log.lock().unwrap(), pairs, "chunk_size {chunk_size}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_load_stream_splits_at_every_offset() {
+        let pairs = [
+            ("k1", "v1".as_bytes()),
+            ("kk2", b"".as_slice()),
+            ("k3", b"xyz"),
+        ];
+        let payload = encode_records(&pairs);
+
+        let pair_count = pairs.len();
+        for split in 1..payload.len() {
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let mut mock_store = MockStore::new();
+            let tx_log = Arc::clone(&log);
+            mock_store.expect_begin_tx().once().returning(move || {
+                let mut tx = MockTransaction::new();
+                let log = Arc::clone(&tx_log);
+                tx.expect_set_bytes()
+                    .times(pair_count)
+                    .withf(move |key: &str, value: &[u8]| {
+                        log.lock().unwrap().push((key.to_string(), value.to_vec()));
+                        true
+                    })
+                    .returning(|_, _| Ok(None));
+                tx.expect_commit().once().returning(|| Ok(()));
+                Ok(tx)
+            });
+
+            let first = payload[..split].to_vec();
+            let rest = payload[split..].to_vec();
+            let loaded = load_stream(
+                &mut mock_store,
+                stream::iter([Ok::<Vec<u8>, StoreError>(first), Ok(rest)]),
+            )
+            .await
+            .unwrap();
+            assert_eq!(loaded, pairs.len(), "split at {split}");
+            let expected: Vec<(String, Vec<u8>)> = pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), v.to_vec()))
+                .collect();
+            assert_eq!(*log.lock().unwrap(), expected, "split at {split}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_load_stream_truncated_at_end_errors_without_commit() {
+        let mut mock_store = MockStore::new();
+        mock_store.expect_begin_tx().once().returning(|| {
+            let mut tx = MockTransaction::new();
+            // Complete records are staged before the truncation is discovered;
+            // they must never be committed.
+            tx.expect_set_bytes().once().returning(|_, _| Ok(None));
+            tx.expect_commit().never();
+            Ok(tx)
+        });
+
+        // A complete record followed by a dangling length header.
+        let mut payload = encode_records(&[("k", b"v")]);
+        payload.extend_from_slice(&99u32.to_le_bytes());
+
+        let err = load_stream(
+            &mut mock_store,
+            stream::iter([Ok::<Vec<u8>, StoreError>(payload)]),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, StoreError::Serialization(_)));
+    }
+
+    #[tokio::test]
+    async fn test_load_stream_propagates_chunk_errors_and_skips_commit() {
+        let mut mock_store = MockStore::new();
+        // The transaction is opened up-front so writes can be staged as chunks
+        // arrive; a mid-stream error drops it (rollback) before any commit.
+        mock_store.expect_begin_tx().once().returning(|| {
+            let mut tx = MockTransaction::new();
+            tx.expect_set_bytes().never();
+            tx.expect_commit().never();
+            Ok(tx)
+        });
+
+        let result: Result<usize> = load_stream(
+            &mut mock_store,
+            stream::iter([Err::<std::vec::Vec<u8>, _>("")]),
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_save_load_stream_round_trip_through_btree_store() {
+        let mut source = BTreeStore::default();
+        for i in 0..600u32 {
+            source
+                .set_bytes(&format!("key{i:04}"), format!("value-{i}").as_bytes())
+                .await
+                .unwrap();
+        }
+
+        // Stream the save into a fresh store, chunk by chunk.
+        let mut restored = BTreeStore::default();
+        {
+            let mut chunks = source.save_stream();
+            let mut pending: Vec<Vec<u8>> = Vec::new();
+            while let Some(chunk) = chunks.next().await {
+                pending.push(chunk.unwrap());
+            }
+
+            let count = load_stream(
+                &mut restored,
+                stream::iter(pending.into_iter().map(Ok::<_, StoreError>)),
+            )
+            .await
+            .unwrap();
+            assert_eq!(count, 600);
+        }
+
+        let original = source
+            .gets_bytes(None, Direction::Next, (None, None))
+            .await
+            .unwrap();
+        let copied = restored
+            .gets_bytes(None, Direction::Next, (None, None))
+            .await
+            .unwrap();
+        assert_eq!(original.len(), copied.len());
+        for (a, b) in original.iter().zip(&copied) {
+            assert_eq!(a.key, b.key);
+            assert_eq!(a.value, b.value);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_save_stream_flushes_multiple_chunks_and_preserves_large_records() {
+        let mut store = BTreeStore::default();
+        // Many mid-size records force several flushes at the 16 KiB target...
+        for i in 0..2000u32 {
+            store
+                .set_bytes(&format!("key{i:05}"), format!("value-{i}").as_bytes())
+                .await
+                .unwrap();
+        }
+        // ...while one oversized record proves boundaries stay between records.
+        let big_value = vec![42u8; 50 * 1024];
+        store.set_bytes("big", &big_value).await.unwrap();
+
+        let mut chunk_count = 0;
+        let mut reassembled = Vec::new();
+        {
+            let mut chunks = store.save_stream();
+            while let Some(chunk) = chunks.next().await {
+                reassembled.extend_from_slice(&chunk.unwrap());
+                chunk_count += 1;
+            }
+        }
+        assert!(
+            chunk_count >= 2,
+            "expected several chunks, got {chunk_count}"
+        );
+
+        // Reassembled bytes must equal the plain save() encoding exactly.
+        let expected = store.save().await.unwrap();
+        assert_eq!(reassembled, expected);
     }
 }

@@ -1,7 +1,7 @@
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
-use crate::store::{self, GetSet, GetSetExt, Store, StoreExt, Transaction};
+use crate::store::{self, GetSet, GetSetExt, Store, StoreExt, Transaction, load_stream};
 
 /// Entry point for the WASM module.
 #[wasm_bindgen(start)]
@@ -363,6 +363,89 @@ impl JsBTreeStore {
             }
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// Streams the entire store as a `ReadableStream` of `Uint8Array` chunks.
+    ///
+    /// Chunks concatenate to exactly what [`save`](Self::save) returns; chunk
+    /// boundaries always fall between whole records, so each chunk can be
+    /// decoded independently downstream (e.g. piped straight into a file or
+    /// fetch upload).
+    ///
+    /// The stream reads lazily and holds the store lock only while a chunk is
+    /// being produced; cancelling the consumer releases it automatically.
+    ///
+    /// # Errors
+    /// * `StoreError` - if retrieval fails while streaming
+    #[wasm_bindgen(
+        return_description = "A ReadableStream of Uint8Array chunks containing the serialized store"
+    )]
+    pub fn save_stream(&self) -> web_sys::ReadableStream {
+        use futures::{SinkExt, StreamExt, TryStreamExt};
+
+        // The core save_stream borrows its source, but JS streams must own
+        // their data ('static). Drive the borrowed stream in a background task
+        // through a bounded channel, which also provides backpressure: the
+        // next page is only fetched once the consumer drains a chunk. When the
+        // consumer cancels, the sink errors out, the task exits, and the lock
+        // is released.
+        let (mut sender, receiver) = futures::channel::mpsc::channel::<store::Result<Vec<u8>>>(16);
+        let inner = std::sync::Arc::clone(&self.inner);
+        wasm_bindgen_futures::spawn_local(async move {
+            let store = inner.lock().await;
+            let mut chunks = store.save_stream();
+            while let Some(chunk) = chunks.next().await {
+                if sender.send(chunk).await.is_err() {
+                    break; // consumer cancelled
+                }
+            }
+        });
+
+        let chunks = receiver
+            .map_ok(|chunk| js_sys::Uint8Array::from(&chunk[..]).into())
+            .map_err(store::StoreError::into);
+        wasm_streams::readable::ReadableStream::from_stream(chunks).into_raw()
+    }
+
+    /// Loads key-value pairs from a `ReadableStream` of byte chunks into the
+    /// store inside one transaction.
+    ///
+    /// Chunk boundaries are arbitrary — chunks may split mid-record; decoding
+    /// is incremental, so memory stays bounded regardless of payload size.
+    /// Typical sources: `File.stream()`, `fetch()` bodies, or the stream
+    /// returned by [`save_stream`](Self::save_stream).
+    ///
+    /// # Errors
+    /// * `StoreError` - if any chunk fails to decode as bytes, the payload is
+    ///   malformed or truncated, or storage fails. On error nothing is committed.
+    #[wasm_bindgen(return_description = "Number of key-value pairs successfully loaded")]
+    pub async fn load_stream(
+        &self,
+        #[wasm_bindgen(
+            param_description = "A ReadableStream of Uint8Array chunks containing the serialized store"
+        )]
+        stream: web_sys::ReadableStream,
+    ) -> Result<JsValue, JsValue> {
+        use futures::stream::StreamExt;
+
+        let readable = wasm_streams::readable::ReadableStream::from_raw(stream);
+        let chunks = readable.into_stream().map(|item| {
+            item.map_err(|e| store::StoreError::Other(format!("stream read failed: {e:?}")))
+                .and_then(|value| {
+                    value
+                        .dyn_into::<js_sys::Uint8Array>()
+                        .map(|array| array.to_vec())
+                        .map_err(|e| {
+                            store::StoreError::Other(format!("expected Uint8Array chunk: {e:?}"))
+                        })
+                })
+        });
+
+        let mut store = self.inner.lock().await;
+        let count = load_stream(&mut *store, chunks).await?;
+        let count_u32 =
+            u32::try_from(count).map_err(|e| store::StoreError::Serialization(e.to_string()))?;
+        Ok(JsValue::from(count_u32))
     }
 }
 
@@ -1091,6 +1174,59 @@ mod tests {
         assert_eq!(count.as_f64(), Some(f64::from(3)));
 
         for n in 0..3u32 {
+            assert_eq!(
+                ok_bytes(restored.get_bytes(&format!("k{n}")).await),
+                Some(format!("v{n}").into_bytes())
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    async fn save_load_stream_roundtrip() {
+        use futures::stream::{self, StreamExt};
+
+        let js_store = JsBTreeStore::new();
+        for n in 0..5u32 {
+            ok(js_store
+                .set_bytes(&format!("k{n}"), format!("v{n}").as_bytes())
+                .await);
+        }
+
+        // Drain the JS ReadableStream back into Rust chunks.
+        let stream = js_store.save_stream();
+        let readable = wasm_streams::readable::ReadableStream::from_raw(stream);
+        let mut chunks = readable.into_stream();
+        let mut reassembled: Vec<Vec<u8>> = Vec::new();
+        while let Some(item) = chunks.next().await {
+            let value = item.expect("chunk read failed");
+            let array = value
+                .dyn_into::<js_sys::Uint8Array>()
+                .expect("chunk is not a Uint8Array");
+            reassembled.push(array.to_vec());
+        }
+
+        // Chunks must concatenate to exactly what save() produces.
+        let expected = to_bytes(&ok(js_store.save().await));
+        let total: Vec<u8> = reassembled.concat();
+        assert!(!reassembled.is_empty());
+        assert_eq!(total, expected);
+
+        // Feed the same chunks (re-wrapped as a fresh ReadableStream) into a
+        // new store and confirm the round trip restores every entry.
+        let restored = JsBTreeStore::new();
+        let input = wasm_streams::readable::ReadableStream::from_stream(stream::iter(
+            reassembled
+                .into_iter()
+                .map(|chunk| Ok::<_, JsValue>(js_sys::Uint8Array::from(&chunk[..]).into())),
+        ))
+        .into_raw();
+        let count = restored
+            .load_stream(input)
+            .await
+            .expect("load_stream failed");
+        assert_eq!(count.as_f64(), Some(f64::from(5)));
+
+        for n in 0..5u32 {
             assert_eq!(
                 ok_bytes(restored.get_bytes(&format!("k{n}")).await),
                 Some(format!("v{n}").into_bytes())
