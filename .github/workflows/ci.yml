@@ -36,6 +36,10 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      - name: Clippy (--all-features)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Test (--all-features)
+        run: cargo test --all-features
 
   wasm:
     name: Test (wasm32)
@@ -65,3 +69,7 @@ jobs:
         with:
           node-version: 22
       - run: wasm-pack test --node
+      - name: Check wasm32 build with all features
+        # Feature-gated code (e.g. otel) must stay compilable on wasm even
+        # though its tests only run in the native job.
+        run: cargo check --target wasm32-unknown-unknown --all-features
