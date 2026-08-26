@@ -1,5 +1,8 @@
 //! A transactional key-value store with WASM bindings and Lucene-style JSON
 //! queries.
+//!
+//! With the `otel` feature enabled, [`OtelStore`] wraps any backend with
+//! OpenTelemetry traces and metrics; see its docs for wiring guidance.
 #![allow(clippy::multiple_crate_versions)]
 
 /// Wasm Bindings

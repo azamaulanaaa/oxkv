@@ -12,7 +12,20 @@ readme = "README.md"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+## Enables [`OtelStore`], an OpenTelemetry-instrumented decorator that wraps
+## any [`Store`] and emits spans and metrics around every operation.
+##
+## The crate depends only on the OpenTelemetry *API*; applications plug in
+## their own SDK providers globally, so exporters stay out of this crate.
+otel = ["dep:opentelemetry"]
+
 [dependencies]
+opentelemetry = { version = "0.32", default-features = false, features = [
+  "trace",
+  "metrics",
+], optional = true }
 async-trait = "0.1"
 futures = { version = "0.3", default-features = false, features = ["std"] }
 pest = "2.9.0"
@@ -33,6 +46,14 @@ name = "query_bench"
 harness = false
 
 [dev-dependencies]
+# Only used by the `otel` feature's tests (real SDK provider + in-memory
+# exporter); declared unconditionally because dev-dependencies cannot be gated
+# on a feature of this crate.
+opentelemetry_sdk = { version = "0.32", default-features = false, features = [
+  "trace",
+  "metrics",
+  "testing",
+] }
 mockall = "0.15"
 tokio = { version = "1.53.1", features = ["test-util", "macros"] }
 

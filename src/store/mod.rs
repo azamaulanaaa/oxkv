@@ -22,6 +22,10 @@ pub use hooks::{
     ChangeEvent, ChangeKind, HookStore, HookTx, Observer, Scope, StoreView, Validator,
 };
 mod hooks;
+#[cfg(feature = "otel")]
+pub use otel::{OtelStore, OtelTx};
+#[cfg(feature = "otel")]
+mod otel;
 pub use redb::{RedbStore, RedbTx};
 mod redb;
 
