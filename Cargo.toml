@@ -13,7 +13,11 @@ readme = "README.md"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = []
+default = ["btree"]
+## In-memory B-tree backend (pure Rust, no extra dependencies).
+btree = []
+## Persistent backend built on [Redb](https://github.com/cberner/redb).
+redb = ["dep:redb"]
 ## Enables [`OtelStore`], an OpenTelemetry-instrumented decorator that wraps
 ## any [`Store`] and emits spans and metrics around every operation.
 ##
@@ -30,7 +34,7 @@ async-trait = "0.1"
 futures = { version = "0.3", default-features = false, features = ["std"] }
 pest = "2.9.0"
 pest_derive = "2.9.0"
-redb = "4.2.0"
+redb = { version = "4.2.0", optional = true }
 regex = "1"
 serde = "1"
 serde_json = "1"

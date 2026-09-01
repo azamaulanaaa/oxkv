@@ -49,7 +49,7 @@
 //!
 //! # Example
 //!
-//! ```rust
+//! ```ignore
 //! use oxkv::{BTreeStore, GetSet, HookStore, Scope, StoreView, Validator};
 //!
 //! struct RequireJson(Scope);
@@ -621,12 +621,16 @@ impl<T: Transaction + Send + Sync, V: StoreView> Transaction for HookTx<T, V> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(feature = "btree", feature = "redb")))]
 mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-    use crate::store::{BTreeStore, StoreError};
+    #[cfg(feature = "btree")]
+    use crate::store::BTreeStore;
+    #[cfg(all(feature = "redb", not(feature = "btree")))]
+    use crate::store::RedbStore as BTreeStore;
+    use crate::store::StoreError;
 
     struct Rejecting(Scope);
 
@@ -673,6 +677,9 @@ mod tests {
     }
 
     type StoreUnderTest = HookStore<BTreeStore>;
+    // When `btree` is not enabled but `redb` is, the alias above resolves to
+    // `HookStore<RedbStore>` via the conditional import, so the same suite
+    // exercises the alternative backend.
 
     fn store() -> StoreUnderTest {
         HookStore::new(BTreeStore::default())

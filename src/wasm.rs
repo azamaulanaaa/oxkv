@@ -53,17 +53,20 @@ fn json_compatible<T: Serialize>(value: &T) -> Result<JsValue, store::StoreError
 /// JavaScript calls share one underlying store without needing to copy it. Each
 /// method acquires the lock, runs the operation (async), and releases before returning,
 /// giving callers a simple promise-based API.
+#[cfg(feature = "btree")]
 #[wasm_bindgen(js_name = BTreeStore)]
 pub struct JsBTreeStore {
     inner: std::sync::Arc<futures::lock::Mutex<store::BTreeStore>>,
 }
 
+#[cfg(feature = "btree")]
 impl Default for JsBTreeStore {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(feature = "btree")]
 #[wasm_bindgen(js_class = BTreeStore)]
 impl JsBTreeStore {
     /// Create a new WASM store instance.
@@ -450,6 +453,7 @@ impl JsBTreeStore {
 }
 
 /// Wrapper around the [`Store::BTreeTx`] produced by [`begin_tx`].
+#[cfg(feature = "btree")]
 #[wasm_bindgen(js_name = BTreeTx)]
 #[derive(Clone)]
 pub struct JsBTreeTx {
@@ -458,6 +462,7 @@ pub struct JsBTreeTx {
     >,
 }
 
+#[cfg(feature = "btree")]
 #[wasm_bindgen(js_class = BTreeTx)]
 impl JsBTreeTx {
     async fn take_tx(
@@ -678,7 +683,7 @@ impl JsBTreeTx {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "btree"))]
 mod tests {
     use wasm_bindgen_test::*;
 

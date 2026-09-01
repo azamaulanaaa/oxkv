@@ -26,7 +26,11 @@ use std::time::Duration;
 
 use criterion::measurement::WallTime;
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
-use oxkv::{BTreeStore, Direction, GetSet, RedbStore, Store, Transaction};
+#[cfg(feature = "btree")]
+use oxkv::BTreeStore;
+#[cfg(feature = "redb")]
+use oxkv::RedbStore;
+use oxkv::{Direction, GetSet, Store, Transaction};
 
 const SMALL: usize = 1_000;
 const LARGE: usize = 1_000_000;
@@ -285,26 +289,33 @@ fn benchmark(c: &mut Criterion) {
     let rt = runtime();
 
     for &n in &[SMALL, LARGE] {
-        seq_insert::<BTreeStore>(&rt, c, "btree_mem", n);
-        seq_insert::<RedbStore>(&rt, c, "redb_mem", n);
-
-        random_get::<BTreeStore>(&rt, c, "btree_mem", n);
-        random_get::<RedbStore>(&rt, c, "redb_mem", n);
-
-        page_fetch::<BTreeStore>(&rt, c, "btree_mem", n);
-        page_fetch::<RedbStore>(&rt, c, "redb_mem", n);
-
-        seq_delete::<BTreeStore>(&rt, c, "btree_mem", n);
-        seq_delete::<RedbStore>(&rt, c, "redb_mem", n);
+        #[cfg(feature = "btree")]
+        {
+            seq_insert::<BTreeStore>(&rt, c, "btree_mem", n);
+            random_get::<BTreeStore>(&rt, c, "btree_mem", n);
+            page_fetch::<BTreeStore>(&rt, c, "btree_mem", n);
+            seq_delete::<BTreeStore>(&rt, c, "btree_mem", n);
+        }
+        #[cfg(feature = "redb")]
+        {
+            seq_insert::<RedbStore>(&rt, c, "redb_mem", n);
+            random_get::<RedbStore>(&rt, c, "redb_mem", n);
+            page_fetch::<RedbStore>(&rt, c, "redb_mem", n);
+            seq_delete::<RedbStore>(&rt, c, "redb_mem", n);
+        }
     }
 
+    #[cfg(feature = "btree")]
     tx_commit_batch::<BTreeStore>(&rt, c, "btree_mem");
+    #[cfg(feature = "redb")]
     tx_commit_batch::<RedbStore>(&rt, c, "redb_mem");
 
     // Changes matrix: (store size, change counts)
     for &(n, counts) in &[(SMALL, &[1usize, 10][..]), (LARGE, &[1, 100, 1_000][..])] {
         for &m in counts {
+            #[cfg(feature = "btree")]
             point_update::<BTreeStore>(&rt, c, "btree_mem", n, m);
+            #[cfg(feature = "redb")]
             point_update::<RedbStore>(&rt, c, "redb_mem", n, m);
         }
     }

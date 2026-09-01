@@ -21,7 +21,9 @@ use thiserror::Error;
 
 use crate::query::{eval as eval_json_query, parse as parse_query};
 
+#[cfg(feature = "btree")]
 pub use btree::{BTreeStore, BTreeTx};
+#[cfg(feature = "btree")]
 mod btree;
 pub use hooks::{
     ChangeEvent, ChangeKind, HookStore, HookTx, Observer, Scope, StoreView, Validator,
@@ -31,7 +33,9 @@ mod hooks;
 pub use otel::{OtelStore, OtelTx};
 #[cfg(feature = "otel")]
 mod otel;
+#[cfg(feature = "redb")]
 pub use redb::{RedbStore, RedbTx};
+#[cfg(feature = "redb")]
 mod redb;
 
 /// A specialized `Result` type for store operations.
@@ -1506,6 +1510,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[cfg(feature = "btree")]
     #[tokio::test]
     async fn test_save_load_stream_round_trip_through_btree_store() {
         let mut source = BTreeStore::default();
@@ -1549,6 +1554,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "btree")]
     #[tokio::test]
     async fn test_save_stream_flushes_multiple_chunks_and_preserves_large_records() {
         let mut store = BTreeStore::default();
