@@ -12,6 +12,13 @@ use sha2::{Digest, Sha256};
 mod sst;
 #[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
 pub(crate) use sst::{DEFAULT_BLOCK_SIZE, SST_MAGIC, SST_VERSION, SstFile, build_sst};
+#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
+//
+mod manifest;
+#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
+pub(crate) use manifest::{
+    Manifest, ManifestCache, SstMeta, cas_manifest, manifest_path, read_manifest,
+};
 
 use crate::store::{Direction, GetSet, KeyValue, Result, Store, StoreError, Transaction};
 
@@ -644,17 +651,7 @@ pub(crate) fn ownership_path(prefix: &Path) -> Path {
     }
 }
 
-/// Returns the path for `manifest.json`.
-#[must_use]
-pub(crate) fn manifest_path(prefix: &Path) -> Path {
-    if prefix.as_ref().is_empty() {
-        Path::from("manifest.json")
-    } else {
-        prefix.child("manifest.json")
-    }
-}
-
-/// Formats an epoch as `e000007` (zero-padded 6 digits).
+/// Formats an epoch as `e000007` (zero-padded 6 digits, §3).
 #[must_use]
 pub(crate) fn format_epoch(epoch: u64) -> String {
     format!("e{epoch:06}")
