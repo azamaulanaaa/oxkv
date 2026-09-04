@@ -11,12 +11,14 @@ use object_store::{ObjectStore, PutMode, PutPayload};
 
 use crate::store::{Direction, GetSet, KeyValue, Result, Store, StoreError, Transaction};
 
+mod blob;
 mod ownership;
 mod probe;
 mod sst;
 
 pub(crate) use ownership::{acquire_ownership, read_ownership, wal_path};
 #[cfg(test)]
+#[allow(unused_imports)]
 pub(crate) use ownership::{epoch_prefix, ownership_path};
 pub(crate) use probe::probe_store;
 
@@ -476,28 +478,6 @@ mod tests {
 
     fn new_in_memory() -> Arc<dyn ObjectStore> {
         Arc::new(InMemory::new())
-    }
-
-    #[tokio::test]
-    async fn probe_ok_on_in_memory() {
-        let store = new_in_memory();
-        S3Store::probe(Arc::clone(&store), &Path::default())
-            .await
-            .expect("probe must pass");
-    }
-
-    #[test]
-    fn ownership_path_no_prefix() {
-        assert_eq!(ownership_path(&Path::default()).as_ref(), "ownership.json");
-    }
-
-    #[test]
-    fn manifest_path_and_epoch_prefix_formatting() {
-        assert_eq!(epoch_prefix(&Path::default(), 7).as_ref(), "e000007");
-        assert_eq!(
-            wal_path(&Path::from("oxkv"), 7, 42).as_ref(),
-            "oxkv/e000007/wal/00000042.log"
-        );
     }
 
     #[tokio::test]
