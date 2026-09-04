@@ -13,6 +13,7 @@ use crate::store::{Direction, GetSet, KeyValue, Result, Store, StoreError, Trans
 
 mod ownership;
 mod probe;
+mod sst;
 
 pub(crate) use ownership::{acquire_ownership, read_ownership, wal_path};
 #[cfg(test)]
