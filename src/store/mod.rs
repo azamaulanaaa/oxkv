@@ -75,7 +75,7 @@ pub enum StoreError {
     /// The store has been fenced — another owner acquired the epoch.
     ///
     /// Terminal: the current process must stop writing and restart via
-    /// `ownership.json` CAS (see `docs/s3-lsm-design.md` §9 self-fencing).
+    /// `ownership.json` CAS.
     #[error("fenced: {0}")]
     Fenced(String),
 }

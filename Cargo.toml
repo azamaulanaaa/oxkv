@@ -35,16 +35,10 @@ opentelemetry = { version = "0.32", default-features = false, features = [
 ], optional = true }
 async-trait = "0.1"
 futures = { version = "0.3", default-features = false, features = ["std"] }
-# S3Store (feature = "s3", native-only) — each optional dep is used as:
-# - object_store: S3/R2/GCS/Azure abstraction + conditional writes (If-Match/If-None-Match) for probe, ownership CAS, manifest CAS, WAL/SST/blob I/O.
 object_store = { version = "0.12", optional = true, features = ["aws", "gcp", "azure"] }
-# - moka (future): async LRU cache for SST files to avoid repeated S3 GETs.
 moka = { version = "0.12", optional = true, features = ["future"] }
-# - tokio (sync): async RwLock/Mutex for MemTable/WAL/manifest + sleep for CAS backoff. Runtime is provided by the consumer.
 tokio = { version = "1.53.1", optional = true, features = ["sync"] }
-# - crc32fast: per-block CRC and file-level CRC for SST integrity (matches SST footer `file_crc`).
 crc32fast = { version = "1", optional = true }
-# - sha2: SHA-256 hex for content-addressed blob names (large-value overflow objects).
 sha2 = { version = "0.10", optional = true }
 pest = "2.9.0"
 pest_derive = "2.9.0"

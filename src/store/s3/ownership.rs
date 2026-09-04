@@ -17,7 +17,7 @@ pub(crate) struct OwnershipRecord {
     pub epoch: u64,
     /// Owner session identifier (e.g. `node-a:uuid`).
     pub owner_session: String,
-    /// Optional lease expiry in ms since epoch (fleet mode, §9).
+    /// Optional lease expiry in ms since epoch.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lease_expiry_ms: Option<u64>,
     /// Last known manifest `e_tag` (debug aid).
@@ -35,7 +35,7 @@ pub(crate) fn ownership_path(prefix: &Path) -> Path {
     }
 }
 
-/// Formats an epoch as `e000007` (zero-padded 6 digits, §3).
+/// Formats an epoch as `e000007` (zero-padded 6 digits).
 #[must_use]
 pub(crate) fn format_epoch(epoch: u64) -> String {
     format!("e{epoch:06}")
@@ -52,24 +52,25 @@ pub(crate) fn epoch_prefix(prefix: &Path, epoch: u64) -> Path {
     }
 }
 
-/// Returns `\{prefix}/e{epoch:06}/wal/{seq:08}.log.zst`.
+/// Returns `\{prefix}/e{epoch:06}/wal/{seq:08}.log`.
 #[must_use]
 pub(crate) fn wal_path(prefix: &Path, epoch: u64, seq: u64) -> Path {
     epoch_prefix(prefix, epoch)
         .child("wal")
-        .child(format!("{seq:08}.log.zst"))
+        .child(format!("{seq:08}.log"))
 }
 
-/// Returns `\{prefix}/e{epoch:06}/sst/{level}/{id:09}.sst.zst`.
+/// Returns `\{prefix}/e{epoch:06}/sst/{level}/{id:09}.sst`.
 #[must_use]
+#[allow(dead_code)]
 pub(crate) fn sst_path(prefix: &Path, epoch: u64, level: u8, id: u64) -> Path {
     epoch_prefix(prefix, epoch)
         .child("sst")
         .child(format!("L{level}"))
-        .child(format!("{id:09}.sst.zst"))
+        .child(format!("{id:09}.sst"))
 }
 
-/// Backoff for CAS contention: `50ms*2^n + jitter`, cap `1s` (§9 G9).
+/// Backoff for CAS contention: `50ms*2^n + jitter`, cap `1s`.
 #[must_use]
 pub(crate) fn cas_backoff(attempt: u32) -> std::time::Duration {
     let base = 50u64.saturating_mul(1u64 << attempt.min(5));

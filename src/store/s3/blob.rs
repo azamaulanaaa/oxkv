@@ -1,4 +1,4 @@
-//! Blob overflow for large values — spills to `e{epoch}/blob/{hash}.zst`.
+//! Blob overflow for large values — spills to `e{epoch}/blob/{hash}`.
 #![allow(unreachable_pub, missing_docs)]
 #![allow(clippy::pedantic, clippy::all)]
 
@@ -16,7 +16,7 @@ use super::ownership::epoch_prefix;
 /// Overflow helper — `klen+vlen > block_size` spills to `blob/`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BlobPointer {
-    /// Blob object path as stored (e.g. `e000007/blob/<hash>.zst`).
+    /// Blob object path as stored (e.g. `e000007/blob/<hash>`).
     pub blob: String,
     /// Original value length.
     pub len: usize,
@@ -24,7 +24,7 @@ pub(crate) struct BlobPointer {
     pub crc: u32,
 }
 
-/// Returns `true` if `key+value` exceeds `block_size` and must spill to blob (§10).
+/// Returns `true` if `key+value` exceeds `block_size` and must spill to blob.
 #[must_use]
 pub(crate) fn is_overflow(key: &str, value: &[u8], block_size: usize) -> bool {
     key.len() + value.len() + 8 > block_size
@@ -44,12 +44,12 @@ pub(crate) fn blob_hash(value: &[u8]) -> String {
     buf
 }
 
-/// Returns `\{prefix}/e{epoch:06}/blob/{hash}.zst` for large-value overflow (§10).
+/// Returns `\{prefix}/e{epoch:06}/blob/{hash}` for large-value overflow.
 #[must_use]
 pub(crate) fn blob_path(prefix: &Path, epoch: u64, hash: &str) -> Path {
     epoch_prefix(prefix, epoch)
         .child("blob")
-        .child(format!("{hash}.zst"))
+        .child(hash.to_string())
 }
 
 /// Encodes a blob pointer as JSON bytes for inline SST value.
@@ -69,7 +69,7 @@ pub(crate) fn try_decode_blob_pointer(value: &[u8]) -> Option<BlobPointer> {
     serde_json::from_slice(value).ok()
 }
 
-/// Puts `value` to `e{epoch}/blob/{hash}.zst` via `If-None-Match` and returns the path.
+/// Puts `value` to `e{epoch}/blob/{hash}` via `If-None-Match` and returns the path.
 pub(crate) async fn put_blob(
     store: Arc<dyn ObjectStore>,
     prefix: &Path,

@@ -1,9 +1,9 @@
 //! SST (Sorted String Table) builder and reader for `S3Store` — L0.
 #![allow(unreachable_pub, missing_docs)]
 #![allow(clippy::pedantic, clippy::all)]
+#![allow(dead_code)]
 //!
 //! Fixed `32 KiB` blocks, `CRC32` per block, `bloom` filter, footer index.
-//! See `docs/s3-lsm-design.md` §4, §10.
 
 use std::collections::BTreeMap;
 
@@ -53,7 +53,7 @@ pub(crate) struct SstFooter {
     pub bloom_k: u32,
     /// Number of bits `m`.
     pub bloom_m: u64,
-    /// `u64` file checksum (`CRC32` zero-extended, `G6` LTX-style).
+    /// `u64` file checksum (`CRC32` zero-extended).
     pub file_crc: u64,
 }
 
@@ -290,6 +290,12 @@ impl SstFile {
     #[must_use]
     pub(crate) fn footer(&self) -> &SstFooter {
         &self.footer
+    }
+
+    /// Weighted cache size in bytes (for `moka` weigher).
+    #[must_use]
+    pub(crate) fn size(&self) -> usize {
+        self.data.len()
     }
 
     /// Checks bloom (false-positive possible, never false-negative).
@@ -593,7 +599,7 @@ impl SstFile {
         Ok(out)
     }
 
-    /// Verifies file-level `CRC` (`u64` `G6` LTX-style).
+    /// Verifies file-level `CRC` (`u64`).
     pub fn verify_file_crc(&self) -> Result<()> {
         let mut hasher = crc32fast::Hasher::new();
         for meta in &self.footer.index {

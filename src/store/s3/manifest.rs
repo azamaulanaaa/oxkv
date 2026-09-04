@@ -17,7 +17,7 @@ use crate::store::{Result, StoreError};
 /// Metadata for one SST file recorded in the manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SstMeta {
-    /// Object id, e.g. `e000007/sst/L0/000000123.sst.zst`.
+    /// Object id, e.g. `e000007/sst/L0/000000123.sst`.
     pub id: String,
     /// Level `0` (overlapping) or `1` (non-overlapping).
     pub level: u8,
@@ -38,7 +38,7 @@ pub struct Manifest {
     pub version: u64,
     /// Epoch that owns this manifest.
     pub epoch: u64,
-    /// WAL files (epoch-scoped, e.g. `e000007/wal/00000042.log.zst`).
+    /// WAL files (epoch-scoped, e.g. `e000007/wal/00000042.log`).
     pub wal: Vec<String>,
     /// SST files.
     pub sst: Vec<SstMeta>,
@@ -248,7 +248,7 @@ mod tests {
         let manifest = Manifest {
             version: 0,
             epoch: 1,
-            wal: vec!["e000001/wal/00000001.log.zst".to_string()],
+            wal: vec!["e000001/wal/00000001.log".to_string()],
             sst: vec![],
         };
         let etag = cas_manifest(Arc::clone(&store), &prefix, &manifest, None)
@@ -295,7 +295,7 @@ mod tests {
             epoch,
             wal: vec![],
             sst: vec![SstMeta {
-                id: "e000007/sst/L0/000000001.sst.zst".to_string(),
+                id: "e000007/sst/L0/000000001.sst".to_string(),
                 level: 0,
                 min_key: "a".to_string(),
                 max_key: "z".to_string(),

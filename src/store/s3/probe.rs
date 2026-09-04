@@ -20,9 +20,8 @@ fn probe_path(prefix: &Path) -> Path {
 
 /// Runs the storage probe against `store` at `prefix/probe/canary`.
 ///
-/// Mirrors `celld diagnose` — validates `If-None-Match` / `If-Match`
-/// conditional writes. Returns `Ok(())` only on
-/// `ok (create, reject-create, reject-stale)`.
+/// Validates that the store correctly enforces `If-None-Match` and `If-Match`
+/// conditional writes. Returns `Ok(())` only on `ok (create, reject-create, reject-stale)`.
 pub(crate) async fn probe_store(store: Arc<dyn ObjectStore>, prefix: &Path) -> Result<()> {
     let path = probe_path(prefix);
 
