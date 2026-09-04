@@ -346,6 +346,7 @@ impl S3Store {
             .await
             .map_err(|e| StoreError::Storage(format!("read sst {id} failed: {e}")))?;
         let sst = SstFile::parse(bytes.to_vec())?;
+        sst.verify_file_crc()?;
         Ok(sst)
     }
 
