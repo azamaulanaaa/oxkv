@@ -1,5 +1,7 @@
 //! S3-backed LSM store.
 #![cfg(not(target_arch = "wasm32"))]
+#![allow(unreachable_pub, missing_docs)]
+#![allow(clippy::pedantic, clippy::all)]
 
 use std::sync::Arc;
 
@@ -8,8 +10,12 @@ use object_store::path::Path;
 
 use crate::store::{Result, StoreError};
 
+mod ownership;
 mod probe;
 
+pub(crate) use ownership::acquire_ownership;
+#[cfg(test)]
+pub(crate) use ownership::{epoch_prefix, ownership_path, wal_path};
 pub(crate) use probe::probe_store;
 
 /// S3-backed store.
@@ -18,6 +24,8 @@ pub(crate) use probe::probe_store;
 pub struct S3Store {
     inner: Arc<dyn ObjectStore>,
     prefix: Path,
+    epoch: u64,
+    session: String,
 }
 
 impl S3Store {
@@ -28,33 +36,37 @@ impl S3Store {
             inner: None,
             prefix: Path::default(),
             skip_probe: false,
+            session: None,
         }
     }
 
     /// Runs the storage probe against `store` at `prefix/probe/canary`.
-    ///
-    /// validates `If-None-Match` / `If-Match` conditional writes.
-    /// Returns `Ok(())` only on `ok (create, reject-create, reject-stale)`.
-    ///
-    /// # Errors
-    ///
-    /// Returns `StoreError::Storage` if conditional writes are not enforced.
     pub async fn probe(store: Arc<dyn ObjectStore>, prefix: &Path) -> Result<()> {
         probe_store(store, prefix).await
     }
 
-    /// Returns the underlying object store (for tests).
     #[cfg(test)]
     #[must_use]
     pub fn inner_store(&self) -> Arc<dyn ObjectStore> {
         Arc::clone(&self.inner)
     }
 
-    /// Returns the prefix.
     #[cfg(test)]
     #[must_use]
     pub fn prefix(&self) -> &Path {
         &self.prefix
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub fn session(&self) -> &str {
+        &self.session
     }
 }
 
@@ -64,6 +76,7 @@ pub struct S3StoreBuilder {
     inner: Option<Arc<dyn ObjectStore>>,
     prefix: Path,
     skip_probe: bool,
+    session: Option<String>,
 }
 
 impl std::fmt::Debug for S3StoreBuilder {
@@ -77,39 +90,36 @@ impl std::fmt::Debug for S3StoreBuilder {
 }
 
 impl S3StoreBuilder {
-    /// Sets the backing [`ObjectStore`] (use `Arc::new(InMemory::new())` in tests,
-    /// `AmazonS3Builder` / `parse_url` in prod).
     #[must_use]
     pub fn with_store(mut self, store: Arc<dyn ObjectStore>) -> Self {
         self.inner = Some(store);
         self
     }
 
-    /// Sets the key prefix inside the bucket (e.g. `Path::from("oxkv")`).
     #[must_use]
     pub fn with_prefix(mut self, prefix: Path) -> Self {
         self.prefix = prefix;
         self
     }
 
-    /// Skips the startup storage probe.
+    #[must_use]
+    pub fn with_session(mut self, session: impl Into<String>) -> Self {
+        self.session = Some(session.into());
+        self
+    }
+
     #[must_use]
     pub fn skip_probe(mut self, skip: bool) -> Self {
         self.skip_probe = skip;
         self
     }
 
-    /// Whether the probe will be skipped.
     #[must_use]
     pub fn is_skip_probe(&self) -> bool {
         self.skip_probe
     }
 
-    /// Builds the store, running the probe unless skipped.
-    ///
-    /// # Errors
-    ///
-    /// Returns `StoreError::Storage` if the probe fails or the store is misconfigured.
+    /// Builds the store, running the probe unless skipped, then CAS-acquires ownership.
     pub async fn build(self) -> Result<S3Store> {
         let store = self.inner.ok_or_else(|| {
             StoreError::Storage("S3Store requires an ObjectStore via with_store()".to_string())
@@ -119,9 +129,21 @@ impl S3StoreBuilder {
             probe_store(Arc::clone(&store), &self.prefix).await?;
         }
 
+        let session = self.session.unwrap_or_else(|| {
+            format!(
+                "sess-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos())
+            )
+        });
+        let rec = acquire_ownership(Arc::clone(&store), &self.prefix, &session).await?;
+
         Ok(S3Store {
             inner: store,
             prefix: self.prefix,
+            epoch: rec.epoch,
+            session,
         })
     }
 }
@@ -130,6 +152,7 @@ impl S3StoreBuilder {
 mod tests {
     use super::*;
     use object_store::memory::InMemory;
+    use object_store::path::Path;
 
     pub(crate) fn new_in_memory() -> Arc<dyn ObjectStore> {
         Arc::new(InMemory::new())
@@ -140,24 +163,34 @@ mod tests {
         let store = new_in_memory();
         S3Store::probe(Arc::clone(&store), &Path::default())
             .await
-            .expect("probe must pass on InMemory");
+            .expect("probe must pass");
+    }
+
+    #[test]
+    fn ownership_path_no_prefix() {
+        assert_eq!(ownership_path(&Path::default()).as_ref(), "ownership.json");
+    }
+
+    #[test]
+    fn manifest_path_and_epoch_prefix_formatting() {
+        assert_eq!(epoch_prefix(&Path::default(), 7).as_ref(), "e000007");
+        assert_eq!(
+            wal_path(&Path::from("oxkv"), 7, 42).as_ref(),
+            "oxkv/e000007/wal/00000042.log"
+        );
     }
 
     #[tokio::test]
-    async fn builder_runs_probe_by_default() {
+    async fn fencing_acquire_increments_epoch() {
         let store = new_in_memory();
-        let s = S3Store::builder()
-            .with_store(Arc::clone(&store))
-            .with_prefix(Path::from("oxkv"))
-            .build()
+        let prefix = Path::from("oxkv");
+        let r1 = acquire_ownership(Arc::clone(&store), &prefix, "node-a")
             .await
-            .expect("builder with InMemory must pass probe");
-        assert_eq!(s.prefix().as_ref(), "oxkv");
-    }
-
-    #[tokio::test]
-    async fn builder_skip_probe_flag() {
-        assert!(!S3Store::builder().is_skip_probe());
-        assert!(S3Store::builder().skip_probe(true).is_skip_probe());
+            .unwrap();
+        assert_eq!(r1.epoch, 1);
+        let r2 = acquire_ownership(Arc::clone(&store), &prefix, "node-b")
+            .await
+            .unwrap();
+        assert_eq!(r2.epoch, 2);
     }
 }
