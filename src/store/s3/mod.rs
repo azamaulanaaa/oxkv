@@ -777,6 +777,90 @@ pub(crate) async fn get_blob(store: Arc<dyn ObjectStore>, blob_path: &Path) -> R
     Ok(bytes.to_vec())
 }
 
+// ---------------------------------------------------------------------------
+// Heap merge for gets_bytes over MemTable + SSTs (G8/G12)
+// ---------------------------------------------------------------------------
+
+/// Merges sorted sources (newest first) with newest-wins dedup and tombstone suppression.
+///
+/// Each source is `Vec<(key, Option<value>)>` sorted ascending; `None` is tombstone.
+/// Returns deduplicated, sorted `KeyValue` (tombstones removed).
+#[must_use]
+pub(crate) fn merge_sources(sources: Vec<Vec<(String, Option<Vec<u8>>)>>) -> Vec<KeyValue> {
+    let mut map = std::collections::BTreeMap::new();
+    for src in sources {
+        for (k, v) in src {
+            map.entry(k).or_insert(v);
+        }
+    }
+    map.into_iter()
+        .filter_map(|(k, v)| v.map(|val| KeyValue { key: k, value: val }))
+        .collect()
+}
+
+/// Range-filtered, direction-aware scan over merged sources.
+///
+/// Mirrors `GetSet::gets_bytes` cursor semantics: `Next` ascending, `Prev` descending,
+/// inclusive bounds, `limit` caps results. `sources` are newest-first.
+#[must_use]
+pub(crate) fn merged_gets_bytes(
+    sources: Vec<Vec<(String, Option<Vec<u8>>)>>,
+    limit: Option<u32>,
+    direction: Direction,
+    cursor: (Option<String>, Option<String>),
+) -> Vec<KeyValue> {
+    let merged = merge_sources(sources);
+    let (start, end) = cursor;
+    let mut filtered: Vec<KeyValue> = match direction {
+        Direction::Next => merged
+            .into_iter()
+            .filter(|kv| {
+                if let Some(ref s) = start
+                    && kv.key < *s
+                {
+                    return false;
+                }
+                if let Some(ref e) = end
+                    && kv.key > *e
+                {
+                    return false;
+                }
+                true
+            })
+            .collect(),
+        Direction::Prev => {
+            if start.is_none() {
+                return Vec::new();
+            }
+            let mut v: Vec<KeyValue> = merged
+                .into_iter()
+                .filter(|kv| {
+                    if let Some(ref s) = start
+                        && kv.key > *s
+                    {
+                        return false;
+                    }
+                    if let Some(ref e) = end
+                        && kv.key < *e
+                    {
+                        return false;
+                    }
+                    true
+                })
+                .collect();
+            v.reverse();
+            v
+        }
+    };
+    if let Some(lim) = limit {
+        let lim = lim as usize;
+        if filtered.len() > lim {
+            filtered.truncate(lim);
+        }
+    }
+    filtered
+}
+
 /// Acquires ownership by CAS-bumping `ownership.json` epoch.
 ///
 /// `session` is the owner identifier. On success returns the new
@@ -1522,5 +1606,103 @@ mod tests {
         let sst = SstFile::parse(sst_data).expect("parse");
         let got_ptr = sst.get("bigkey").unwrap().expect("got pointer");
         assert_eq!(got_ptr, ptr_bytes);
+    }
+
+    // -- heap merge (G8/G12) -------------------------------------------------------
+
+    #[test]
+    fn merge_newest_wins_and_tombstone_suppressed() {
+        // Mem newest, L0 older, L1 oldest
+        let mem = vec![
+            ("b".to_string(), Some(b"mem-b".to_vec() as Vec<u8>)),
+            ("c".to_string(), None),
+        ];
+        let l0 = vec![
+            ("a".to_string(), Some(b"l0-a".to_vec())),
+            ("b".to_string(), Some(b"l0-b".to_vec())),
+            ("c".to_string(), Some(b"l0-c".to_vec())),
+        ];
+        let l1 = vec![
+            ("c".to_string(), Some(b"l1-c".to_vec())),
+            ("d".to_string(), Some(b"l1-d".to_vec())),
+        ];
+        let merged = merge_sources(vec![mem, l0, l1]);
+        // b from mem wins, c is tombstone (None) so suppressed, d from l1 remains
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged[0].key, "a");
+        assert_eq!(merged[0].value, b"l0-a");
+        assert_eq!(merged[1].key, "b");
+        assert_eq!(merged[1].value, b"mem-b");
+        assert_eq!(merged[2].key, "d");
+    }
+
+    #[test]
+    fn merge_next_prev_cursor_limit() {
+        let mem = vec![
+            ("a".to_string(), Some(b"1".to_vec())),
+            ("b".to_string(), Some(b"2".to_vec())),
+            ("c".to_string(), Some(b"3".to_vec())),
+            ("d".to_string(), Some(b"4".to_vec())),
+            ("e".to_string(), Some(b"5".to_vec())),
+        ];
+        // Next from b to d inclusive
+        let page = merged_gets_bytes(
+            vec![mem.clone()],
+            Some(10),
+            Direction::Next,
+            (Some("b".to_string()), Some("d".to_string())),
+        );
+        assert_eq!(page.len(), 3);
+        assert_eq!(page[0].key, "b");
+        assert_eq!(page[2].key, "d");
+        // Next with limit
+        let limited = merged_gets_bytes(vec![mem.clone()], Some(2), Direction::Next, (None, None));
+        assert_eq!(limited.len(), 2);
+        // Prev from d down to b inclusive
+        let prev = merged_gets_bytes(
+            vec![mem.clone()],
+            None,
+            Direction::Prev,
+            (Some("d".to_string()), Some("b".to_string())),
+        );
+        assert_eq!(prev.len(), 3);
+        assert_eq!(prev[0].key, "d");
+        assert_eq!(prev[2].key, "b");
+        // Prev with None start is empty per spec
+        let empty = merged_gets_bytes(
+            vec![mem],
+            None,
+            Direction::Prev,
+            (None, Some("c".to_string())),
+        );
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn merge_with_sst_and_mem_integration() {
+        // Build L0 SST with a,b,c
+        let mut l0_entries = std::collections::BTreeMap::new();
+        l0_entries.insert("a".to_string(), b"l0-a".to_vec());
+        l0_entries.insert("b".to_string(), b"l0-b".to_vec());
+        l0_entries.insert("c".to_string(), b"l0-c".to_vec());
+        let sst_data = build_sst(&l0_entries, 64).unwrap();
+        let sst = SstFile::parse(sst_data).unwrap();
+        let sst_vec = sst
+            .scan(None, None, None)
+            .unwrap()
+            .into_iter()
+            .map(|(k, v)| (k, Some(v)))
+            .collect::<Vec<_>>();
+        // Mem has newer b and tombstone for c
+        let mem = vec![
+            ("b".to_string(), Some(b"mem-b".to_vec())),
+            ("c".to_string(), None),
+        ];
+        let merged = merged_gets_bytes(vec![mem, sst_vec], None, Direction::Next, (None, None));
+        // a from SST, b from Mem, c suppressed
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].key, "a");
+        assert_eq!(merged[1].key, "b");
+        assert_eq!(merged[1].value, b"mem-b");
     }
 }
