@@ -25,7 +25,8 @@ redb = ["dep:redb"]
 ## their own SDK providers globally, so exporters stay out of this crate.
 otel = ["dep:opentelemetry"]
 ## Enables [`S3Store`] — LSM on S3 (native-only, `#[cfg(not(target_arch = "wasm32"))]`).
-s3 = ["dep:object_store", "dep:uuid", "dep:tokio"]
+## Each `dep:` below is justified inline where the dependency is declared.
+s3 = ["dep:object_store", "dep:uuid", "dep:tokio", "dep:crc32fast"]
 
 [dependencies]
 opentelemetry = { version = "0.32", default-features = false, features = [
@@ -36,6 +37,8 @@ async-trait = "0.1"
 futures = { version = "0.3", default-features = false, features = ["std"] }
 object_store = { version = "0.12", optional = true, features = ["aws", "gcp", "azure"] }
 tokio = { version = "1.53.1", optional = true, features = ["sync"] }
+# - crc32fast: per-block CRC and file-level CRC for SST integrity (matches SST footer `file_crc`).
+crc32fast = { version = "1", optional = true }
 pest = "2.9.0"
 pest_derive = "2.9.0"
 redb = { version = "4.2.0", optional = true }

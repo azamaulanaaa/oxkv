@@ -7,6 +7,11 @@ use object_store::path::Path;
 use object_store::{ObjectStore, PutMode, PutPayload, PutResult, UpdateVersion};
 use serde::{Deserialize, Serialize};
 
+#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
+mod sst;
+#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
+pub(crate) use sst::{DEFAULT_BLOCK_SIZE, SST_MAGIC, SST_VERSION, SstFile, build_sst};
+
 use crate::store::{Direction, GetSet, KeyValue, Result, Store, StoreError, Transaction};
 
 type MemMap = std::collections::BTreeMap<String, Option<Vec<u8>>>;
