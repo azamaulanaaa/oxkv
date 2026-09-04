@@ -53,8 +53,8 @@ pub(crate) struct SstFooter {
     pub bloom_k: u32,
     /// Number of bits `m`.
     pub bloom_m: u64,
-    /// `CRC32` of all block bytes concatenated.
-    pub file_crc: u32,
+    /// `u64` file checksum (`CRC32` zero-extended, `G6` LTX-style).
+    pub file_crc: u64,
 }
 
 /// Simple bloom filter — 10 bits per key, k=3.
@@ -193,7 +193,7 @@ pub fn build_sst(
         for block in &blocks {
             hasher.update(block);
         }
-        hasher.finalize()
+        u64::from(hasher.finalize())
     };
 
     let footer = SstFooter {
@@ -593,14 +593,14 @@ impl SstFile {
         Ok(out)
     }
 
-    /// Verifies file-level `CRC`.
+    /// Verifies file-level `CRC` (`u64` `G6` LTX-style).
     pub fn verify_file_crc(&self) -> Result<()> {
         let mut hasher = crc32fast::Hasher::new();
         for meta in &self.footer.index {
             let bytes = self.block_bytes(meta)?;
             hasher.update(&bytes);
         }
-        let got = hasher.finalize();
+        let got = u64::from(hasher.finalize());
         if got != self.footer.file_crc {
             return Err(StoreError::Storage(format!(
                 "file crc mismatch: expected {}, got {}",
