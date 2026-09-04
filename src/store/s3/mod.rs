@@ -22,7 +22,7 @@ pub(crate) use blob::{
     encode_blob_pointer, get_blob, is_overflow, put_blob, try_decode_blob_pointer,
 };
 pub(crate) use manifest::{ManifestCache, SstMeta, cas_manifest};
-pub(crate) use ownership::{acquire_ownership, cas_backoff, read_ownership, wal_path};
+pub(crate) use ownership::{acquire_ownership, cas_backoff, read_ownership, sst_path, wal_path};
 pub(crate) use probe::probe_store;
 pub(crate) use sst::{DEFAULT_BLOCK_SIZE, SstFile, build_sst};
 
@@ -534,6 +534,251 @@ impl S3Store {
             }
         }
         Ok(0)
+    }
+    pub async fn compact(&self) -> Result<Option<SstMeta>> {
+        // Load manifest and check trigger.
+        let (manifest_snapshot, _) = {
+            let mut cache = self.manifest_cache.lock().await;
+            cache
+                .load(
+                    Arc::clone(&self.inner),
+                    &self.prefix,
+                    self.epoch,
+                    std::time::Duration::from_secs(1),
+                )
+                .await?
+        };
+        let l0_count = manifest_snapshot
+            .sst
+            .iter()
+            .filter(|m| m.level == 0)
+            .count();
+        let l0_bytes: u64 = manifest_snapshot
+            .sst
+            .iter()
+            .filter(|m| m.level == 0)
+            .map(|m| m.size)
+            .sum();
+        if l0_count < 4 && l0_bytes <= 128 * 1024 * 1024 {
+            return Ok(None);
+        }
+        // Collect L0 range.
+        let l0_metas: Vec<SstMeta> = manifest_snapshot
+            .sst
+            .iter()
+            .filter(|m| m.level == 0)
+            .cloned()
+            .collect();
+        if l0_metas.is_empty() {
+            return Ok(None);
+        }
+        let l0_min = l0_metas
+            .iter()
+            .map(|m| m.min_key.as_str())
+            .min()
+            .unwrap_or("");
+        let l0_max = l0_metas
+            .iter()
+            .map(|m| m.max_key.as_str())
+            .max()
+            .unwrap_or("");
+        // Overlapping L1.
+        let l1_overlapping: Vec<SstMeta> = manifest_snapshot
+            .sst
+            .iter()
+            .filter(|m| m.level == 1)
+            .filter(|m| !(m.max_key.as_str() < l0_min || m.min_key.as_str() > l0_max))
+            .cloned()
+            .collect();
+        // Read all overlapping SSTs via heap merge (newest wins, tombstones suppressed in final L1 except needed).
+        let mut sources: Vec<Vec<(String, Option<Vec<u8>>)>> = Vec::new();
+        for meta in l0_metas.iter().rev().chain(l1_overlapping.iter().rev()) {
+            let sst = self.fetch_sst(&meta.id).await?;
+            let scan = sst.scan_with_tombstones(None, None, None)?;
+            let mut resolved: Vec<(String, Option<Vec<u8>>)> = Vec::with_capacity(scan.len());
+            for (k, v) in scan {
+                match v {
+                    Some(raw) => {
+                        // Resolve blob pointers if any (L0 may contain pointers).
+                        let val = if let Some(ptr) = try_decode_blob_pointer(&raw) {
+                            let blob_path = Path::from(ptr.blob.clone());
+                            get_blob(Arc::clone(&self.inner), &blob_path).await?
+                        } else {
+                            raw
+                        };
+                        resolved.push((k, Some(val)));
+                    }
+                    None => resolved.push((k, None)),
+                }
+            }
+            sources.push(resolved);
+        }
+        // Merge newest wins, tombstones kept for now but will be dropped if shadowed at L1 non-overlapping.
+        let merged = merge_sources(sources);
+        // Build L1 entries: drop tombstones where no older shadow (L1 is non-overlapping, so drop all tombstones).
+        let mut l1_entries: std::collections::BTreeMap<String, Option<Vec<u8>>> =
+            std::collections::BTreeMap::new();
+        for kv in merged {
+            // For L1 compacted, tombstones have already been suppressed by merge_sources, so only live keys remain.
+            // If we still have tombstone (None) in merged, it would have been filtered, so we only insert live.
+            l1_entries.insert(kv.key, Some(kv.value));
+        }
+        // Handle large values overflow for L1 as well.
+        let mut final_entries: std::collections::BTreeMap<String, Option<Vec<u8>>> =
+            std::collections::BTreeMap::new();
+        for (k, v) in &l1_entries {
+            if let Some(val) = v {
+                if is_overflow(k, val, 64 * 1024) {
+                    let blob_path =
+                        put_blob(Arc::clone(&self.inner), &self.prefix, self.epoch, val).await?;
+                    let crc = crc32fast::hash(val);
+                    let ptr = encode_blob_pointer(&blob_path, val.len(), crc);
+                    final_entries.insert(k.clone(), Some(ptr));
+                } else {
+                    final_entries.insert(k.clone(), Some(val.clone()));
+                }
+            }
+        }
+        if final_entries.is_empty() {
+            // No live keys — just CAS remove old files.
+            for _ in 0..4 {
+                let mut cache = self.manifest_cache.lock().await;
+                let (mut manifest, etag) = cache
+                    .load(
+                        Arc::clone(&self.inner),
+                        &self.prefix,
+                        self.epoch,
+                        std::time::Duration::from_secs(1),
+                    )
+                    .await?;
+                let before_len = manifest.sst.len();
+                manifest.sst.retain(|m| {
+                    !(l0_metas.iter().any(|x| x.id == m.id)
+                        || l1_overlapping.iter().any(|x| x.id == m.id))
+                });
+                if manifest.sst.len() == before_len {
+                    return Ok(None);
+                }
+                manifest.version = manifest.version.wrapping_add(1);
+                let etag_opt = if etag.is_empty() { None } else { Some(etag) };
+                match cas_manifest(Arc::clone(&self.inner), &self.prefix, &manifest, etag_opt).await
+                {
+                    Ok(new_etag) => {
+                        cache.update(manifest.clone(), new_etag);
+                        drop(cache);
+                        for m in l0_metas.iter().chain(l1_overlapping.iter()) {
+                            let p = Path::from(m.id.clone());
+                            let _ = self.inner.delete(&p).await;
+                        }
+                        return Ok(None);
+                    }
+                    Err(e) if e.to_string().contains("CAS conflict") => {
+                        cache.clear();
+                        drop(cache);
+                        tokio::time::sleep(cas_backoff(0)).await;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            return Ok(None);
+        }
+        let sst_bytes = build_sst(&final_entries, 64 * 1024)?;
+        let seq = self
+            .sst_seq
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let l1_id = sst_path(&self.prefix, self.epoch, 1, seq).to_string();
+        let l1_path = Path::from(l1_id.clone());
+        let put_res = self
+            .inner
+            .put_opts(
+                &l1_path,
+                PutPayload::from(sst_bytes.clone()),
+                PutMode::Create.into(),
+            )
+            .await;
+        match put_res {
+            Ok(_) | Err(object_store::Error::AlreadyExists { .. }) => {}
+            Err(e) => return Err(StoreError::Storage(format!("put L1 sst failed: {e}"))),
+        }
+        // Verify still owner.
+        let cur_owner = read_ownership(Arc::clone(&self.inner), &self.prefix).await?;
+        match cur_owner {
+            Some(rec) if rec.epoch == self.epoch && rec.owner_session == self.session => {}
+            Some(rec) => {
+                return Err(StoreError::Fenced(format!(
+                    "fenced: epoch {} session {} superseded by epoch {} session {}",
+                    self.epoch, self.session, rec.epoch, rec.owner_session
+                )));
+            }
+            None => {
+                return Err(StoreError::Fenced(
+                    "fenced: ownership missing before compaction CAS".to_string(),
+                ));
+            }
+        }
+        // CAS manifest: remove old L0/L1 overlapping, add new L1.
+        for _ in 0..4 {
+            let mut cache = self.manifest_cache.lock().await;
+            let (mut manifest, etag) = cache
+                .load(
+                    Arc::clone(&self.inner),
+                    &self.prefix,
+                    self.epoch,
+                    std::time::Duration::from_secs(1),
+                )
+                .await?;
+            // Idempotency: if new L1 already present, reuse.
+            if manifest.sst.iter().any(|m| m.id == l1_id) {
+                let existing = manifest.sst.iter().find(|m| m.id == l1_id).cloned();
+                return Ok(existing);
+            }
+            let mut new_sst_list: Vec<SstMeta> = manifest
+                .sst
+                .iter()
+                .filter(|m| {
+                    !(l0_metas.iter().any(|x| x.id == m.id)
+                        || l1_overlapping.iter().any(|x| x.id == m.id))
+                })
+                .cloned()
+                .collect();
+            let new_meta = SstMeta {
+                id: l1_id.clone(),
+                level: 1,
+                min_key: final_entries.keys().next().cloned().unwrap_or_default(),
+                max_key: final_entries
+                    .keys()
+                    .next_back()
+                    .cloned()
+                    .unwrap_or_default(),
+                size: sst_bytes.len() as u64,
+            };
+            new_sst_list.push(new_meta.clone());
+            // Keep L1 non-overlapping sorted by min_key for future.
+            new_sst_list.sort_by(|a, b| a.min_key.cmp(&b.min_key));
+            manifest.sst = new_sst_list;
+            manifest.version = manifest.version.wrapping_add(1);
+            let etag_opt = if etag.is_empty() { None } else { Some(etag) };
+            match cas_manifest(Arc::clone(&self.inner), &self.prefix, &manifest, etag_opt).await {
+                Ok(new_etag) => {
+                    cache.update(manifest, new_etag);
+                    drop(cache);
+                    // Invalidate sst_cache for deleted, keep new.
+                    for m in l0_metas.iter().chain(l1_overlapping.iter()) {
+                        self.sst_cache.remove(m.id.as_str()).await;
+                        let p = Path::from(m.id.clone());
+                        let _ = self.inner.delete(&p).await;
+                    }
+                    return Ok(Some(new_meta));
+                }
+                Err(e) if e.to_string().contains("CAS conflict") => {
+                    cache.clear();
+                    drop(cache);
+                    tokio::time::sleep(cas_backoff(0)).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(None)
     }
 }
 
