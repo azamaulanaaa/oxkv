@@ -11,14 +11,14 @@ use sha2::{Digest, Sha256};
 #[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
 mod sst;
 #[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
-pub(crate) use sst::{DEFAULT_BLOCK_SIZE, SST_MAGIC, SST_VERSION, SstFile, build_sst};
+pub(crate) use sst::{
+    DEFAULT_BLOCK_SIZE, SST_MAGIC, SST_VERSION, SstFile, build_sst, build_sst_from_values,
+};
 #[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
 //
 mod manifest;
 #[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
-pub(crate) use manifest::{
-    Manifest, ManifestCache, SstMeta, cas_manifest, manifest_path, read_manifest,
-};
+pub(crate) use manifest::{ManifestCache, SstMeta, cas_manifest, manifest_path, read_manifest};
 
 use crate::store::{Direction, GetSet, KeyValue, Result, Store, StoreError, Transaction};
 
@@ -38,6 +38,10 @@ pub struct S3Store {
     wal_seq: Arc<std::sync::atomic::AtomicU64>,
     /// Buffered WAL ops pending an explicit [`Self::flush`] (group commit).
     wal_buffer: WalBuffer,
+    /// SST sequence for `L0` ids.
+    sst_seq: std::sync::atomic::AtomicU64,
+    /// Manifest cache (`ETag` + `TTL 1s`, §6-§7 G8).
+    manifest_cache: Arc<tokio::sync::Mutex<ManifestCache>>,
 }
 
 impl std::fmt::Debug for S3Store {
@@ -149,20 +153,102 @@ impl S3Store {
     /// `PUT wal` must succeed *and* `GET ownership.json` must still name `self`.
     /// Idempotent on `AlreadyExists` (group-commit retry).
     pub async fn flush(&self) -> Result<()> {
-        let ops = drain_wal_buffer(&self.wal_buffer).await;
-        if ops.is_empty() {
-            return Ok(());
+        let ops: Vec<(String, Option<Vec<u8>>)> = {
+            let mut buf = self.wal_buffer.lock().await;
+            if buf.is_empty() {
+                return Ok(());
+            }
+            std::mem::take(&mut *buf)
+        };
+
+        let mut payload_buf = Vec::new();
+        for (k, v) in &ops {
+            match v {
+                Some(val) => crate::store::encode_record(&mut payload_buf, k, val)
+                    .map_err(|e| StoreError::Storage(format!("encode wal: {e}")))?,
+                None => {
+                    // tombstone: encode with empty value + distinct marker — reuse encode with empty
+                    // For v1, empty value means delete; compaction will treat it as tombstone.
+                    // To keep wire compat with save_stream, use empty Vec as delete marker and
+                    // rely on higher layer (SST) to interpret. Here we encode key+empty.
+                    crate::store::encode_record(&mut payload_buf, k, &[])
+                        .map_err(|e| StoreError::Storage(format!("encode wal tombstone: {e}")))?;
+                }
+            }
         }
-        let payload = encode_wal_ops(&ops)?;
-        put_wal_and_gate(
-            Arc::clone(&self.inner),
-            &self.prefix,
-            self.epoch,
-            &self.session,
-            &self.wal_seq,
-            payload,
-        )
-        .await
+
+        let seq = self
+            .wal_seq
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let path = wal_path(&self.prefix, self.epoch, seq);
+
+        let put_res = self
+            .inner
+            .put_opts(&path, PutPayload::from(payload_buf), PutMode::Create.into())
+            .await;
+
+        match put_res {
+            Ok(_) | Err(object_store::Error::AlreadyExists { .. }) => {
+                // idempotent retry — already durable
+            }
+            Err(e) => return Err(StoreError::Storage(format!("put wal failed: {e}"))),
+        }
+
+        // Durability gate: verify still owner
+        let cur = read_ownership(Arc::clone(&self.inner), &self.prefix).await?;
+        match cur {
+            Some(rec) if rec.epoch == self.epoch && rec.owner_session == self.session => {}
+            Some(rec) => {
+                return Err(StoreError::Fenced(format!(
+                    "fenced: epoch {} session {} superseded by epoch {} session {}",
+                    self.epoch, self.session, rec.epoch, rec.owner_session
+                )));
+            }
+            None => {
+                return Err(StoreError::Fenced(
+                    "fenced: ownership missing after wal put".to_string(),
+                ));
+            }
+        }
+        // Update manifest.wal[] via CAS with backoff (G5/G9) — idempotent on AlreadyExists
+        let wal_id = path.to_string();
+        for attempt in 0..4 {
+            let mut cache = self.manifest_cache.lock().await;
+            let (mut manifest, etag) = cache
+                .load(
+                    Arc::clone(&self.inner),
+                    &self.prefix,
+                    self.epoch,
+                    std::time::Duration::from_secs(1),
+                )
+                .await?;
+            if manifest.wal.iter().any(|w| w == &wal_id) {
+                return Ok(());
+            }
+            manifest.wal.push(wal_id.clone());
+            manifest.version = manifest.version.wrapping_add(1);
+            let etag_opt = if etag.is_empty() { None } else { Some(etag) };
+            match cas_manifest(Arc::clone(&self.inner), &self.prefix, &manifest, etag_opt).await {
+                Ok(new_etag) => {
+                    cache.update(manifest, new_etag);
+                    return Ok(());
+                }
+                Err(e) if e.to_string().contains("CAS conflict") => {
+                    cache.clear();
+                    if attempt == 3 {
+                        return Err(StoreError::Storage(format!(
+                            "wal manifest CAS conflict after retries: {e}"
+                        )));
+                    }
+                    let backoff = cas_backoff(attempt);
+                    drop(cache);
+                    tokio::time::sleep(backoff).await;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
     }
 
     /// Convenience: stage + flush (RPO=0).
@@ -173,6 +259,176 @@ impl S3Store {
     pub async fn commit_durable_set(&self, key: &str, value: &[u8]) -> Result<()> {
         self.stage_set(key, value).await;
         self.flush().await
+    }
+
+    /// Flushes `MemTable` to `L0` SST if above `32MB` or `force`.
+    ///
+    /// Builds `32KB` blocks with `bloom`/`CRC`, handles overflow `blob/` for
+    /// large values, `PUT`s `e{epoch}/sst/L0/*.sst.zst` via `Create`, then
+    /// `CAS`es `manifest.json` (`If-Match`). Idempotent on `AlreadyExists`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Storage` on `PUT`/`CAS` failure or `StoreError::Fenced`
+    /// if `ownership` no longer matches.
+    pub async fn flush_mem_to_sst(&self) -> Result<Option<SstMeta>> {
+        self.flush_mem_to_sst_inner(false).await
+    }
+
+    /// Forces `MemTable` flush to `L0` regardless of size.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::flush_mem_to_sst`].
+    pub async fn flush_mem_to_sst_force(&self) -> Result<Option<SstMeta>> {
+        self.flush_mem_to_sst_inner(true).await
+    }
+
+    async fn flush_mem_to_sst_inner(&self, force: bool) -> Result<Option<SstMeta>> {
+        // Snapshot MemTable
+        let snapshot: std::collections::BTreeMap<String, Option<Vec<u8>>> = {
+            let mem = self.mem.read().await;
+            if mem.is_empty() {
+                return Ok(None);
+            }
+            // Size estimate: sum key+value+8
+            let est: usize = mem
+                .iter()
+                .map(|(k, v)| k.len() + v.as_ref().map_or(0, |b| b.len()) + 8)
+                .sum();
+            if !force && est < 32 * 1024 * 1024 {
+                return Ok(None);
+            }
+            mem.clone()
+        };
+
+        // Handle overflow blobs: large values spill to blob/
+        let mut sst_entries: std::collections::BTreeMap<String, Option<Vec<u8>>> =
+            std::collections::BTreeMap::new();
+        for (k, v) in &snapshot {
+            match v {
+                Some(val) if is_overflow(k, val, DEFAULT_BLOCK_SIZE) => {
+                    let blob_path =
+                        put_blob(Arc::clone(&self.inner), &self.prefix, self.epoch, val).await?;
+                    let crc = crc32fast::hash(val);
+                    let ptr = encode_blob_pointer(&blob_path, val.len(), crc);
+                    sst_entries.insert(k.clone(), Some(ptr));
+                }
+                other => {
+                    sst_entries.insert(k.clone(), other.clone());
+                }
+            }
+        }
+
+        // Build SST file
+        let sst_bytes = build_sst(&sst_entries, DEFAULT_BLOCK_SIZE)?;
+        if sst_bytes.is_empty() {
+            return Ok(None);
+        }
+        let seq = self
+            .sst_seq
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let sst_id = format!("e{:06}/sst/L0/{:09}.sst.zst", self.epoch, seq);
+        let sst_path = Path::from(sst_id.clone());
+        // Put SST (epoch-scoped path is already idempotent via Create)
+        let put_res = self
+            .inner
+            .put_opts(
+                &sst_path,
+                PutPayload::from(sst_bytes.clone()),
+                PutMode::Create.into(),
+            )
+            .await;
+        match put_res {
+            Ok(_) | Err(object_store::Error::AlreadyExists { .. }) => {}
+            Err(e) => return Err(StoreError::Storage(format!("put sst failed: {e}"))),
+        }
+
+        // Verify still owner before CAS manifest (fence)
+        let cur_owner = read_ownership(Arc::clone(&self.inner), &self.prefix).await?;
+        match cur_owner {
+            Some(rec) if rec.epoch == self.epoch && rec.owner_session == self.session => {}
+            Some(rec) => {
+                return Err(StoreError::Fenced(format!(
+                    "fenced: epoch {} session {} superseded by epoch {} session {}",
+                    self.epoch, self.session, rec.epoch, rec.owner_session
+                )));
+            }
+            None => {
+                return Err(StoreError::Fenced(
+                    "fenced: ownership missing before manifest CAS".to_string(),
+                ));
+            }
+        }
+
+        // CAS manifest: add SST meta, bump version
+        let mut cache = self.manifest_cache.lock().await;
+        let (mut manifest, etag) = cache
+            .load(
+                Arc::clone(&self.inner),
+                &self.prefix,
+                self.epoch,
+                std::time::Duration::from_secs(1),
+            )
+            .await?;
+        // Deduplicate: if SST already in manifest (idempotent retry), return existing meta
+        if manifest.sst.iter().any(|m| m.id == sst_id) {
+            let existing = manifest.sst.iter().find(|m| m.id == sst_id).cloned();
+            // Drain mem entries that were flushed (even on idempotent, clear mem)
+            {
+                let mut mem = self.mem.write().await;
+                for k in snapshot.keys() {
+                    mem.remove(k);
+                }
+            }
+            return Ok(existing);
+        }
+        let sst_meta = SstMeta {
+            id: sst_id.clone(),
+            level: 0,
+            min_key: sst_entries.keys().next().cloned().unwrap_or_default(),
+            max_key: sst_entries.keys().next_back().cloned().unwrap_or_default(),
+            size: sst_bytes.len() as u64,
+        };
+        manifest.sst.push(sst_meta.clone());
+        manifest.version = manifest.version.wrapping_add(1);
+        let etag_opt = if etag.is_empty() { None } else { Some(etag) };
+        match cas_manifest(Arc::clone(&self.inner), &self.prefix, &manifest, etag_opt).await {
+            Ok(new_etag) => {
+                cache.update(manifest, new_etag);
+                {
+                    let mut mem = self.mem.write().await;
+                    for k in snapshot.keys() {
+                        mem.remove(k);
+                    }
+                }
+                Ok(Some(sst_meta))
+            }
+            Err(e) if e.to_string().contains("CAS conflict") => {
+                let backoff = cas_backoff(0);
+                tokio::time::sleep(backoff).await;
+                cache.clear();
+                let (reloaded, _) = cache
+                    .load(
+                        Arc::clone(&self.inner),
+                        &self.prefix,
+                        self.epoch,
+                        std::time::Duration::from_secs(0),
+                    )
+                    .await?;
+                if reloaded.sst.iter().any(|m| m.id == sst_id) {
+                    let mut mem = self.mem.write().await;
+                    for k in snapshot.keys() {
+                        mem.remove(k);
+                    }
+                    return Ok(reloaded.sst.into_iter().find(|m| m.id == sst_id));
+                }
+                Err(StoreError::Storage(format!(
+                    "manifest CAS conflict after backoff retry: {e}"
+                )))
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -515,6 +771,8 @@ impl S3StoreBuilder {
             mem: Arc::new(tokio::sync::RwLock::new(std::collections::BTreeMap::new())),
             wal_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             wal_buffer: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            sst_seq: std::sync::atomic::AtomicU64::new(0),
+            manifest_cache: Arc::new(tokio::sync::Mutex::new(ManifestCache::new())),
         })
     }
 }
@@ -754,7 +1012,6 @@ pub(crate) async fn put_blob(
 ) -> Result<Path> {
     let hash = blob_hash(value);
     let path = blob_path(prefix, epoch, &hash);
-    let crc = crc32fast::hash(value);
     // Store raw value (could zstd compress, but raw for v1)
     let payload = PutPayload::from(value.to_vec());
     match store.put_opts(&path, payload, PutMode::Create.into()).await {
@@ -775,6 +1032,15 @@ pub(crate) async fn get_blob(store: Arc<dyn ObjectStore>, blob_path: &Path) -> R
         .await
         .map_err(|e| StoreError::Storage(format!("read blob failed: {e}")))?;
     Ok(bytes.to_vec())
+}
+
+/// Backoff for CAS contention: `50ms*2^n + jitter`, cap `1s` (§9 G9).
+#[must_use]
+pub(crate) fn cas_backoff(attempt: u32) -> std::time::Duration {
+    let base = 50u64.saturating_mul(1u64 << attempt.min(5));
+    let base = base.min(1000);
+    let jitter = (u64::from(attempt).wrapping_mul(7)) % 20;
+    std::time::Duration::from_millis(base + jitter)
 }
 
 // ---------------------------------------------------------------------------
@@ -1602,7 +1868,7 @@ mod tests {
         assert_eq!(fetched, big_val);
         assert_eq!(decoded.len, big_val.len());
         // Write pointer via SST and verify read path (without S3Store get wrapper, just raw)
-        let sst_data = build_sst(&entries, DEFAULT_BLOCK_SIZE).expect("build sst");
+        let sst_data = build_sst_from_values(&entries, DEFAULT_BLOCK_SIZE).expect("build sst");
         let sst = SstFile::parse(sst_data).expect("parse");
         let got_ptr = sst.get("bigkey").unwrap().expect("got pointer");
         assert_eq!(got_ptr, ptr_bytes);
@@ -1685,7 +1951,7 @@ mod tests {
         l0_entries.insert("a".to_string(), b"l0-a".to_vec());
         l0_entries.insert("b".to_string(), b"l0-b".to_vec());
         l0_entries.insert("c".to_string(), b"l0-c".to_vec());
-        let sst_data = build_sst(&l0_entries, 64).unwrap();
+        let sst_data = build_sst_from_values(&l0_entries, 64).unwrap();
         let sst = SstFile::parse(sst_data).unwrap();
         let sst_vec = sst
             .scan(None, None, None)
