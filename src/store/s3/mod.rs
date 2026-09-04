@@ -5,31 +5,45 @@
 
 use std::sync::Arc;
 
-use object_store::ObjectStore;
 use object_store::path::Path;
+use object_store::{ObjectStore, PutMode, PutPayload};
 
 use crate::store::{Result, StoreError};
 
 mod ownership;
 mod probe;
 
-pub(crate) use ownership::acquire_ownership;
+pub(crate) use ownership::{acquire_ownership, read_ownership, wal_path};
 #[cfg(test)]
-pub(crate) use ownership::{epoch_prefix, ownership_path, wal_path};
+pub(crate) use ownership::{epoch_prefix, ownership_path};
 pub(crate) use probe::probe_store;
 
+type MemMap = std::collections::BTreeMap<String, Option<Vec<u8>>>;
+type MemTable = Arc<tokio::sync::RwLock<MemMap>>;
+type WalBuffer = Arc<tokio::sync::Mutex<Vec<(String, Option<Vec<u8>>)>>>;
+
 /// S3-backed store.
-#[derive(Debug)]
-#[allow(dead_code)]
 pub struct S3Store {
     inner: Arc<dyn ObjectStore>,
     prefix: Path,
     epoch: u64,
     session: String,
+    mem: MemTable,
+    wal_seq: Arc<std::sync::atomic::AtomicU64>,
+    wal_buffer: WalBuffer,
+}
+
+impl std::fmt::Debug for S3Store {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3Store")
+            .field("prefix", &self.prefix)
+            .field("epoch", &self.epoch)
+            .field("session", &self.session)
+            .finish_non_exhaustive()
+    }
 }
 
 impl S3Store {
-    /// Creates a new store builder.
     #[must_use]
     pub fn builder() -> S3StoreBuilder {
         S3StoreBuilder {
@@ -40,7 +54,6 @@ impl S3Store {
         }
     }
 
-    /// Runs the storage probe against `store` at `prefix/probe/canary`.
     pub async fn probe(store: Arc<dyn ObjectStore>, prefix: &Path) -> Result<()> {
         probe_store(store, prefix).await
     }
@@ -67,6 +80,84 @@ impl S3Store {
     #[must_use]
     pub fn session(&self) -> &str {
         &self.session
+    }
+
+    /// Stages `set` into MemTable + WAL buffer.
+    pub async fn stage_set(&self, key: &str, value: &[u8]) {
+        self.mem
+            .write()
+            .await
+            .insert(key.to_string(), Some(value.to_vec()));
+        self.wal_buffer
+            .lock()
+            .await
+            .push((key.to_string(), Some(value.to_vec())));
+    }
+
+    /// Stages `delete` into MemTable + WAL buffer.
+    pub async fn stage_delete(&self, key: &str) {
+        self.mem.write().await.insert(key.to_string(), None);
+        self.wal_buffer.lock().await.push((key.to_string(), None));
+    }
+
+    /// Reads from MemTable (hot path, no S3).
+    pub async fn mem_get(&self, key: &str) -> Option<Option<Vec<u8>>> {
+        self.mem.read().await.get(key).cloned()
+    }
+
+    /// Flushes buffered WAL ops to `e{epoch}/wal/{seq:08}.log` via PutMode::Create, then gates on ownership.
+    pub async fn flush(&self) -> Result<()> {
+        let ops: Vec<(String, Option<Vec<u8>>)> = {
+            let mut buf = self.wal_buffer.lock().await;
+            if buf.is_empty() {
+                return Ok(());
+            }
+            std::mem::take(&mut *buf)
+        };
+
+        let mut payload_buf = Vec::new();
+        for (key, value) in &ops {
+            match value {
+                Some(val) => crate::store::encode_record(&mut payload_buf, key, val)
+                    .map_err(|e| StoreError::Storage(format!("encode wal: {e}")))?,
+                None => {
+                    crate::store::encode_record(&mut payload_buf, key, &[])
+                        .map_err(|e| StoreError::Storage(format!("encode wal tombstone: {e}")))?;
+                }
+            }
+        }
+
+        let seq = self
+            .wal_seq
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let path = wal_path(&self.prefix, self.epoch, seq);
+
+        let put_res = self
+            .inner
+            .put_opts(&path, PutPayload::from(payload_buf), PutMode::Create.into())
+            .await;
+
+        match put_res {
+            Ok(_) | Err(object_store::Error::AlreadyExists { .. }) => {}
+            Err(e) => return Err(StoreError::Storage(format!("put wal failed: {e}"))),
+        }
+
+        let cur = read_ownership(Arc::clone(&self.inner), &self.prefix).await?;
+        match cur {
+            Some(rec) if rec.epoch == self.epoch && rec.owner_session == self.session => Ok(()),
+            Some(rec) => Err(StoreError::Fenced(format!(
+                "fenced: epoch {} session {} superseded by epoch {} session {}",
+                self.epoch, self.session, rec.epoch, rec.owner_session
+            ))),
+            None => Err(StoreError::Fenced(
+                "fenced: ownership missing after wal put".to_string(),
+            )),
+        }
+    }
+
+    pub async fn commit_durable_set(&self, key: &str, value: &[u8]) -> Result<()> {
+        self.stage_set(key, value).await;
+        self.flush().await
     }
 }
 
@@ -95,31 +186,26 @@ impl S3StoreBuilder {
         self.inner = Some(store);
         self
     }
-
     #[must_use]
     pub fn with_prefix(mut self, prefix: Path) -> Self {
         self.prefix = prefix;
         self
     }
-
     #[must_use]
     pub fn with_session(mut self, session: impl Into<String>) -> Self {
         self.session = Some(session.into());
         self
     }
-
     #[must_use]
     pub fn skip_probe(mut self, skip: bool) -> Self {
         self.skip_probe = skip;
         self
     }
-
     #[must_use]
     pub fn is_skip_probe(&self) -> bool {
         self.skip_probe
     }
 
-    /// Builds the store, running the probe unless skipped, then CAS-acquires ownership.
     pub async fn build(self) -> Result<S3Store> {
         let store = self.inner.ok_or_else(|| {
             StoreError::Storage("S3Store requires an ObjectStore via with_store()".to_string())
@@ -144,6 +230,9 @@ impl S3StoreBuilder {
             prefix: self.prefix,
             epoch: rec.epoch,
             session,
+            mem: Arc::new(tokio::sync::RwLock::new(std::collections::BTreeMap::new())),
+            wal_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            wal_buffer: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         })
     }
 }
@@ -152,7 +241,6 @@ impl S3StoreBuilder {
 mod tests {
     use super::*;
     use object_store::memory::InMemory;
-    use object_store::path::Path;
 
     pub(crate) fn new_in_memory() -> Arc<dyn ObjectStore> {
         Arc::new(InMemory::new())
@@ -192,5 +280,34 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r2.epoch, 2);
+    }
+
+    #[tokio::test]
+    async fn wal_flush_empty_is_noop() {
+        let s = S3Store::builder()
+            .with_store(new_in_memory())
+            .with_prefix(Path::from("oxkv"))
+            .with_session("node-a")
+            .build()
+            .await
+            .unwrap();
+        s.flush().await.expect("empty flush is noop");
+    }
+
+    #[tokio::test]
+    async fn wal_commit_durable_ok() {
+        let store = new_in_memory();
+        let s = S3Store::builder()
+            .with_store(Arc::clone(&store))
+            .with_prefix(Path::from("oxkv"))
+            .with_session("sess-1")
+            .build()
+            .await
+            .unwrap();
+        s.stage_set("k1", b"v1").await;
+        s.flush().await.expect("wal flush");
+        // WAL file should exist
+        let wal = wal_path(&Path::from("oxkv"), s.epoch(), 0);
+        assert!(store.get(&wal).await.is_ok());
     }
 }
