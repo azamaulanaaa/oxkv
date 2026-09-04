@@ -24,6 +24,9 @@ redb = ["dep:redb"]
 ## The crate depends only on the OpenTelemetry *API*; applications plug in
 ## their own SDK providers globally, so exporters stay out of this crate.
 otel = ["dep:opentelemetry"]
+## Enables [`S3Store`] — LSM on S3 (native-only, `#[cfg(not(target_arch = "wasm32"))]`).
+## Each `dep:` below is justified inline where the dependency is declared.
+s3 = ["dep:object_store"]
 
 [dependencies]
 opentelemetry = { version = "0.32", default-features = false, features = [
@@ -32,6 +35,9 @@ opentelemetry = { version = "0.32", default-features = false, features = [
 ], optional = true }
 async-trait = "0.1"
 futures = { version = "0.3", default-features = false, features = ["std"] }
+# S3Store (feature = "s3", native-only) — each optional dep is used as:
+# - object_store: S3/R2/GCS/Azure abstraction + conditional writes (If-Match/If-None-Match) for probe, ownership CAS, manifest CAS, WAL/SST/blob I/O.
+object_store = { version = "0.12", optional = true, features = ["aws", "gcp", "azure"] }
 pest = "2.9.0"
 pest_derive = "2.9.0"
 redb = { version = "4.2.0", optional = true }
