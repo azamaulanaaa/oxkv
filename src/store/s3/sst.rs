@@ -22,6 +22,8 @@ pub const SST_MAGIC: [u8; 4] = *b"OXKV";
 pub const SST_VERSION: u32 = 1;
 /// Default block size `32KB`.
 pub const DEFAULT_BLOCK_SIZE: usize = 32 * 1024;
+/// Tombstone marker: `vlen == u32::MAX` means deleted.
+pub const TOMBSTONE_VLEN: u32 = u32::MAX;
 
 /// Per-block index entry stored in footer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,8 +119,11 @@ impl Bloom {
 // Builder
 // ---------------------------------------------------------------------------
 
-/// Builds an SST file from sorted entries.
-pub fn build_sst(entries: &BTreeMap<String, Vec<u8>>, block_size: usize) -> Result<Vec<u8>> {
+/// Builds an SST file from sorted entries (`None` = tombstone).
+pub fn build_sst(
+    entries: &BTreeMap<String, Option<Vec<u8>>>,
+    block_size: usize,
+) -> Result<Vec<u8>> {
     let block_size = block_size.max(64);
     let mut blocks: Vec<Vec<u8>> = Vec::new();
     let mut index: Vec<BlockMeta> = Vec::new();
@@ -134,7 +139,21 @@ pub fn build_sst(entries: &BTreeMap<String, Vec<u8>>, block_size: usize) -> Resu
 
     for (k, v) in entries {
         let mut rec = Vec::new();
-        crate::store::encode_record(&mut rec, k, v)?;
+        let klen = u32::try_from(k.len())
+            .map_err(|e| StoreError::Serialization(format!("key too long: {e}")))?;
+        rec.extend_from_slice(&klen.to_le_bytes());
+        rec.extend_from_slice(k.as_bytes());
+        match v {
+            Some(val) => {
+                let vlen = u32::try_from(val.len())
+                    .map_err(|e| StoreError::Serialization(format!("value too long: {e}")))?;
+                rec.extend_from_slice(&vlen.to_le_bytes());
+                rec.extend_from_slice(val);
+            }
+            None => {
+                rec.extend_from_slice(&TOMBSTONE_VLEN.to_le_bytes());
+            }
+        }
         // If adding this record would overflow block, seal current block first
         if !cur_block.is_empty() && cur_block.len() + rec.len() > block_size {
             let crc = crc32fast::hash(&cur_block);
@@ -149,18 +168,12 @@ pub fn build_sst(entries: &BTreeMap<String, Vec<u8>>, block_size: usize) -> Resu
             index.push(meta);
             blocks.push(std::mem::take(&mut cur_block));
             cur_min = None;
-            cur_max = None;
         }
         if cur_min.is_none() {
             cur_min = Some(k.clone());
         }
         cur_max = Some(k.clone());
         cur_block.extend_from_slice(&rec);
-        // Single large record larger than block_size: allow block to exceed
-        if cur_block.len() >= block_size {
-            // Seal immediately if block is at least block_size (avoid tiny tail)
-            // Continue to next iteration where overflow check will seal
-        }
     }
     if !cur_block.is_empty() {
         let crc = crc32fast::hash(&cur_block);
@@ -171,7 +184,6 @@ pub fn build_sst(entries: &BTreeMap<String, Vec<u8>>, block_size: usize) -> Resu
             len: cur_block.len() as u64,
             crc,
         };
-        // offset not needed after final, but keep consistent
         blocks.push(cur_block);
         index.push(meta);
     }
@@ -204,6 +216,18 @@ pub fn build_sst(entries: &BTreeMap<String, Vec<u8>>, block_size: usize) -> Resu
     out.extend_from_slice(&SST_MAGIC);
     out.extend_from_slice(&SST_VERSION.to_le_bytes());
     Ok(out)
+}
+
+/// Convenience for `BTreeMap<String, Vec<u8>>` (no tombstones) — used by tests.
+pub fn build_sst_from_values(
+    entries: &BTreeMap<String, Vec<u8>>,
+    block_size: usize,
+) -> Result<Vec<u8>> {
+    let opt: BTreeMap<String, Option<Vec<u8>>> = entries
+        .iter()
+        .map(|(k, v)| (k.clone(), Some(v.clone())))
+        .collect();
+    build_sst(&opt, block_size)
 }
 
 // ---------------------------------------------------------------------------
@@ -309,8 +333,9 @@ impl SstFile {
         Ok(bytes.to_vec())
     }
 
-    /// Point lookup: returns value if present.
-    pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
+    /// Point lookup with tombstone distinction: `Ok(Some(Some(v)))` = value,
+    /// `Ok(Some(None))` = tombstone, `Ok(None)` = not in this SST.
+    pub fn get_option(&self, key: &str) -> Result<Option<Option<Vec<u8>>>> {
         if !self.may_contain(key) {
             return Ok(None);
         }
@@ -319,7 +344,6 @@ impl SstFile {
                 continue;
             }
             let bytes = self.block_bytes(meta)?;
-            // Decode block: sequential encode_record
             let mut pos = 0usize;
             while pos + 4 <= bytes.len() {
                 let klen = u32::from_le_bytes([
@@ -340,15 +364,69 @@ impl SstFile {
                     bytes[v_start + 2],
                     bytes[v_start + 3],
                 ]) as usize;
+                if vlen == TOMBSTONE_VLEN as usize {
+                    if k == key {
+                        return Ok(Some(None));
+                    }
+                    pos = v_start + 4;
+                    continue;
+                }
                 if v_start + 4 + vlen > bytes.len() {
                     break;
                 }
-                let v = bytes[v_start + 4..v_start + 4 + vlen].to_vec();
                 if k == key {
-                    if v.is_empty() {
-                        // tombstone encoded as empty
+                    let v = bytes[v_start + 4..v_start + 4 + vlen].to_vec();
+                    return Ok(Some(Some(v)));
+                }
+                pos = v_start + 4 + vlen;
+            }
+        }
+        Ok(None)
+    }
+
+    /// Point lookup: returns value if present (`None` for missing or tombstone).
+    /// Empty `Some(vec![])` is a valid empty value, not tombstone.
+    pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        if !self.may_contain(key) {
+            return Ok(None);
+        }
+        for meta in &self.footer.index {
+            if key < meta.min_key.as_str() || key > meta.max_key.as_str() {
+                continue;
+            }
+            let bytes = self.block_bytes(meta)?;
+            let mut pos = 0usize;
+            while pos + 4 <= bytes.len() {
+                let klen = u32::from_le_bytes([
+                    bytes[pos],
+                    bytes[pos + 1],
+                    bytes[pos + 2],
+                    bytes[pos + 3],
+                ]) as usize;
+                if pos + 4 + klen + 4 > bytes.len() {
+                    break;
+                }
+                let k = std::str::from_utf8(&bytes[pos + 4..pos + 4 + klen])
+                    .map_err(|e| StoreError::Storage(format!("utf8: {e}")))?;
+                let v_start = pos + 4 + klen;
+                let vlen = u32::from_le_bytes([
+                    bytes[v_start],
+                    bytes[v_start + 1],
+                    bytes[v_start + 2],
+                    bytes[v_start + 3],
+                ]) as usize;
+                if vlen == TOMBSTONE_VLEN as usize {
+                    if k == key {
                         return Ok(None);
                     }
+                    pos = v_start + 4;
+                    continue;
+                }
+                if v_start + 4 + vlen > bytes.len() {
+                    break;
+                }
+                if k == key {
+                    let v = bytes[v_start + 4..v_start + 4 + vlen].to_vec();
                     return Ok(Some(v));
                 }
                 pos = v_start + 4 + vlen;
@@ -358,7 +436,7 @@ impl SstFile {
     }
 
     /// Range scan: returns sorted KVs in `[start, end]` inclusive, honoring direction.
-    /// `limit` caps results.
+    /// `limit` caps results. Tombstones are omitted; empty values are returned.
     pub fn scan(
         &self,
         start: Option<&str>,
@@ -400,30 +478,118 @@ impl SstFile {
                     bytes[v_start + 2],
                     bytes[v_start + 3],
                 ]) as usize;
-                if v_start + 4 + vlen > bytes.len() {
-                    break;
-                }
-                let v = bytes[v_start + 4..v_start + 4 + vlen].to_vec();
+                let is_tombstone = vlen == TOMBSTONE_VLEN as usize;
+                let v = if is_tombstone {
+                    None
+                } else {
+                    if v_start + 4 + vlen > bytes.len() {
+                        break;
+                    }
+                    Some(bytes[v_start + 4..v_start + 4 + vlen].to_vec())
+                };
                 let in_range = match (start, end) {
                     (Some(s), Some(e)) => k.as_str() >= s && k.as_str() <= e,
                     (Some(s), None) => k.as_str() >= s,
                     (None, Some(e)) => k.as_str() <= e,
                     (None, None) => true,
                 };
-                if in_range && !v.is_empty() {
+                if in_range {
+                    if let Some(val) = &v {
+                        out.push((k.clone(), val.clone()));
+                        if let Some(lim) = limit {
+                            if out.len() >= lim {
+                                return Ok(out);
+                            }
+                        }
+                    } else {
+                        // tombstone — do not return
+                    }
+                }
+                pos = if is_tombstone {
+                    v_start + 4
+                } else {
+                    v_start + 4 + vlen
+                };
+            }
+        }
+        // Already sorted because blocks and entries are sorted
+        if let Some(lim) = limit {
+            out.truncate(lim);
+        }
+        Ok(out)
+    }
+
+    /// Range scan including tombstones: returns `(key, Option<value>)` where `None` is tombstone.
+    pub fn scan_with_tombstones(
+        &self,
+        start: Option<&str>,
+        end: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<(String, Option<Vec<u8>>)>> {
+        let mut out = Vec::new();
+        for meta in &self.footer.index {
+            if let Some(s) = start {
+                if meta.max_key.as_str() < s {
+                    continue;
+                }
+            }
+            if let Some(e) = end {
+                if meta.min_key.as_str() > e {
+                    continue;
+                }
+            }
+            let bytes = self.block_bytes(meta)?;
+            let mut pos = 0usize;
+            while pos + 4 <= bytes.len() {
+                let klen = u32::from_le_bytes([
+                    bytes[pos],
+                    bytes[pos + 1],
+                    bytes[pos + 2],
+                    bytes[pos + 3],
+                ]) as usize;
+                if pos + 4 + klen + 4 > bytes.len() {
+                    break;
+                }
+                let k = std::str::from_utf8(&bytes[pos + 4..pos + 4 + klen])
+                    .map_err(|e| StoreError::Storage(format!("utf8: {e}")))?
+                    .to_string();
+                let v_start = pos + 4 + klen;
+                let vlen = u32::from_le_bytes([
+                    bytes[v_start],
+                    bytes[v_start + 1],
+                    bytes[v_start + 2],
+                    bytes[v_start + 3],
+                ]) as usize;
+                let is_tombstone = vlen == TOMBSTONE_VLEN as usize;
+                let v = if is_tombstone {
+                    None
+                } else {
+                    if v_start + 4 + vlen > bytes.len() {
+                        break;
+                    }
+                    Some(bytes[v_start + 4..v_start + 4 + vlen].to_vec())
+                };
+                let in_range = match (start, end) {
+                    (Some(s), Some(e)) => k.as_str() >= s && k.as_str() <= e,
+                    (Some(s), None) => k.as_str() >= s,
+                    (None, Some(e)) => k.as_str() <= e,
+                    (None, None) => true,
+                };
+                if in_range {
                     out.push((k.clone(), v));
                     if let Some(lim) = limit {
                         if out.len() >= lim {
                             return Ok(out);
                         }
                     }
-                } else if in_range && v.is_empty() {
-                    // tombstone — do not return
                 }
-                pos = v_start + 4 + vlen;
+                pos = if is_tombstone {
+                    v_start + 4
+                } else {
+                    v_start + 4 + vlen
+                };
             }
         }
-        // Already sorted because blocks and entries are sorted
         if let Some(lim) = limit {
             out.truncate(lim);
         }
@@ -453,7 +619,15 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    fn sample_entries() -> BTreeMap<String, Vec<u8>> {
+    fn sample_entries() -> BTreeMap<String, Option<Vec<u8>>> {
+        let mut m = BTreeMap::new();
+        m.insert("a".to_string(), Some(b"val-a".to_vec()));
+        m.insert("b".to_string(), Some(b"val-b".to_vec()));
+        m.insert("c".to_string(), Some(b"val-c".to_vec()));
+        m
+    }
+
+    fn sample_values() -> BTreeMap<String, Vec<u8>> {
         let mut m = BTreeMap::new();
         m.insert("a".to_string(), b"val-a".to_vec());
         m.insert("b".to_string(), b"val-b".to_vec());
@@ -487,7 +661,7 @@ mod tests {
 
     #[test]
     fn sst_empty() {
-        let entries = BTreeMap::new();
+        let entries: BTreeMap<String, Option<Vec<u8>>> = BTreeMap::new();
         let data = build_sst(&entries, 1024).unwrap();
         let sst = SstFile::parse(data).unwrap();
         assert_eq!(sst.footer.index.len(), 0);
@@ -520,7 +694,7 @@ mod tests {
     fn sst_range_scan() {
         let mut entries = BTreeMap::new();
         for c in 'a'..='z' {
-            entries.insert(c.to_string(), vec![c as u8]);
+            entries.insert(c.to_string(), Some(vec![c as u8]));
         }
         let data = build_sst(&entries, 64).unwrap();
         let sst = SstFile::parse(data).unwrap();
@@ -533,13 +707,36 @@ mod tests {
     #[test]
     fn sst_tombstone_not_returned() {
         let mut entries = BTreeMap::new();
-        entries.insert("a".to_string(), b"v".to_vec());
-        entries.insert("b".to_string(), Vec::new()); // tombstone
+        entries.insert("a".to_string(), Some(b"v".to_vec()));
+        entries.insert("b".to_string(), None); // tombstone
         let data = build_sst(&entries, 1024).unwrap();
         let sst = SstFile::parse(data).unwrap();
         assert_eq!(sst.get("b").unwrap(), None);
         let scan = sst.scan(None, None, None).unwrap();
         assert_eq!(scan.len(), 1);
         assert_eq!(scan[0].0, "a");
+    }
+
+    #[test]
+    fn sst_empty_value_vs_tombstone() {
+        let mut entries = BTreeMap::new();
+        entries.insert("a".to_string(), Some(Vec::new())); // empty value, not tombstone
+        entries.insert("b".to_string(), None); // tombstone
+        let data = build_sst(&entries, 1024).unwrap();
+        let sst = SstFile::parse(data).unwrap();
+        assert_eq!(sst.get("a").unwrap(), Some(Vec::new()));
+        assert_eq!(sst.get("b").unwrap(), None);
+        let scan = sst.scan(None, None, None).unwrap();
+        assert_eq!(scan.len(), 1);
+        assert_eq!(scan[0].0, "a");
+        assert_eq!(scan[0].1, Vec::<u8>::new());
+    }
+
+    #[test]
+    fn sst_from_values_helper() {
+        let values = sample_values();
+        let data = build_sst_from_values(&values, 1024).unwrap();
+        let sst = SstFile::parse(data).unwrap();
+        assert_eq!(sst.get("a").unwrap(), Some(b"val-a".to_vec()));
     }
 }
