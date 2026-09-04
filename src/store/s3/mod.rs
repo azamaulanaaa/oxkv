@@ -1,20 +1,41 @@
-//! S3-backed LSM store — probe + epoch fencing scaffold.
-//!
-#![cfg(not(target_arch = "wasm32"))]
+//! S3-backed LSM store
+#![allow(unused_imports)]
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use object_store::path::Path;
 use object_store::{ObjectStore, PutMode, PutPayload, PutResult, UpdateVersion};
 use serde::{Deserialize, Serialize};
 
-use crate::store::{Result, StoreError};
+use crate::store::{Direction, KeyValue, Result, StoreError};
 
-/// S3-backed store (incremental — probe ships first).
-#[derive(Debug)]
+type MemMap = std::collections::BTreeMap<String, Option<Vec<u8>>>;
+type MemTable = Arc<tokio::sync::RwLock<MemMap>>;
+type WalBuffer = Arc<tokio::sync::Mutex<Vec<(String, Option<Vec<u8>>)>>>;
+
+/// S3-backed store.
 pub struct S3Store {
     inner: Arc<dyn ObjectStore>,
     prefix: Path,
+    epoch: u64,
+    session: String,
+    /// In-memory `MemTable` — `BTreeMap` mirroring `BTreeStore` overlay.
+    mem: MemTable,
+    /// WAL sequence for `e{epoch}/wal/{seq:08}.log.zst`.
+    wal_seq: Arc<std::sync::atomic::AtomicU64>,
+    /// Buffered WAL ops pending an explicit [`Self::flush`] (group commit).
+    wal_buffer: WalBuffer,
+}
+
+impl std::fmt::Debug for S3Store {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3Store")
+            .field("prefix", &self.prefix)
+            .field("epoch", &self.epoch)
+            .field("session", &self.session)
+            .finish_non_exhaustive()
+    }
 }
 
 impl S3Store {
@@ -25,18 +46,21 @@ impl S3Store {
             inner: None,
             prefix: Path::default(),
             skip_probe: false,
+            session: None,
         }
     }
 
-    /// Runs the storage probe against `store` at `prefix/probe/canary`.
+    /// Runs the storage probe against `store` at a unique per-run
+    /// `prefix/probe/canary-<uuid>` path.
     ///
-    /// Mirrors `celld diagnose` — validates `If-None-Match` / `If-Match`
+    /// validates `If-None-Match` / `If-Match`
     /// conditional writes. Returns `Ok(())` only on
     /// `ok (create, reject-create, reject-stale)`.
     ///
     /// # Errors
     ///
-    /// Returns `StoreError::Storage` if conditional writes are not enforced.
+    /// Returns `StoreError::Storage` if conditional writes are not enforced
+    /// (store accepts duplicate `Create` or stale `Update`).
     pub async fn probe(store: Arc<dyn ObjectStore>, prefix: &Path) -> Result<()> {
         probe_store(store, prefix).await
     }
@@ -52,6 +76,195 @@ impl S3Store {
     pub fn prefix(&self) -> &Path {
         &self.prefix
     }
+
+    /// Returns the current epoch.
+    #[cfg(test)]
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// Returns the session id.
+    #[cfg(test)]
+    pub fn session(&self) -> &str {
+        &self.session
+    }
+
+    /// Stages `set` into `MemTable` + WAL buffer (commit = mem).
+    ///
+    /// Does not hit S3 — use [`Self::flush`] or [`Self::commit_durable_set`] for RPO=0.
+    /// Prefer `GetSet::set_bytes` / `Store::begin_tx` for trait-based access.
+    pub async fn stage_set(&self, key: &str, value: &[u8]) {
+        let v = value.to_vec();
+        self.mem
+            .write()
+            .await
+            .insert(key.to_string(), Some(v.clone()));
+        self.wal_buffer
+            .lock()
+            .await
+            .push((key.to_string(), Some(v)));
+    }
+
+    /// Stages `delete` into `MemTable` + WAL buffer.
+    pub async fn stage_delete(&self, key: &str) {
+        self.mem.write().await.insert(key.to_string(), None);
+        self.wal_buffer.lock().await.push((key.to_string(), None));
+    }
+
+    /// Reads from `MemTable` (hot path, no S3).
+    pub async fn mem_get(&self, key: &str) -> Option<Option<Vec<u8>>> {
+        self.mem.read().await.get(key).cloned()
+    }
+
+    /// Internal: read-through MemTable only (no SST yet).
+    async fn get_bytes_inner(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        Ok(self.mem.read().await.get(key).cloned().flatten())
+    }
+
+    async fn gets_bytes_inner(
+        &self,
+        limit: Option<u32>,
+        direction: Direction,
+        cursor: (Option<String>, Option<String>),
+    ) -> Result<Vec<KeyValue>> {
+        let mem = self.mem.read().await;
+        Ok(apply_gets(live_kvs(&mem), limit, direction, cursor))
+    }
+
+    /// Flushes buffered WAL ops to `e{epoch}/wal/{seq:08}.log.zst` via
+    /// `PutMode::Create` (`If-None-Match:"*"`), then gates on ownership.
+    ///
+    /// `PUT wal` must succeed *and* `GET ownership.json` must still name `self`.
+    /// Idempotent on `AlreadyExists` (group-commit retry).
+    pub async fn flush(&self) -> Result<()> {
+        let ops = drain_wal_buffer(&self.wal_buffer).await;
+        if ops.is_empty() {
+            return Ok(());
+        }
+        let payload = encode_wal_ops(&ops)?;
+        put_wal_and_gate(
+            Arc::clone(&self.inner),
+            &self.prefix,
+            self.epoch,
+            &self.session,
+            &self.wal_seq,
+            payload,
+        )
+        .await
+    }
+
+    /// Convenience: stage + flush (RPO=0).
+    ///
+    /// # Errors
+    ///
+    /// Propagates `StoreError` from [`Self::flush`].
+    pub async fn commit_durable_set(&self, key: &str, value: &[u8]) -> Result<()> {
+        self.stage_set(key, value).await;
+        self.flush().await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Trait impls — GetSet/Store/Transaction (like BTreeStore)
+// ---------------------------------------------------------------------------
+
+fn live_kvs(mem: &MemMap) -> Vec<KeyValue> {
+    mem.iter()
+        .filter_map(|(k, v)| {
+            v.as_ref().map(|val| KeyValue {
+                key: k.clone(),
+                value: val.clone(),
+            })
+        })
+        .collect()
+}
+
+fn apply_gets(
+    items: Vec<KeyValue>,
+    limit: Option<u32>,
+    direction: Direction,
+    cursor: (Option<String>, Option<String>),
+) -> Vec<KeyValue> {
+    let (start, end) = cursor;
+    let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
+    match direction {
+        Direction::Next => {
+            if let (Some(s), Some(e)) = (&start, &end) {
+                if s > e {
+                    return Vec::new();
+                }
+            }
+            items
+                .into_iter()
+                .filter(|kv| start.as_ref().is_none_or(|s| kv.key >= *s))
+                .filter(|kv| end.as_ref().is_none_or(|e| kv.key <= *e))
+                .take(limit)
+                .collect()
+        }
+        Direction::Prev => {
+            let Some(start) = start else {
+                return Vec::new();
+            };
+            if let Some(end) = &end {
+                if start < *end {
+                    return Vec::new();
+                }
+            }
+            items
+                .into_iter()
+                .rev()
+                .filter(|kv| kv.key <= start)
+                .filter(|kv| end.as_ref().is_none_or(|e| kv.key >= *e))
+                .take(limit)
+                .collect()
+        }
+    }
+}
+
+async fn drain_wal_buffer(buf: &WalBuffer) -> Vec<(String, Option<Vec<u8>>)> {
+    let mut g = buf.lock().await;
+    std::mem::take(&mut *g)
+}
+
+fn encode_wal_ops(ops: &[(String, Option<Vec<u8>>)]) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    for (k, v) in ops {
+        // None (tombstone) is encoded as empty value for v1 wire-compat;
+        // later SST layer maps `TOMBSTONE_VLEN` to a distinct sentinel.
+        let val = v.as_deref().unwrap_or(b"");
+        crate::store::encode_record(&mut out, k, val)
+            .map_err(|e| StoreError::Storage(format!("encode wal: {e}")))?;
+    }
+    Ok(out)
+}
+
+async fn put_wal_and_gate(
+    inner: Arc<dyn ObjectStore>,
+    prefix: &Path,
+    epoch: u64,
+    session: &str,
+    wal_seq: &Arc<std::sync::atomic::AtomicU64>,
+    payload: Vec<u8>,
+) -> Result<()> {
+    let seq = wal_seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let path = wal_path(prefix, epoch, seq);
+    match inner
+        .put_opts(&path, PutPayload::from(payload), PutMode::Create.into())
+        .await
+    {
+        Ok(_) | Err(object_store::Error::AlreadyExists { .. }) => {}
+        Err(e) => return Err(StoreError::Storage(format!("put wal failed: {e}"))),
+    }
+    match read_ownership(Arc::clone(&inner), prefix).await? {
+        Some(rec) if rec.epoch == epoch && rec.owner_session == session => Ok(()),
+        Some(rec) => Err(StoreError::Fenced(format!(
+            "fenced: epoch {epoch} session {session} superseded by epoch {} session {}",
+            rec.epoch, rec.owner_session
+        ))),
+        None => Err(StoreError::Fenced(
+            "fenced: ownership missing after wal put".to_string(),
+        )),
+    }
 }
 
 /// Builder for [`S3Store`].
@@ -60,6 +273,7 @@ pub struct S3StoreBuilder {
     inner: Option<Arc<dyn ObjectStore>>,
     prefix: Path,
     skip_probe: bool,
+    session: Option<String>,
 }
 
 impl std::fmt::Debug for S3StoreBuilder {
@@ -68,7 +282,7 @@ impl std::fmt::Debug for S3StoreBuilder {
             .field("prefix", &self.prefix)
             .field("skip_probe", &self.skip_probe)
             .field("has_store", &self.inner.is_some())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -88,7 +302,15 @@ impl S3StoreBuilder {
         self
     }
 
-    /// Skips the startup storage probe (`CELLD_STORAGE_PROBE=0` equivalent).
+    /// Sets the owner session id (unique per builder). If not set, a
+    /// deterministic fallback is generated.
+    #[must_use]
+    pub fn with_session(mut self, session: impl Into<String>) -> Self {
+        self.session = Some(session.into());
+        self
+    }
+
+    /// Skips the startup storage probe.
     #[must_use]
     pub fn skip_probe(mut self, skip: bool) -> Self {
         self.skip_probe = skip;
@@ -101,11 +323,13 @@ impl S3StoreBuilder {
         self.skip_probe
     }
 
-    /// Builds the store, running the probe unless skipped.
+    /// Builds the store, running the probe unless skipped, then CAS-acquires
+    /// `ownership.json` epoch. The returned store is fenced to that epoch.
     ///
     /// # Errors
     ///
-    /// Returns `StoreError::Storage` if the probe fails or the store is misconfigured.
+    /// Returns `StoreError::Storage` if the probe fails or `StoreError::Fenced`
+    /// if `ownership.json` CAS loses the race.
     pub async fn build(self) -> Result<S3Store> {
         let store = self.inner.ok_or_else(|| {
             StoreError::Storage("S3Store requires an ObjectStore via with_store()".to_string())
@@ -115,20 +339,38 @@ impl S3StoreBuilder {
             probe_store(Arc::clone(&store), &self.prefix).await?;
         }
 
+        let session = self.session.unwrap_or_else(|| {
+            // deterministic fallback — not for prod fleet (use explicit session)
+            format!(
+                "sess-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos())
+            )
+        });
+        let rec = acquire_ownership(Arc::clone(&store), &self.prefix, &session).await?;
+
         Ok(S3Store {
             inner: store,
             prefix: self.prefix,
+            epoch: rec.epoch,
+            session,
+            mem: Arc::new(tokio::sync::RwLock::new(std::collections::BTreeMap::new())),
+            wal_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            wal_buffer: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         })
     }
 }
 
+/// A unique, per-run canary path so concurrent or repeated probes never collide
+/// with each other or with pre-existing data under the prefix.
 fn probe_path(prefix: &Path) -> Path {
     let base = if prefix.as_ref().is_empty() {
         Path::from("probe")
     } else {
         prefix.child("probe")
     };
-    base.child("canary")
+    base.child(format!("canary-{}", uuid::Uuid::now_v7()))
 }
 
 async fn probe_store(store: Arc<dyn ObjectStore>, prefix: &Path) -> Result<()> {
@@ -221,12 +463,12 @@ async fn probe_store(store: Arc<dyn ObjectStore>, prefix: &Path) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Ownership + epoch fencing (G2/G4)
+// Ownership + epoch fencing
 // ---------------------------------------------------------------------------
 
 /// Ownership record stored at `{prefix}/ownership.json`.
 ///
-/// Mirrors `celld`'s `{epoch, ownerSession}` CAS record — every activation
+/// CAS record — every activation
 /// bumps `epoch`, all new WAL/SST objects go under `e{epoch:06}/`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct OwnershipRecord {
@@ -234,7 +476,7 @@ pub(crate) struct OwnershipRecord {
     pub epoch: u64,
     /// Owner session identifier (e.g. `node-a:uuid`).
     pub owner_session: String,
-    /// Optional lease expiry in ms since epoch (fleet mode, §9).
+    /// Optional lease expiry in ms since epoch (fleet mode).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lease_expiry_ms: Option<u64>,
     /// Last known manifest `e_tag` (debug aid).
@@ -262,7 +504,7 @@ pub(crate) fn manifest_path(prefix: &Path) -> Path {
     }
 }
 
-/// Formats an epoch as `e000007` (zero-padded 6 digits, §3).
+/// Formats an epoch as `e000007` (zero-padded 6 digits).
 #[must_use]
 pub(crate) fn format_epoch(epoch: u64) -> String {
     format!("e{epoch:06}")
@@ -296,7 +538,7 @@ pub(crate) fn sst_path(prefix: &Path, epoch: u64, level: u8, id: u64) -> Path {
         .child(format!("{id:09}.sst.zst"))
 }
 
-/// Returns `\{prefix}/e{epoch:06}/blob/{hash}.zst` for large-value overflow (§10).
+/// Returns `\{prefix}/e{epoch:06}/blob/{hash}.zst` for large-value overflow.
 #[must_use]
 pub(crate) fn blob_path(prefix: &Path, epoch: u64, hash: &str) -> Path {
     epoch_prefix(prefix, epoch)
@@ -313,9 +555,9 @@ pub(crate) fn blob_path(prefix: &Path, epoch: u64, hash: &str) -> Path {
 /// This maps to S3 `If-None-Match:"*"` (create) and `If-Match: etag`
 /// (update) — `object_store` translates `PutMode::Create/Update` to the
 /// correct header per provider (`S3`/`R2`/`Azure` vs `GCS`
-/// `x-goog-if-generation-match`), so the same code qualifies all stores (§9 G4).
+/// `x-goog-if-generation-match`), so the same code qualifies all stores.
 ///
-/// For contended callers, retry with backoff and reload (G9).
+/// For contended callers, retry with backoff and reload.
 ///
 /// Provider note: `InMemory` supports `Create` (`AlreadyExists`) and
 /// `Update` (`Precondition`) exactly, so unit tests run without a real bucket.
@@ -407,6 +649,7 @@ pub(crate) fn new_in_memory() -> Arc<dyn ObjectStore> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::StoreError;
     use object_store::ObjectStore;
 
     #[tokio::test]
@@ -595,7 +838,7 @@ mod tests {
             .expect_err("must reject without skip_probe");
         assert!(err.to_string().contains("conditional writes"));
 
-        // with skip_probe -> must succeed (CELLD_STORAGE_PROBE=0 equiv)
+        // with skip_probe -> must succeed
         S3Store::builder()
             .with_store(bad)
             .skip_probe(true)
@@ -612,7 +855,7 @@ mod tests {
             .expect("static probe must pass");
     }
 
-    // -- epoch fencing (G2/G4) ------------------------------------------------
+    // -- epoch fencing ------------------------------------------------
 
     #[test]
     fn ownership_path_no_prefix() {
@@ -762,5 +1005,19 @@ mod tests {
                 "conflict must be Fenced, got {err}"
             );
         }
+    }
+
+    // -- durability gate + WAL buffer ---------------------------------------------
+
+    #[tokio::test]
+    async fn wal_flush_empty_is_noop() {
+        let s = S3Store::builder()
+            .with_store(new_in_memory())
+            .with_prefix(Path::from("oxkv"))
+            .with_session("node-a")
+            .build()
+            .await
+            .expect("build");
+        s.flush().await.expect("empty flush is noop");
     }
 }

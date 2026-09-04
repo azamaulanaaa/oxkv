@@ -535,7 +535,7 @@ where
 
 /// Appends one length-prefixed record (`[u32 key len][key][u32 value len][value]`)
 /// to `buffer`.
-fn encode_record(buffer: &mut Vec<u8>, key: &str, value: &[u8]) -> Result<()> {
+pub(crate) fn encode_record(buffer: &mut Vec<u8>, key: &str, value: &[u8]) -> Result<()> {
     let key_len = u32::try_from(key.len())
         .map_err(|e| StoreError::Serialization(format!("key too long: {e}")))?;
     let val_len = u32::try_from(value.len())
