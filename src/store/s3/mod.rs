@@ -5,10 +5,11 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use object_store::path::Path;
 use object_store::{ObjectStore, PutMode, PutPayload};
 
-use crate::store::{Result, StoreError};
+use crate::store::{Direction, GetSet, KeyValue, Result, Store, StoreError, Transaction};
 
 mod ownership;
 mod probe;
@@ -120,10 +121,8 @@ impl S3Store {
             match value {
                 Some(val) => crate::store::encode_record(&mut payload_buf, key, val)
                     .map_err(|e| StoreError::Storage(format!("encode wal: {e}")))?,
-                None => {
-                    crate::store::encode_record(&mut payload_buf, key, &[])
-                        .map_err(|e| StoreError::Storage(format!("encode wal tombstone: {e}")))?;
-                }
+                None => crate::store::encode_record(&mut payload_buf, key, &[])
+                    .map_err(|e| StoreError::Storage(format!("encode wal tombstone: {e}")))?,
             }
         }
 
@@ -158,6 +157,239 @@ impl S3Store {
     pub async fn commit_durable_set(&self, key: &str, value: &[u8]) -> Result<()> {
         self.stage_set(key, value).await;
         self.flush().await
+    }
+
+    async fn get_bytes_inner(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        if let Some(v) = self.mem_get(key).await {
+            return Ok(v);
+        }
+        Ok(None)
+    }
+
+    async fn gets_bytes_inner(
+        &self,
+        limit: Option<u32>,
+        direction: Direction,
+        cursor: (Option<String>, Option<String>),
+    ) -> Result<Vec<KeyValue>> {
+        let mem = self.mem.read().await;
+        let mut items: Vec<KeyValue> = mem
+            .iter()
+            .filter_map(|(k, v)| {
+                v.as_ref().map(|val| KeyValue {
+                    key: k.clone(),
+                    value: val.clone(),
+                })
+            })
+            .collect();
+        drop(mem);
+        let (start, end) = cursor;
+        let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
+        match direction {
+            Direction::Next => {
+                if let (Some(s), Some(e)) = (&start, &end) {
+                    if s > e {
+                        return Ok(Vec::new());
+                    }
+                }
+                let res: Vec<KeyValue> = items
+                    .into_iter()
+                    .filter(|kv| start.as_ref().is_none_or(|s| kv.key >= *s))
+                    .filter(|kv| end.as_ref().is_none_or(|e| kv.key <= *e))
+                    .take(limit)
+                    .collect();
+                Ok(res)
+            }
+            Direction::Prev => {
+                let Some(start) = start else {
+                    return Ok(Vec::new());
+                };
+                if let Some(end) = &end {
+                    if start < *end {
+                        return Ok(Vec::new());
+                    }
+                }
+                let res: Vec<KeyValue> = items
+                    .into_iter()
+                    .rev()
+                    .filter(|kv| kv.key <= start)
+                    .filter(|kv| end.as_ref().is_none_or(|e| kv.key >= *e))
+                    .take(limit)
+                    .collect();
+                Ok(res)
+            }
+        }
+    }
+}
+
+/// Transaction for S3Store — staged overlay.
+pub struct S3Tx {
+    inner: Arc<dyn ObjectStore>,
+    prefix: Path,
+    epoch: u64,
+    session: String,
+    mem: MemTable,
+    wal_seq: Arc<std::sync::atomic::AtomicU64>,
+    wal_buffer: WalBuffer,
+    overlay: std::collections::BTreeMap<String, Option<Vec<u8>>>,
+}
+
+#[async_trait]
+impl GetSet for S3Store {
+    async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        self.get_bytes_inner(key).await
+    }
+    async fn has(&self, key: &str) -> Result<bool> {
+        Ok(self.get_bytes_inner(key).await?.is_some())
+    }
+    async fn delete(&mut self, key: &str) -> Result<bool> {
+        let prev = self.get_bytes_inner(key).await?;
+        let existed = prev.is_some();
+        self.stage_delete(key).await;
+        self.flush().await?;
+        Ok(existed)
+    }
+    async fn set_bytes(&mut self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
+        let prev = self.get_bytes_inner(key).await?;
+        self.stage_set(key, value).await;
+        self.flush().await?;
+        Ok(prev)
+    }
+    async fn gets_bytes(
+        &self,
+        limit: Option<u32>,
+        direction: Direction,
+        cursor: (Option<String>, Option<String>),
+    ) -> Result<Vec<KeyValue>> {
+        self.gets_bytes_inner(limit, direction, cursor).await
+    }
+}
+
+#[async_trait]
+impl GetSet for S3Tx {
+    async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        if let Some(v) = self.overlay.get(key) {
+            return Ok(v.clone());
+        }
+        let mem = self.mem.read().await;
+        match mem.get(key) {
+            Some(Some(v)) => Ok(Some(v.clone())),
+            Some(None) => Ok(None),
+            None => Ok(None),
+        }
+    }
+    async fn has(&self, key: &str) -> Result<bool> {
+        Ok(self.get_bytes(key).await?.is_some())
+    }
+    async fn delete(&mut self, key: &str) -> Result<bool> {
+        let prev = self.get_bytes(key).await?;
+        self.overlay.insert(key.to_string(), None);
+        Ok(prev.is_some())
+    }
+    async fn set_bytes(&mut self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
+        let prev = self.get_bytes(key).await?;
+        self.overlay.insert(key.to_string(), Some(value.to_vec()));
+        Ok(prev)
+    }
+    async fn gets_bytes(
+        &self,
+        limit: Option<u32>,
+        direction: Direction,
+        cursor: (Option<String>, Option<String>),
+    ) -> Result<Vec<KeyValue>> {
+        let mut merged = self.overlay.clone();
+        for (k, v) in self.mem.read().await.iter() {
+            merged.entry(k.clone()).or_insert(v.clone());
+        }
+        let items: Vec<KeyValue> = merged
+            .into_iter()
+            .filter_map(|(k, v)| v.map(|val| KeyValue { key: k, value: val }))
+            .collect();
+        let (start, end) = cursor;
+        let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
+        match direction {
+            Direction::Next => {
+                if let (Some(s), Some(e)) = (&start, &end) {
+                    if s > e {
+                        return Ok(Vec::new());
+                    }
+                }
+                Ok(items
+                    .into_iter()
+                    .filter(|kv| start.as_ref().is_none_or(|s| kv.key >= *s))
+                    .filter(|kv| end.as_ref().is_none_or(|e| kv.key <= *e))
+                    .take(limit)
+                    .collect())
+            }
+            Direction::Prev => {
+                let Some(start) = start else {
+                    return Ok(Vec::new());
+                };
+                if let Some(end) = &end {
+                    if start < *end {
+                        return Ok(Vec::new());
+                    }
+                }
+                Ok(items
+                    .into_iter()
+                    .rev()
+                    .filter(|kv| kv.key <= start)
+                    .filter(|kv| end.as_ref().is_none_or(|e| kv.key >= *e))
+                    .take(limit)
+                    .collect())
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl Transaction for S3Tx {
+    async fn commit(self) -> Result<()> {
+        let mut payload_buf = Vec::new();
+        for (k, v) in &self.overlay {
+            match v {
+                Some(val) => crate::store::encode_record(&mut payload_buf, k, val)
+                    .map_err(|e| StoreError::Storage(format!("encode wal: {e}")))?,
+                None => crate::store::encode_record(&mut payload_buf, k, &[])
+                    .map_err(|e| StoreError::Storage(format!("encode wal: {e}")))?,
+            }
+        }
+        if !payload_buf.is_empty() {
+            let seq = self
+                .wal_seq
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let path = wal_path(&self.prefix, self.epoch, seq);
+            self.inner
+                .put_opts(&path, PutPayload::from(payload_buf), PutMode::Create.into())
+                .await
+                .map_err(|e| StoreError::Storage(format!("put wal failed: {e}")))?;
+            // update mem after durable
+            let mut mem = self.mem.write().await;
+            for (k, v) in self.overlay {
+                mem.insert(k, v);
+            }
+        }
+        Ok(())
+    }
+    async fn rollback(self) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Store for S3Store {
+    type Transaction = S3Tx;
+    fn begin_tx(&mut self) -> Result<Self::Transaction> {
+        Ok(S3Tx {
+            inner: Arc::clone(&self.inner),
+            prefix: self.prefix.clone(),
+            epoch: self.epoch,
+            session: self.session.clone(),
+            mem: Arc::clone(&self.mem),
+            wal_seq: Arc::clone(&self.wal_seq),
+            wal_buffer: Arc::clone(&self.wal_buffer),
+            overlay: std::collections::BTreeMap::new(),
+        })
     }
 }
 
@@ -224,7 +456,6 @@ impl S3StoreBuilder {
             )
         });
         let rec = acquire_ownership(Arc::clone(&store), &self.prefix, &session).await?;
-
         Ok(S3Store {
             inner: store,
             prefix: self.prefix,
@@ -242,7 +473,7 @@ mod tests {
     use super::*;
     use object_store::memory::InMemory;
 
-    pub(crate) fn new_in_memory() -> Arc<dyn ObjectStore> {
+    fn new_in_memory() -> Arc<dyn ObjectStore> {
         Arc::new(InMemory::new())
     }
 
@@ -309,5 +540,41 @@ mod tests {
         // WAL file should exist
         let wal = wal_path(&Path::from("oxkv"), s.epoch(), 0);
         assert!(store.get(&wal).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn store_get_set_via_mem() {
+        let mut s = S3Store::builder()
+            .with_store(Arc::new(InMemory::new()))
+            .with_prefix(Path::from("t"))
+            .with_session("s")
+            .skip_probe(true)
+            .build()
+            .await
+            .unwrap();
+        s.set_bytes("k", b"v").await.unwrap();
+        assert_eq!(
+            s.get_bytes("k").await.unwrap().as_deref(),
+            Some(b"v".as_slice())
+        );
+    }
+
+    #[tokio::test]
+    async fn tx_commit() {
+        let mut s = S3Store::builder()
+            .with_store(Arc::new(InMemory::new()))
+            .with_prefix(Path::from("t2"))
+            .with_session("s")
+            .skip_probe(true)
+            .build()
+            .await
+            .unwrap();
+        let mut tx = s.begin_tx().unwrap();
+        tx.set_bytes("a", b"1").await.unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(
+            s.get_bytes("a").await.unwrap().as_deref(),
+            Some(b"1".as_slice())
+        );
     }
 }
