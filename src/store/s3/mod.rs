@@ -430,6 +430,145 @@ impl S3Store {
             Err(e) => Err(e),
         }
     }
+
+    /// Resolves a raw SST value: if it is a blob pointer, fetches and verifies the blob.
+    async fn resolve_value(&self, raw: Vec<u8>) -> Result<Vec<u8>> {
+        if let Some(ptr) = try_decode_blob_pointer(&raw) {
+            let blob_path = Path::from(ptr.blob.clone());
+            let bytes = get_blob(Arc::clone(&self.inner), &blob_path).await?;
+            if bytes.len() != ptr.len {
+                return Err(StoreError::Storage(format!(
+                    "blob len mismatch for {}: expected {}, got {}",
+                    blob_path,
+                    ptr.len,
+                    bytes.len()
+                )));
+            }
+            let crc = crc32fast::hash(&bytes);
+            if crc != ptr.crc {
+                return Err(StoreError::Storage(format!(
+                    "blob crc mismatch for {}: expected {}, got {}",
+                    blob_path, ptr.crc, crc
+                )));
+            }
+            Ok(bytes)
+        } else {
+            Ok(raw)
+        }
+    }
+
+    /// Fetches and parses an SST file by id, verifying file CRC.
+    async fn fetch_sst(&self, id: &str) -> Result<SstFile> {
+        let path = Path::from(id.to_string());
+        let res = self
+            .inner
+            .get(&path)
+            .await
+            .map_err(|e| StoreError::Storage(format!("get sst {id} failed: {e}")))?;
+        let bytes = res
+            .bytes()
+            .await
+            .map_err(|e| StoreError::Storage(format!("read sst {id} failed: {e}")))?;
+        let sst = SstFile::parse(bytes.to_vec())?;
+        sst.verify_file_crc()?;
+        Ok(sst)
+    }
+
+    /// Reads `key` via MemTable → SSTs (newest first) → blob deref.
+    pub async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        {
+            let mem = self.mem.read().await;
+            if let Some(v) = mem.get(key) {
+                match v {
+                    Some(val) => return Ok(Some(self.resolve_value(val.clone()).await?)),
+                    None => return Ok(None),
+                }
+            }
+        }
+        let (manifest, _etag) = {
+            let mut cache = self.manifest_cache.lock().await;
+            cache
+                .load(
+                    Arc::clone(&self.inner),
+                    &self.prefix,
+                    self.epoch,
+                    std::time::Duration::from_secs(1),
+                )
+                .await?
+        };
+        for meta in manifest.sst.iter().rev() {
+            if key < meta.min_key.as_str() || key > meta.max_key.as_str() {
+                continue;
+            }
+            let sst = self.fetch_sst(&meta.id).await?;
+            match sst.get_option(key)? {
+                Some(Some(raw)) => return Ok(Some(self.resolve_value(raw).await?)),
+                Some(None) => return Ok(None),
+                None => continue,
+            }
+        }
+        Ok(None)
+    }
+
+    /// Checks existence via [`Self::get_bytes`].
+    pub async fn has(&self, key: &str) -> Result<bool> {
+        Ok(self.get_bytes(key).await?.is_some())
+    }
+
+    /// Range scan merging MemTable + SSTs with tombstone suppression and blob deref.
+    pub async fn gets_bytes(
+        &self,
+        limit: Option<u32>,
+        direction: Direction,
+        cursor: (Option<String>, Option<String>),
+    ) -> Result<Vec<KeyValue>> {
+        let mut sources: Vec<Vec<(String, Option<Vec<u8>>)>> = Vec::new();
+        {
+            let mem = self.mem.read().await;
+            let mem_vec: Vec<(String, Option<Vec<u8>>)> =
+                mem.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            sources.push(mem_vec);
+        }
+        let (manifest, _etag) = {
+            let mut cache = self.manifest_cache.lock().await;
+            cache
+                .load(
+                    Arc::clone(&self.inner),
+                    &self.prefix,
+                    self.epoch,
+                    std::time::Duration::from_secs(1),
+                )
+                .await?
+        };
+        for meta in manifest.sst.iter().rev() {
+            let overlaps = {
+                let s = cursor.0.as_deref();
+                let e = cursor.1.as_deref();
+                let min = meta.min_key.as_str();
+                let max = meta.max_key.as_str();
+                let after_start = s.map_or(true, |s| max >= s);
+                let before_end = e.map_or(true, |e| min <= e);
+                after_start && before_end
+            };
+            if !overlaps && cursor.0.is_some() {
+                continue;
+            }
+            let sst = self.fetch_sst(&meta.id).await?;
+            let scan = sst.scan_with_tombstones(None, None, None)?;
+            let mut resolved: Vec<(String, Option<Vec<u8>>)> = Vec::with_capacity(scan.len());
+            for (k, v) in scan {
+                match v {
+                    Some(raw) => {
+                        let val = self.resolve_value(raw).await?;
+                        resolved.push((k, Some(val)));
+                    }
+                    None => resolved.push((k, None)),
+                }
+            }
+            sources.push(resolved);
+        }
+        Ok(merged_gets_bytes(sources, limit, direction, cursor))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1970,5 +2109,136 @@ mod tests {
         assert_eq!(merged[0].key, "a");
         assert_eq!(merged[1].key, "b");
         assert_eq!(merged[1].value, b"mem-b");
+    }
+
+    // -- S3Store read path (G8/G12 integration) ----------------------------------
+
+    #[tokio::test]
+    async fn s3_get_after_flush_mem_to_sst() {
+        let store = new_in_memory();
+        let s = S3Store::builder()
+            .with_store(Arc::clone(&store))
+            .with_prefix(Path::from("oxkv"))
+            .with_session("reader-a")
+            .build()
+            .await
+            .expect("build");
+        s.stage_set("k1", b"v1").await;
+        s.stage_set("k2", b"v2").await;
+        let meta = s
+            .flush_mem_to_sst_force()
+            .await
+            .expect("flush")
+            .expect("some");
+        assert_eq!(meta.level, 0);
+        // mem cleared, get via SST
+        assert_eq!(s.get_bytes("k1").await.unwrap(), Some(b"v1".to_vec()));
+        assert_eq!(s.get_bytes("k2").await.unwrap(), Some(b"v2".to_vec()));
+        assert_eq!(s.get_bytes("missing").await.unwrap(), None);
+        assert!(s.has("k1").await.unwrap());
+        assert!(!s.has("missing").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn s3_tombstone_and_empty_value_after_flush() {
+        let store = new_in_memory();
+        let s = S3Store::builder()
+            .with_store(Arc::clone(&store))
+            .with_prefix(Path::from("oxkv"))
+            .with_session("reader-b")
+            .build()
+            .await
+            .expect("build");
+        s.stage_set("a", b"val").await;
+        s.stage_set("empty", b"").await; // empty value, not tombstone
+        s.flush_mem_to_sst_force().await.expect("flush");
+        // delete a -> tombstone in new L0
+        s.stage_delete("a").await;
+        s.flush_mem_to_sst_force().await.expect("flush delete");
+        assert_eq!(s.get_bytes("a").await.unwrap(), None);
+        assert_eq!(s.get_bytes("empty").await.unwrap(), Some(Vec::new()));
+        // gets should suppress tombstone but return empty
+        let all = s
+            .gets_bytes(None, Direction::Next, (None, None))
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].key, "empty");
+        assert_eq!(all[0].value, Vec::<u8>::new());
+    }
+
+    #[tokio::test]
+    async fn s3_overflow_blob_via_flush_and_get() {
+        let store = new_in_memory();
+        let s = S3Store::builder()
+            .with_store(Arc::clone(&store))
+            .with_prefix(Path::from("oxkv"))
+            .with_session("reader-c")
+            .build()
+            .await
+            .expect("build");
+        let big = vec![b'x'; 40 * 1024];
+        s.stage_set("big", &big).await;
+        s.flush_mem_to_sst_force().await.expect("flush big");
+        let got = s.get_bytes("big").await.unwrap().expect("got big");
+        assert_eq!(got, big);
+        let all = s
+            .gets_bytes(None, Direction::Next, (None, None))
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].value, big);
+    }
+
+    #[tokio::test]
+    async fn s3_gets_bytes_merge_and_pagination() {
+        let store = new_in_memory();
+        let s = S3Store::builder()
+            .with_store(Arc::clone(&store))
+            .with_prefix(Path::from("oxkv"))
+            .with_session("reader-d")
+            .build()
+            .await
+            .expect("build");
+        for c in 'a'..='e' {
+            s.stage_set(&c.to_string(), &[c as u8]).await;
+        }
+        s.flush_mem_to_sst_force().await.expect("flush");
+        s.stage_set("c", b"new-c").await; // newer in mem
+        s.stage_delete("d").await; // tombstone in mem
+        let all = s
+            .gets_bytes(None, Direction::Next, (None, None))
+            .await
+            .unwrap();
+        // d suppressed, c is new-c, total 4 (a,b,c,e)
+        assert_eq!(all.len(), 4);
+        assert_eq!(
+            all.iter().map(|kv| kv.key.as_str()).collect::<Vec<_>>(),
+            vec!["a", "b", "c", "e"]
+        );
+        assert_eq!(all[2].value, b"new-c");
+        // range + limit
+        let page = s
+            .gets_bytes(
+                Some(2),
+                Direction::Next,
+                (Some("b".to_string()), Some("d".to_string())),
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.len(), 2);
+        assert_eq!(page[0].key, "b");
+        assert_eq!(page[1].key, "c");
+        // Prev
+        let prev = s
+            .gets_bytes(
+                None,
+                Direction::Prev,
+                (Some("e".to_string()), Some("b".to_string())),
+            )
+            .await
+            .unwrap();
+        assert_eq!(prev[0].key, "e");
+        assert_eq!(prev[1].key, "c");
     }
 }
