@@ -37,6 +37,10 @@ mod otel;
 pub use redb::{RedbStore, RedbTx};
 #[cfg(feature = "redb")]
 mod redb;
+#[cfg(feature = "s3")]
+pub use s3::{S3Store, S3StoreBuilder};
+#[cfg(feature = "s3")]
+mod s3;
 
 /// A specialized `Result` type for store operations.
 pub type Result<T> = std::result::Result<T, StoreError>;
@@ -67,6 +71,13 @@ pub enum StoreError {
     /// A generic error with a message.
     #[error("{0}")]
     Other(String),
+
+    /// The store has been fenced — another owner acquired the epoch.
+    ///
+    /// Terminal: the current process must stop writing and restart via
+    /// `ownership.json` CAS.
+    #[error("fenced: {0}")]
+    Fenced(String),
 }
 
 impl PartialEq for StoreError {
@@ -74,7 +85,8 @@ impl PartialEq for StoreError {
         match (self, other) {
             (StoreError::Storage(a), StoreError::Storage(b))
             | (StoreError::Serialization(a), StoreError::Serialization(b))
-            | (StoreError::Other(a), StoreError::Other(b)) => a == b,
+            | (StoreError::Other(a), StoreError::Other(b))
+            | (StoreError::Fenced(a), StoreError::Fenced(b)) => a == b,
             (StoreError::Utf8(a), StoreError::Utf8(b)) => a == b,
             (StoreError::Utf8Slice(a), StoreError::Utf8Slice(b)) => a == b,
             (StoreError::Json(a), StoreError::Json(b)) => a.to_string() == b.to_string(),
@@ -523,7 +535,7 @@ where
 
 /// Appends one length-prefixed record (`[u32 key len][key][u32 value len][value]`)
 /// to `buffer`.
-fn encode_record(buffer: &mut Vec<u8>, key: &str, value: &[u8]) -> Result<()> {
+pub(crate) fn encode_record(buffer: &mut Vec<u8>, key: &str, value: &[u8]) -> Result<()> {
     let key_len = u32::try_from(key.len())
         .map_err(|e| StoreError::Serialization(format!("key too long: {e}")))?;
     let val_len = u32::try_from(value.len())
