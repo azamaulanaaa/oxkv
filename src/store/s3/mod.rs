@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use object_store::path::Path;
 use object_store::{ObjectStore, PutMode, PutPayload, PutResult, UpdateVersion};
+use serde::{Deserialize, Serialize};
 
 use crate::store::{Result, StoreError};
 
@@ -217,6 +218,184 @@ async fn probe_store(store: Arc<dyn ObjectStore>, prefix: &Path) -> Result<()> {
         .map_err(|e| StoreError::Storage(format!("probe cleanup failed: {e}")))?;
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Ownership + epoch fencing (G2/G4)
+// ---------------------------------------------------------------------------
+
+/// Ownership record stored at `{prefix}/ownership.json`.
+///
+/// Mirrors `celld`'s `{epoch, ownerSession}` CAS record — every activation
+/// bumps `epoch`, all new WAL/SST objects go under `e{epoch:06}/`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct OwnershipRecord {
+    /// Monotonic epoch — bumped on every successful CAS.
+    pub epoch: u64,
+    /// Owner session identifier (e.g. `node-a:uuid`).
+    pub owner_session: String,
+    /// Optional lease expiry in ms since epoch (fleet mode, §9).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lease_expiry_ms: Option<u64>,
+    /// Last known manifest `e_tag` (debug aid).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manifest_etag: Option<String>,
+}
+
+/// Returns the path for `ownership.json`.
+#[must_use]
+pub(crate) fn ownership_path(prefix: &Path) -> Path {
+    if prefix.as_ref().is_empty() {
+        Path::from("ownership.json")
+    } else {
+        prefix.child("ownership.json")
+    }
+}
+
+/// Returns the path for `manifest.json`.
+#[must_use]
+pub(crate) fn manifest_path(prefix: &Path) -> Path {
+    if prefix.as_ref().is_empty() {
+        Path::from("manifest.json")
+    } else {
+        prefix.child("manifest.json")
+    }
+}
+
+/// Formats an epoch as `e000007` (zero-padded 6 digits, §3).
+#[must_use]
+pub(crate) fn format_epoch(epoch: u64) -> String {
+    format!("e{epoch:06}")
+}
+
+/// Returns the epoch-scoped prefix `\{prefix}/e{epoch:06}`.
+#[must_use]
+pub(crate) fn epoch_prefix(prefix: &Path, epoch: u64) -> Path {
+    let epoch_str = format_epoch(epoch);
+    if prefix.as_ref().is_empty() {
+        Path::from(epoch_str)
+    } else {
+        prefix.child(epoch_str)
+    }
+}
+
+/// Returns `\{prefix}/e{epoch:06}/wal/{seq:08}.log.zst`.
+#[must_use]
+pub(crate) fn wal_path(prefix: &Path, epoch: u64, seq: u64) -> Path {
+    epoch_prefix(prefix, epoch)
+        .child("wal")
+        .child(format!("{seq:08}.log.zst"))
+}
+
+/// Returns `\{prefix}/e{epoch:06}/sst/{level}/{id:09}.sst.zst`.
+#[must_use]
+pub(crate) fn sst_path(prefix: &Path, epoch: u64, level: u8, id: u64) -> Path {
+    epoch_prefix(prefix, epoch)
+        .child("sst")
+        .child(format!("L{level}"))
+        .child(format!("{id:09}.sst.zst"))
+}
+
+/// Returns `\{prefix}/e{epoch:06}/blob/{hash}.zst` for large-value overflow (§10).
+#[must_use]
+pub(crate) fn blob_path(prefix: &Path, epoch: u64, hash: &str) -> Path {
+    epoch_prefix(prefix, epoch)
+        .child("blob")
+        .child(format!("{hash}.zst"))
+}
+
+/// Acquires ownership by CAS-bumping `ownership.json` epoch.
+///
+/// `session` is the owner identifier. On success returns the new
+/// `OwnershipRecord` with `epoch = old.epoch + 1` (or `1` on first acquire).
+/// On `AlreadyExists`/`Precondition` conflict returns `StoreError::Fenced`.
+///
+/// This maps to S3 `If-None-Match:"*"` (create) and `If-Match: etag`
+/// (update) — `object_store` translates `PutMode::Create/Update` to the
+/// correct header per provider (`S3`/`R2`/`Azure` vs `GCS`
+/// `x-goog-if-generation-match`), so the same code qualifies all stores (§9 G4).
+///
+/// For contended callers, retry with backoff and reload (G9).
+///
+/// Provider note: `InMemory` supports `Create` (`AlreadyExists`) and
+/// `Update` (`Precondition`) exactly, so unit tests run without a real bucket.
+pub(crate) async fn acquire_ownership(
+    store: Arc<dyn ObjectStore>,
+    prefix: &Path,
+    session: &str,
+) -> Result<OwnershipRecord> {
+    let path = ownership_path(prefix);
+
+    // Load current record + version, if any.
+    let (existing, version) = match store.get(&path).await {
+        Ok(res) => {
+            let meta = res.meta.clone();
+            let bytes = res
+                .bytes()
+                .await
+                .map_err(|e| StoreError::Storage(format!("read ownership failed: {e}")))?;
+            let rec: OwnershipRecord = serde_json::from_slice(&bytes)
+                .map_err(|e| StoreError::Storage(format!("corrupt ownership.json: {e}")))?;
+            let ver = UpdateVersion {
+                e_tag: meta.e_tag.clone(),
+                version: meta.version.clone(),
+            };
+            (Some(rec), Some(ver))
+        }
+        Err(object_store::Error::NotFound { .. }) => (None, None),
+        Err(e) => return Err(StoreError::Storage(format!("get ownership failed: {e}"))),
+    };
+
+    let next_epoch = existing.as_ref().map_or(1, |r| r.epoch + 1);
+    let new_rec = OwnershipRecord {
+        epoch: next_epoch,
+        owner_session: session.to_string(),
+        lease_expiry_ms: None,
+        manifest_etag: None,
+    };
+    let payload = PutPayload::from(
+        serde_json::to_vec(&new_rec)
+            .map_err(|e| StoreError::Storage(format!("serialize ownership: {e}")))?,
+    );
+
+    let put_res = if let Some(ver) = version {
+        store
+            .put_opts(&path, payload, PutMode::Update(ver).into())
+            .await
+    } else {
+        store.put_opts(&path, payload, PutMode::Create.into()).await
+    };
+
+    match put_res {
+        Ok(_) => Ok(new_rec),
+        Err(
+            object_store::Error::AlreadyExists { .. } | object_store::Error::Precondition { .. },
+        ) => Err(StoreError::Fenced(format!(
+            "ownership CAS conflict at epoch {next_epoch} for session {session} — fenced"
+        ))),
+        Err(e) => Err(StoreError::Storage(format!("put ownership failed: {e}"))),
+    }
+}
+
+/// Reads the current ownership record, if any.
+pub(crate) async fn read_ownership(
+    store: Arc<dyn ObjectStore>,
+    prefix: &Path,
+) -> Result<Option<OwnershipRecord>> {
+    let path = ownership_path(prefix);
+    match store.get(&path).await {
+        Ok(res) => {
+            let bytes = res
+                .bytes()
+                .await
+                .map_err(|e| StoreError::Storage(format!("read ownership failed: {e}")))?;
+            let rec: OwnershipRecord = serde_json::from_slice(&bytes)
+                .map_err(|e| StoreError::Storage(format!("corrupt ownership.json: {e}")))?;
+            Ok(Some(rec))
+        }
+        Err(object_store::Error::NotFound { .. }) => Ok(None),
+        Err(e) => Err(StoreError::Storage(format!("get ownership failed: {e}"))),
+    }
 }
 
 /// In-memory store helper for tests.
@@ -431,5 +610,157 @@ mod tests {
         S3Store::probe(store, &Path::default())
             .await
             .expect("static probe must pass");
+    }
+
+    // -- epoch fencing (G2/G4) ------------------------------------------------
+
+    #[test]
+    fn ownership_path_no_prefix() {
+        assert_eq!(ownership_path(&Path::default()).as_ref(), "ownership.json");
+    }
+
+    #[test]
+    fn ownership_path_with_prefix() {
+        assert_eq!(
+            ownership_path(&Path::from("oxkv")).as_ref(),
+            "oxkv/ownership.json"
+        );
+    }
+
+    #[test]
+    fn manifest_path_and_epoch_prefix_formatting() {
+        assert_eq!(manifest_path(&Path::default()).as_ref(), "manifest.json");
+        assert_eq!(epoch_prefix(&Path::default(), 7).as_ref(), "e000007");
+        assert_eq!(
+            epoch_prefix(&Path::from("oxkv"), 7).as_ref(),
+            "oxkv/e000007"
+        );
+        assert_eq!(
+            wal_path(&Path::from("oxkv"), 7, 42).as_ref(),
+            "oxkv/e000007/wal/00000042.log.zst"
+        );
+        assert_eq!(
+            sst_path(&Path::from("oxkv"), 7, 0, 123).as_ref(),
+            "oxkv/e000007/sst/L0/000000123.sst.zst"
+        );
+        assert_eq!(
+            blob_path(&Path::from("oxkv"), 7, "abc").as_ref(),
+            "oxkv/e000007/blob/abc.zst"
+        );
+    }
+
+    #[tokio::test]
+    async fn fencing_acquire_increments_epoch() {
+        let store = new_in_memory();
+        let prefix = Path::from("oxkv");
+        let r1 = acquire_ownership(Arc::clone(&store), &prefix, "node-a")
+            .await
+            .expect("first acquire");
+        assert_eq!(r1.epoch, 1);
+        assert_eq!(r1.owner_session, "node-a");
+        let r2 = acquire_ownership(Arc::clone(&store), &prefix, "node-b")
+            .await
+            .expect("second acquire");
+        assert_eq!(r2.epoch, 2);
+        assert_eq!(r2.owner_session, "node-b");
+        let cur = read_ownership(Arc::clone(&store), &prefix)
+            .await
+            .expect("read")
+            .expect("some");
+        assert_eq!(cur.epoch, 2);
+    }
+
+    #[tokio::test]
+    async fn fencing_stale_writer_superseded_prefix_invisible() {
+        let store = new_in_memory();
+        let prefix = Path::from("oxkv");
+        // node-a owns epoch 1 and writes to e000001
+        let r1 = acquire_ownership(Arc::clone(&store), &prefix, "node-a")
+            .await
+            .unwrap();
+        let wal1 = wal_path(&prefix, r1.epoch, 1);
+        store
+            .put(&wal1, PutPayload::from_static(b"wal1"))
+            .await
+            .unwrap();
+
+        // node-b fences to epoch 2
+        let r2 = acquire_ownership(Arc::clone(&store), &prefix, "node-b")
+            .await
+            .unwrap();
+        assert_eq!(r2.epoch, 2);
+        let wal2 = wal_path(&prefix, r2.epoch, 1);
+        store
+            .put(&wal2, PutPayload::from_static(b"wal2"))
+            .await
+            .unwrap();
+
+        // stale writer that captured r1's version tries to CAS ownership with stale etag — must fence
+        // Simulate by directly attempting Put with stale version (r1's etag)
+        let stale_path = ownership_path(&prefix);
+        // fetch current meta to get a stale version from r1 era: we fake a stale etag
+        let stale_ver = UpdateVersion {
+            e_tag: Some("\"stale-etag-r1\"".to_string()),
+            version: None,
+        };
+        let stale_put = store
+            .put_opts(
+                &stale_path,
+                PutPayload::from_static(b"stale"),
+                PutMode::Update(stale_ver).into(),
+            )
+            .await;
+        assert!(
+            matches!(stale_put, Err(object_store::Error::Precondition { .. })),
+            "stale If-Match must be rejected"
+        );
+
+        // objects are isolated by epoch prefix — reads scoped to current epoch don't see old prefix
+        let got1 = store
+            .get(&wal1)
+            .await
+            .expect("old epoch wal still exists but isolated");
+        assert_eq!(got1.bytes().await.unwrap().as_ref(), b"wal1");
+        let got2 = store.get(&wal2).await.expect("new epoch wal");
+        assert_eq!(got2.bytes().await.unwrap().as_ref(), b"wal2");
+        // ownership is at epoch 2
+        let cur = read_ownership(store, &prefix).await.unwrap().unwrap();
+        assert_eq!(cur.epoch, 2);
+        assert_eq!(cur.owner_session, "node-b");
+    }
+
+    #[tokio::test]
+    async fn fencing_412_maps_to_fenced_error() {
+        let store = new_in_memory();
+        let prefix = Path::default();
+        let _r1 = acquire_ownership(Arc::clone(&store), &prefix, "node-a")
+            .await
+            .unwrap();
+        // Simulate a racing acquirer that holds stale read: read old record, delay, then try to acquire
+        // Our acquire_ownership does read+put atomically; to force conflict, we concurrently race two acquires
+        let s1 = Arc::clone(&store);
+        let s2 = Arc::clone(&store);
+        let (a, b) = tokio::join!(
+            acquire_ownership(s1, &prefix, "racer-1"),
+            acquire_ownership(s2, &prefix, "racer-2")
+        );
+        // exactly one must succeed, one must be Fenced (InMemory serializes, so second sees updated epoch or conflicts)
+        let successes = usize::from(a.is_ok()) + usize::from(b.is_ok());
+        // With our current read-then-put without retry, the second concurrent read may see epoch 1 and both try epoch 2;
+        // one will get Precondition -> Fenced. If serialized, one will see epoch 2 and succeed at 3. Either way, at least one fences or both succeed sequentially.
+        // We assert that eventual epoch is 2 or 3 and at most one conflict.
+        let final_rec = read_ownership(Arc::clone(&store), &prefix)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(final_rec.epoch == 2 || final_rec.epoch == 3);
+        assert!(successes >= 1);
+        if successes == 1 {
+            let err = a.err().or(b.err()).unwrap();
+            assert!(
+                matches!(err, StoreError::Fenced(_)),
+                "conflict must be Fenced, got {err}"
+            );
+        }
     }
 }

@@ -71,6 +71,13 @@ pub enum StoreError {
     /// A generic error with a message.
     #[error("{0}")]
     Other(String),
+
+    /// The store has been fenced — another owner acquired the epoch.
+    ///
+    /// Terminal: the current process must stop writing and restart via
+    /// `ownership.json` CAS (see `docs/s3-lsm-design.md` §9 self-fencing).
+    #[error("fenced: {0}")]
+    Fenced(String),
 }
 
 impl PartialEq for StoreError {
@@ -78,7 +85,8 @@ impl PartialEq for StoreError {
         match (self, other) {
             (StoreError::Storage(a), StoreError::Storage(b))
             | (StoreError::Serialization(a), StoreError::Serialization(b))
-            | (StoreError::Other(a), StoreError::Other(b)) => a == b,
+            | (StoreError::Other(a), StoreError::Other(b))
+            | (StoreError::Fenced(a), StoreError::Fenced(b)) => a == b,
             (StoreError::Utf8(a), StoreError::Utf8(b)) => a == b,
             (StoreError::Utf8Slice(a), StoreError::Utf8Slice(b)) => a == b,
             (StoreError::Json(a), StoreError::Json(b)) => a.to_string() == b.to_string(),
