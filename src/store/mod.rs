@@ -38,9 +38,9 @@ pub use redb::{RedbStore, RedbTx};
 #[cfg(feature = "redb")]
 mod redb;
 #[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
-mod s3;
-#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
 pub use s3::{S3Store, S3StoreBuilder};
+#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
+mod s3;
 
 /// A specialized `Result` type for store operations.
 pub type Result<T> = std::result::Result<T, StoreError>;

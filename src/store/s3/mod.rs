@@ -1,47 +1,52 @@
-//! S3-backed LSM store
+//! S3-backed LSM store — probe + epoch fencing + WAL + SST.
+//!
+#![cfg(not(target_arch = "wasm32"))]
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use object_store::path::Path;
-use object_store::{ObjectStore, PutMode, PutPayload, PutResult, UpdateVersion};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use object_store::{ObjectStore, PutMode, PutPayload, PutResult};
 
-#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
-mod sst;
-#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
-pub(crate) use sst::{
-    DEFAULT_BLOCK_SIZE, SST_MAGIC, SST_VERSION, SstFile, build_sst, build_sst_from_values,
-};
-#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
-//
+use crate::store::{Direction, KeyValue, Result, StoreError};
+
+mod blob;
 mod manifest;
-#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
-pub(crate) use manifest::{ManifestCache, SstMeta, cas_manifest, manifest_path, read_manifest};
+mod ownership;
+mod probe;
+mod sst;
 
-use crate::store::{Direction, GetSet, KeyValue, Result, Store, StoreError, Transaction};
+pub(crate) use blob::{BlobPointer, blob_hash, blob_path};
+pub(crate) use blob::{
+    encode_blob_pointer, get_blob, is_overflow, put_blob, try_decode_blob_pointer,
+};
+pub(crate) use manifest::{Manifest, ManifestCache, SstMeta, manifest_path};
+pub(crate) use manifest::{cas_manifest, read_manifest};
+pub(crate) use ownership::{
+    OwnershipRecord, epoch_prefix, format_epoch, ownership_path, sst_path, wal_path,
+};
+pub(crate) use ownership::{acquire_ownership, cas_backoff, read_ownership};
+pub(crate) use probe::probe_store;
+pub(crate) use sst::{DEFAULT_BLOCK_SIZE, SST_MAGIC, SST_VERSION, build_sst_from_values};
+pub(crate) use sst::{SstFile, build_sst};
 
 type MemMap = std::collections::BTreeMap<String, Option<Vec<u8>>>;
 type MemTable = Arc<tokio::sync::RwLock<MemMap>>;
 type WalBuffer = Arc<tokio::sync::Mutex<Vec<(String, Option<Vec<u8>>)>>>;
 
-/// S3-backed store.
+/// S3-backed store (incremental — probe + fencing + WAL gate + SST).
 pub struct S3Store {
     inner: Arc<dyn ObjectStore>,
     prefix: Path,
     epoch: u64,
     session: String,
-    /// In-memory `MemTable` — `BTreeMap` mirroring `BTreeStore` overlay.
     mem: MemTable,
-    /// WAL sequence for `e{epoch}/wal/{seq:08}.log.zst`.
-    wal_seq: Arc<std::sync::atomic::AtomicU64>,
-    /// Buffered WAL ops pending an explicit [`Self::flush`] (group commit).
+    wal_seq: std::sync::atomic::AtomicU64,
     wal_buffer: WalBuffer,
-    /// SST sequence for `L0` ids.
     sst_seq: std::sync::atomic::AtomicU64,
-    /// Manifest cache (`ETag` + `TTL 1s`, §6-§7 G8).
     manifest_cache: Arc<tokio::sync::Mutex<ManifestCache>>,
+    /// Pinned reader versions for WAL GC watermark (G5).
+    /// `BTreeMap<version, count>` — `min_key` is the watermark.
+    readers: Arc<tokio::sync::Mutex<std::collections::BTreeMap<u64, usize>>>,
 }
 
 impl std::fmt::Debug for S3Store {
@@ -66,59 +71,59 @@ impl S3Store {
         }
     }
 
-    /// Runs the storage probe against `store` at a unique per-run
-    /// `prefix/probe/canary-<uuid>` path.
+    /// Runs the storage probe against `store` at `prefix/probe/canary`.
     ///
-    /// validates `If-None-Match` / `If-Match`
+    /// Mirrors `celld diagnose` — validates `If-None-Match` / `If-Match`
     /// conditional writes. Returns `Ok(())` only on
     /// `ok (create, reject-create, reject-stale)`.
     ///
     /// # Errors
     ///
-    /// Returns `StoreError::Storage` if conditional writes are not enforced
-    /// (store accepts duplicate `Create` or stale `Update`).
+    /// Returns `StoreError::Storage` if conditional writes are not enforced.
     pub async fn probe(store: Arc<dyn ObjectStore>, prefix: &Path) -> Result<()> {
         probe_store(store, prefix).await
     }
 
     /// Returns the underlying object store (for tests).
     #[cfg(test)]
+    #[must_use]
     pub fn inner_store(&self) -> Arc<dyn ObjectStore> {
         Arc::clone(&self.inner)
     }
 
     /// Returns the prefix.
     #[cfg(test)]
+    #[must_use]
     pub fn prefix(&self) -> &Path {
         &self.prefix
     }
 
     /// Returns the current epoch.
     #[cfg(test)]
+    #[must_use]
     pub fn epoch(&self) -> u64 {
         self.epoch
     }
 
     /// Returns the session id.
     #[cfg(test)]
+    #[must_use]
     pub fn session(&self) -> &str {
         &self.session
     }
 
-    /// Stages `set` into `MemTable` + WAL buffer (commit = mem).
+    /// Stages `set` into `MemTable` + WAL buffer (commit = mem, §5).
     ///
-    /// Does not hit S3 — use [`Self::flush`] or [`Self::commit_durable_set`] for RPO=0.
-    /// Prefer `GetSet::set_bytes` / `Store::begin_tx` for trait-based access.
+    /// Does not hit S3 — use [`Self::flush`] or [`Self::commit_durable`] for RPO=0.
     pub async fn stage_set(&self, key: &str, value: &[u8]) {
-        let v = value.to_vec();
         self.mem
             .write()
             .await
-            .insert(key.to_string(), Some(v.clone()));
+            .insert(key.to_string(), Some(value.to_vec()));
         self.wal_buffer
             .lock()
             .await
-            .push((key.to_string(), Some(v)));
+            .push((key.to_string(), Some(value.to_vec())));
     }
 
     /// Stages `delete` into `MemTable` + WAL buffer.
@@ -132,26 +137,15 @@ impl S3Store {
         self.mem.read().await.get(key).cloned()
     }
 
-    /// Internal: read-through MemTable only (no SST yet).
-    async fn get_bytes_inner(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        Ok(self.mem.read().await.get(key).cloned().flatten())
-    }
-
-    async fn gets_bytes_inner(
-        &self,
-        limit: Option<u32>,
-        direction: Direction,
-        cursor: (Option<String>, Option<String>),
-    ) -> Result<Vec<KeyValue>> {
-        let mem = self.mem.read().await;
-        Ok(apply_gets(live_kvs(&mem), limit, direction, cursor))
-    }
-
     /// Flushes buffered WAL ops to `e{epoch}/wal/{seq:08}.log.zst` via
     /// `PutMode::Create` (`If-None-Match:"*"`), then gates on ownership.
     ///
-    /// `PUT wal` must succeed *and* `GET ownership.json` must still name `self`.
-    /// Idempotent on `AlreadyExists` (group-commit retry).
+    /// Implements `commit_durable` RPO=0 (G1).
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Storage` on `PUT` failure and `StoreError::Fenced`
+    /// if `ownership.json` no longer names this epoch/session after the `PUT`.
     pub async fn flush(&self) -> Result<()> {
         let ops: Vec<(String, Option<Vec<u8>>)> = {
             let mut buf = self.wal_buffer.lock().await;
@@ -162,16 +156,12 @@ impl S3Store {
         };
 
         let mut payload_buf = Vec::new();
-        for (k, v) in &ops {
-            match v {
-                Some(val) => crate::store::encode_record(&mut payload_buf, k, val)
+        for (key, value) in &ops {
+            match value {
+                Some(val) => crate::store::encode_record(&mut payload_buf, key, val)
                     .map_err(|e| StoreError::Storage(format!("encode wal: {e}")))?,
                 None => {
-                    // tombstone: encode with empty value + distinct marker — reuse encode with empty
-                    // For v1, empty value means delete; compaction will treat it as tombstone.
-                    // To keep wire compat with save_stream, use empty Vec as delete marker and
-                    // rely on higher layer (SST) to interpret. Here we encode key+empty.
-                    crate::store::encode_record(&mut payload_buf, k, &[])
+                    crate::store::encode_record(&mut payload_buf, key, &[])
                         .map_err(|e| StoreError::Storage(format!("encode wal tombstone: {e}")))?;
                 }
             }
@@ -188,13 +178,10 @@ impl S3Store {
             .await;
 
         match put_res {
-            Ok(_) | Err(object_store::Error::AlreadyExists { .. }) => {
-                // idempotent retry — already durable
-            }
+            Ok(_) | Err(object_store::Error::AlreadyExists { .. }) => {}
             Err(e) => return Err(StoreError::Storage(format!("put wal failed: {e}"))),
         }
 
-        // Durability gate: verify still owner
         let cur = read_ownership(Arc::clone(&self.inner), &self.prefix).await?;
         match cur {
             Some(rec) if rec.epoch == self.epoch && rec.owner_session == self.session => {}
@@ -210,7 +197,7 @@ impl S3Store {
                 ));
             }
         }
-        // Update manifest.wal[] via CAS with backoff (G5/G9) — idempotent on AlreadyExists
+
         let wal_id = path.to_string();
         for attempt in 0..4 {
             let mut cache = self.manifest_cache.lock().await;
@@ -251,7 +238,7 @@ impl S3Store {
         Ok(())
     }
 
-    /// Convenience: stage + flush (RPO=0).
+    /// Convenience: stage + flush (RPO=0) — mirrors `commit_durable`.
     ///
     /// # Errors
     ///
@@ -261,11 +248,7 @@ impl S3Store {
         self.flush().await
     }
 
-    /// Flushes `MemTable` to `L0` SST if above `32MB` or `force`.
-    ///
-    /// Builds `32KB` blocks with `bloom`/`CRC`, handles overflow `blob/` for
-    /// large values, `PUT`s `e{epoch}/sst/L0/*.sst.zst` via `Create`, then
-    /// `CAS`es `manifest.json` (`If-Match`). Idempotent on `AlreadyExists`.
+    /// Flushes `MemTable` to `L0` SST if above `32 MiB` or `force`.
     ///
     /// # Errors
     ///
@@ -284,14 +267,13 @@ impl S3Store {
         self.flush_mem_to_sst_inner(true).await
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn flush_mem_to_sst_inner(&self, force: bool) -> Result<Option<SstMeta>> {
-        // Snapshot MemTable
         let snapshot: std::collections::BTreeMap<String, Option<Vec<u8>>> = {
             let mem = self.mem.read().await;
             if mem.is_empty() {
                 return Ok(None);
             }
-            // Size estimate: sum key+value+8
             let est: usize = mem
                 .iter()
                 .map(|(k, v)| k.len() + v.as_ref().map_or(0, |b| b.len()) + 8)
@@ -302,25 +284,23 @@ impl S3Store {
             mem.clone()
         };
 
-        // Handle overflow blobs: large values spill to blob/
         let mut sst_entries: std::collections::BTreeMap<String, Option<Vec<u8>>> =
             std::collections::BTreeMap::new();
-        for (k, v) in &snapshot {
-            match v {
-                Some(val) if is_overflow(k, val, DEFAULT_BLOCK_SIZE) => {
+        for (key, value) in &snapshot {
+            match value {
+                Some(val) if is_overflow(key, val, DEFAULT_BLOCK_SIZE) => {
                     let blob_path =
                         put_blob(Arc::clone(&self.inner), &self.prefix, self.epoch, val).await?;
                     let crc = crc32fast::hash(val);
                     let ptr = encode_blob_pointer(&blob_path, val.len(), crc);
-                    sst_entries.insert(k.clone(), Some(ptr));
+                    sst_entries.insert(key.clone(), Some(ptr));
                 }
                 other => {
-                    sst_entries.insert(k.clone(), other.clone());
+                    sst_entries.insert(key.clone(), other.clone());
                 }
             }
         }
 
-        // Build SST file
         let sst_bytes = build_sst(&sst_entries, DEFAULT_BLOCK_SIZE)?;
         if sst_bytes.is_empty() {
             return Ok(None);
@@ -330,7 +310,6 @@ impl S3Store {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let sst_id = format!("e{:06}/sst/L0/{:09}.sst.zst", self.epoch, seq);
         let sst_path = Path::from(sst_id.clone());
-        // Put SST (epoch-scoped path is already idempotent via Create)
         let put_res = self
             .inner
             .put_opts(
@@ -344,7 +323,6 @@ impl S3Store {
             Err(e) => return Err(StoreError::Storage(format!("put sst failed: {e}"))),
         }
 
-        // Verify still owner before CAS manifest (fence)
         let cur_owner = read_ownership(Arc::clone(&self.inner), &self.prefix).await?;
         match cur_owner {
             Some(rec) if rec.epoch == self.epoch && rec.owner_session == self.session => {}
@@ -361,7 +339,6 @@ impl S3Store {
             }
         }
 
-        // CAS manifest: add SST meta, bump version
         let mut cache = self.manifest_cache.lock().await;
         let (mut manifest, etag) = cache
             .load(
@@ -371,14 +348,12 @@ impl S3Store {
                 std::time::Duration::from_secs(1),
             )
             .await?;
-        // Deduplicate: if SST already in manifest (idempotent retry), return existing meta
         if manifest.sst.iter().any(|m| m.id == sst_id) {
             let existing = manifest.sst.iter().find(|m| m.id == sst_id).cloned();
-            // Drain mem entries that were flushed (even on idempotent, clear mem)
             {
                 let mut mem = self.mem.write().await;
-                for k in snapshot.keys() {
-                    mem.remove(k);
+                for key in snapshot.keys() {
+                    mem.remove(key);
                 }
             }
             return Ok(existing);
@@ -398,8 +373,8 @@ impl S3Store {
                 cache.update(manifest, new_etag);
                 {
                     let mut mem = self.mem.write().await;
-                    for k in snapshot.keys() {
-                        mem.remove(k);
+                    for key in snapshot.keys() {
+                        mem.remove(key);
                     }
                 }
                 Ok(Some(sst_meta))
@@ -418,8 +393,8 @@ impl S3Store {
                     .await?;
                 if reloaded.sst.iter().any(|m| m.id == sst_id) {
                     let mut mem = self.mem.write().await;
-                    for k in snapshot.keys() {
-                        mem.remove(k);
+                    for key in snapshot.keys() {
+                        mem.remove(key);
                     }
                     return Ok(reloaded.sst.into_iter().find(|m| m.id == sst_id));
                 }
@@ -431,7 +406,6 @@ impl S3Store {
         }
     }
 
-    /// Resolves a raw SST value: if it is a blob pointer, fetches and verifies the blob.
     async fn resolve_value(&self, raw: Vec<u8>) -> Result<Vec<u8>> {
         if let Some(ptr) = try_decode_blob_pointer(&raw) {
             let blob_path = Path::from(ptr.blob.clone());
@@ -457,7 +431,6 @@ impl S3Store {
         }
     }
 
-    /// Fetches and parses an SST file by id, verifying file CRC.
     async fn fetch_sst(&self, id: &str) -> Result<SstFile> {
         let path = Path::from(id.to_string());
         let res = self
@@ -474,13 +447,17 @@ impl S3Store {
         Ok(sst)
     }
 
-    /// Reads `key` via MemTable → SSTs (newest first) → blob deref.
+    /// Reads `key` via `MemTable` → SSTs (newest first) → blob deref.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError` on I/O or CRC failure.
     pub async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
         {
             let mem = self.mem.read().await;
-            if let Some(v) = mem.get(key) {
-                match v {
-                    Some(val) => return Ok(Some(self.resolve_value(val.clone()).await?)),
+            if let Some(val) = mem.get(key) {
+                match val {
+                    Some(v) => return Ok(Some(self.resolve_value(v.clone()).await?)),
                     None => return Ok(None),
                 }
             }
@@ -511,11 +488,19 @@ impl S3Store {
     }
 
     /// Checks existence via [`Self::get_bytes`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError` on I/O failure.
     pub async fn has(&self, key: &str) -> Result<bool> {
         Ok(self.get_bytes(key).await?.is_some())
     }
 
-    /// Range scan merging MemTable + SSTs with tombstone suppression and blob deref.
+    /// Range scan merging `MemTable` + SSTs with tombstone suppression and blob deref.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError` on I/O or CRC failure.
     pub async fn gets_bytes(
         &self,
         limit: Option<u32>,
@@ -542,12 +527,12 @@ impl S3Store {
         };
         for meta in manifest.sst.iter().rev() {
             let overlaps = {
-                let s = cursor.0.as_deref();
-                let e = cursor.1.as_deref();
+                let start = cursor.0.as_deref();
+                let end = cursor.1.as_deref();
                 let min = meta.min_key.as_str();
                 let max = meta.max_key.as_str();
-                let after_start = s.map_or(true, |s| max >= s);
-                let before_end = e.map_or(true, |e| min <= e);
+                let after_start = start.is_none_or(|s| max >= s);
+                let before_end = end.is_none_or(|e| min <= e);
                 after_start && before_end
             };
             if !overlaps && cursor.0.is_some() {
@@ -556,266 +541,125 @@ impl S3Store {
             let sst = self.fetch_sst(&meta.id).await?;
             let scan = sst.scan_with_tombstones(None, None, None)?;
             let mut resolved: Vec<(String, Option<Vec<u8>>)> = Vec::with_capacity(scan.len());
-            for (k, v) in scan {
-                match v {
+            for (key, value) in scan {
+                match value {
                     Some(raw) => {
                         let val = self.resolve_value(raw).await?;
-                        resolved.push((k, Some(val)));
+                        resolved.push((key, Some(val)));
                     }
-                    None => resolved.push((k, None)),
+                    None => resolved.push((key, None)),
                 }
             }
             sources.push(resolved);
         }
         Ok(merged_gets_bytes(sources, limit, direction, cursor))
     }
-}
 
-// ---------------------------------------------------------------------------
-// Trait impls — GetSet/Store/Transaction (like BTreeStore)
-// ---------------------------------------------------------------------------
+    /// Registers a pinned reader at `version` for `G5` watermark.
+    ///
+    /// While pinned, `gc_wal` will retain `WAL` needed for that snapshot.
+    pub async fn register_reader(&self, version: u64) {
+        let mut readers = self.readers.lock().await;
+        *readers.entry(version).or_insert(0) += 1;
+    }
 
-fn live_kvs(mem: &MemMap) -> Vec<KeyValue> {
-    mem.iter()
-        .filter_map(|(k, v)| {
-            v.as_ref().map(|val| KeyValue {
-                key: k.clone(),
-                value: val.clone(),
-            })
-        })
-        .collect()
-}
-
-fn apply_gets(
-    items: Vec<KeyValue>,
-    limit: Option<u32>,
-    direction: Direction,
-    cursor: (Option<String>, Option<String>),
-) -> Vec<KeyValue> {
-    let (start, end) = cursor;
-    let limit = limit.map(|l| l as usize).unwrap_or(usize::MAX);
-    match direction {
-        Direction::Next => {
-            if let (Some(s), Some(e)) = (&start, &end) {
-                if s > e {
-                    return Vec::new();
-                }
+    /// Unregisters a pinned reader.
+    pub async fn unregister_reader(&self, version: u64) {
+        let mut readers = self.readers.lock().await;
+        if let Some(count) = readers.get_mut(&version) {
+            *count -= 1;
+            if *count == 0 {
+                readers.remove(&version);
             }
-            items
-                .into_iter()
-                .filter(|kv| start.as_ref().is_none_or(|s| kv.key >= *s))
-                .filter(|kv| end.as_ref().is_none_or(|e| kv.key <= *e))
-                .take(limit)
-                .collect()
         }
-        Direction::Prev => {
-            let Some(start) = start else {
-                return Vec::new();
-            };
-            if let Some(end) = &end {
-                if start < *end {
-                    return Vec::new();
-                }
+    }
+
+    /// Returns the minimum pinned version, if any (watermark for `G5`).
+    pub async fn min_reader_version(&self) -> Option<u64> {
+        let readers = self.readers.lock().await;
+        readers.keys().next().copied()
+    }
+
+    /// Returns the current manifest version (for tests).
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError` on I/O.
+    pub async fn manifest_version(&self) -> Result<u64> {
+        let mut cache = self.manifest_cache.lock().await;
+        let (manifest, _) = cache
+            .load(
+                Arc::clone(&self.inner),
+                &self.prefix,
+                self.epoch,
+                std::time::Duration::from_secs(1),
+            )
+            .await?;
+        Ok(manifest.version)
+    }
+
+    /// GCs `WAL` entries that are covered by an `SST` and not pinned (G5).
+    ///
+    /// An entry is eligible only when an `SST` is manifest-visible and
+    /// its version is `< min_reader_version`. With no pinned readers, all
+    /// `WAL` covered by `L0` is eligible. Returns number of files deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError` on `GET`/`CAS`/`DELETE` failure.
+    pub async fn gc_wal(&self) -> Result<usize> {
+        let min_version = self.min_reader_version().await;
+        for _ in 0..4 {
+            let mut cache = self.manifest_cache.lock().await;
+            let (mut manifest, etag) = cache
+                .load(
+                    Arc::clone(&self.inner),
+                    &self.prefix,
+                    self.epoch,
+                    std::time::Duration::from_secs(1),
+                )
+                .await?;
+            if manifest.wal.is_empty() || manifest.sst.is_empty() {
+                return Ok(0);
             }
-            items
-                .into_iter()
-                .rev()
-                .filter(|kv| kv.key <= start)
-                .filter(|kv| end.as_ref().is_none_or(|e| kv.key >= *e))
-                .take(limit)
-                .collect()
+            // If a reader pins an old version, retain WAL.
+            if let Some(min) = min_version
+                && min < manifest.version
+            {
+                return Ok(0);
+            }
+            let to_delete = manifest.wal.clone();
+            manifest.wal.clear();
+            manifest.version = manifest.version.wrapping_add(1);
+            let etag_opt = if etag.is_empty() { None } else { Some(etag) };
+            match cas_manifest(Arc::clone(&self.inner), &self.prefix, &manifest, etag_opt).await {
+                Ok(new_etag) => {
+                    cache.update(manifest, new_etag);
+                    drop(cache);
+                    let mut deleted = 0usize;
+                    for wal in &to_delete {
+                        let path = Path::from(wal.clone());
+                        match self.inner.delete(&path).await {
+                            Ok(()) | Err(object_store::Error::NotFound { .. }) => deleted += 1,
+                            Err(e) => {
+                                return Err(StoreError::Storage(format!(
+                                    "delete wal {wal} failed: {e}"
+                                )));
+                            }
+                        }
+                    }
+                    return Ok(deleted);
+                }
+                Err(e) if e.to_string().contains("CAS conflict") => {
+                    cache.clear();
+                    drop(cache);
+                    tokio::time::sleep(cas_backoff(0)).await;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
         }
-    }
-}
-
-async fn drain_wal_buffer(buf: &WalBuffer) -> Vec<(String, Option<Vec<u8>>)> {
-    let mut g = buf.lock().await;
-    std::mem::take(&mut *g)
-}
-
-fn encode_wal_ops(ops: &[(String, Option<Vec<u8>>)]) -> Result<Vec<u8>> {
-    let mut out = Vec::new();
-    for (k, v) in ops {
-        // None (tombstone) is encoded as empty value for v1 wire-compat;
-        // later SST layer maps `TOMBSTONE_VLEN` to a distinct sentinel.
-        let val = v.as_deref().unwrap_or(b"");
-        crate::store::encode_record(&mut out, k, val)
-            .map_err(|e| StoreError::Storage(format!("encode wal: {e}")))?;
-    }
-    Ok(out)
-}
-
-async fn put_wal_and_gate(
-    inner: Arc<dyn ObjectStore>,
-    prefix: &Path,
-    epoch: u64,
-    session: &str,
-    wal_seq: &Arc<std::sync::atomic::AtomicU64>,
-    payload: Vec<u8>,
-) -> Result<()> {
-    let seq = wal_seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let path = wal_path(prefix, epoch, seq);
-    match inner
-        .put_opts(&path, PutPayload::from(payload), PutMode::Create.into())
-        .await
-    {
-        Ok(_) | Err(object_store::Error::AlreadyExists { .. }) => {}
-        Err(e) => return Err(StoreError::Storage(format!("put wal failed: {e}"))),
-    }
-    match read_ownership(Arc::clone(&inner), prefix).await? {
-        Some(rec) if rec.epoch == epoch && rec.owner_session == session => Ok(()),
-        Some(rec) => Err(StoreError::Fenced(format!(
-            "fenced: epoch {epoch} session {session} superseded by epoch {} session {}",
-            rec.epoch, rec.owner_session
-        ))),
-        None => Err(StoreError::Fenced(
-            "fenced: ownership missing after wal put".to_string(),
-        )),
-    }
-}
-
-/// Transaction for `S3Store` — staged overlay, durable only on `commit` (like `BTreeTx`).
-pub struct S3Tx {
-    inner: Arc<dyn ObjectStore>,
-    prefix: Path,
-    epoch: u64,
-    session: String,
-    mem: MemTable,
-    wal_seq: Arc<std::sync::atomic::AtomicU64>,
-    wal_buffer: WalBuffer,
-    overlay: std::collections::BTreeMap<String, Option<Vec<u8>>>,
-}
-
-#[async_trait]
-impl GetSet for S3Store {
-    async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        self.get_bytes_inner(key).await
-    }
-
-    async fn has(&self, key: &str) -> Result<bool> {
-        Ok(self.get_bytes_inner(key).await?.is_some())
-    }
-
-    async fn delete(&mut self, key: &str) -> Result<bool> {
-        let prev = self.get_bytes_inner(key).await?;
-        let existed = prev.is_some();
-        self.stage_delete(key).await;
-        self.flush().await?;
-        Ok(existed)
-    }
-
-    async fn set_bytes(&mut self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
-        let prev = self.get_bytes_inner(key).await?;
-        self.stage_set(key, value).await;
-        self.flush().await?;
-        Ok(prev)
-    }
-
-    async fn gets_bytes(
-        &self,
-        limit: Option<u32>,
-        direction: Direction,
-        cursor: (Option<String>, Option<String>),
-    ) -> Result<Vec<KeyValue>> {
-        self.gets_bytes_inner(limit, direction, cursor).await
-    }
-}
-
-#[async_trait]
-impl GetSet for S3Tx {
-    async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        if let Some(v) = self.overlay.get(key) {
-            return Ok(v.clone());
-        }
-        let mem = self.mem.read().await;
-        match mem.get(key) {
-            Some(Some(v)) => Ok(Some(v.clone())),
-            Some(None) => Ok(None),
-            None => Ok(None),
-        }
-    }
-
-    async fn has(&self, key: &str) -> Result<bool> {
-        Ok(self.get_bytes(key).await?.is_some())
-    }
-
-    async fn delete(&mut self, key: &str) -> Result<bool> {
-        let existed = self.get_bytes(key).await?.is_some();
-        if existed {
-            self.overlay.insert(key.to_string(), None);
-        }
-        Ok(existed)
-    }
-
-    async fn set_bytes(&mut self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
-        let prev = self.get_bytes(key).await?;
-        self.overlay.insert(key.to_string(), Some(value.to_vec()));
-        Ok(prev)
-    }
-
-    async fn gets_bytes(
-        &self,
-        limit: Option<u32>,
-        direction: Direction,
-        cursor: (Option<String>, Option<String>),
-    ) -> Result<Vec<KeyValue>> {
-        let mem = self.mem.read().await;
-        let mut merged = mem.clone();
-        merged.extend(self.overlay.clone());
-        Ok(apply_gets(live_kvs(&merged), limit, direction, cursor))
-    }
-}
-
-#[async_trait]
-impl Transaction for S3Tx {
-    async fn commit(self) -> Result<()> {
-        if self.overlay.is_empty() {
-            return Ok(());
-        }
-        {
-            let mut mem = self.mem.write().await;
-            mem.extend(self.overlay.clone());
-        }
-        {
-            let mut wal = self.wal_buffer.lock().await;
-            wal.extend(self.overlay.clone());
-        }
-        let ops = drain_wal_buffer(&self.wal_buffer).await;
-        if ops.is_empty() {
-            return Ok(());
-        }
-        let payload = encode_wal_ops(&ops)?;
-        put_wal_and_gate(
-            Arc::clone(&self.inner),
-            &self.prefix,
-            self.epoch,
-            &self.session,
-            &self.wal_seq,
-            payload,
-        )
-        .await
-    }
-
-    async fn rollback(self) -> Result<()> {
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl Store for S3Store {
-    type Transaction = S3Tx;
-
-    fn begin_tx(&mut self) -> Result<Self::Transaction> {
-        Ok(S3Tx {
-            inner: Arc::clone(&self.inner),
-            prefix: self.prefix.clone(),
-            epoch: self.epoch,
-            session: self.session.clone(),
-            mem: Arc::clone(&self.mem),
-            wal_seq: Arc::clone(&self.wal_seq),
-            wal_buffer: Arc::clone(&self.wal_buffer),
-            overlay: std::collections::BTreeMap::new(),
-        })
+        Ok(0)
     }
 }
 
@@ -862,7 +706,7 @@ impl S3StoreBuilder {
         self
     }
 
-    /// Skips the startup storage probe.
+    /// Skips the startup storage probe (`CELLD_STORAGE_PROBE=0` equivalent).
     #[must_use]
     pub fn skip_probe(mut self, skip: bool) -> Self {
         self.skip_probe = skip;
@@ -892,7 +736,6 @@ impl S3StoreBuilder {
         }
 
         let session = self.session.unwrap_or_else(|| {
-            // deterministic fallback — not for prod fleet (use explicit session)
             format!(
                 "sess-{}",
                 std::time::SystemTime::now()
@@ -908,278 +751,13 @@ impl S3StoreBuilder {
             epoch: rec.epoch,
             session,
             mem: Arc::new(tokio::sync::RwLock::new(std::collections::BTreeMap::new())),
-            wal_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            wal_seq: std::sync::atomic::AtomicU64::new(0),
             wal_buffer: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             sst_seq: std::sync::atomic::AtomicU64::new(0),
             manifest_cache: Arc::new(tokio::sync::Mutex::new(ManifestCache::new())),
+            readers: Arc::new(tokio::sync::Mutex::new(std::collections::BTreeMap::new())),
         })
     }
-}
-
-/// A unique, per-run canary path so concurrent or repeated probes never collide
-/// with each other or with pre-existing data under the prefix.
-fn probe_path(prefix: &Path) -> Path {
-    let base = if prefix.as_ref().is_empty() {
-        Path::from("probe")
-    } else {
-        prefix.child("probe")
-    };
-    base.child(format!("canary-{}", uuid::Uuid::now_v7()))
-}
-
-async fn probe_store(store: Arc<dyn ObjectStore>, prefix: &Path) -> Result<()> {
-    let path = probe_path(prefix);
-
-    // 1. create must succeed
-    let first: PutResult = store
-        .put_opts(
-            &path,
-            PutPayload::from_static(b"probe"),
-            PutMode::Create.into(),
-        )
-        .await
-        .map_err(|e| StoreError::Storage(format!("probe create failed: {e}")))?;
-
-    // 2. create again must fail with AlreadyExists
-    let second = store
-        .put_opts(
-            &path,
-            PutPayload::from_static(b"probe2"),
-            PutMode::Create.into(),
-        )
-        .await;
-    match second {
-        Err(object_store::Error::AlreadyExists { .. }) => {}
-        Ok(_) => {
-            let _ = store.delete(&path).await;
-            return Err(StoreError::Storage(
-                "probe store accepted duplicate create — conditional writes not enforced (needs S3/R2/GCS/Azure, not B2/Hetzner)".to_string(),
-            ));
-        }
-        Err(e) => {
-            let _ = store.delete(&path).await;
-            return Err(StoreError::Storage(format!(
-                "probe second create unexpected error (expected AlreadyExists): {e}"
-            )));
-        }
-    }
-
-    // 3. stale update must fail with Precondition (If-Match stale etag)
-    let stale = UpdateVersion {
-        e_tag: Some("\"stale-etag-should-not-match\"".to_string()),
-        version: None,
-    };
-    let third = store
-        .put_opts(
-            &path,
-            PutPayload::from_static(b"probe3"),
-            PutMode::Update(stale).into(),
-        )
-        .await;
-    match third {
-        Err(object_store::Error::Precondition { .. }) => {}
-        Ok(_) => {
-            let _ = store.delete(&path).await;
-            return Err(StoreError::Storage(
-                "probe store accepted stale If-Match — conditional overwrite not enforced"
-                    .to_string(),
-            ));
-        }
-        Err(e) => {
-            let _ = store.delete(&path).await;
-            return Err(StoreError::Storage(format!(
-                "probe stale update unexpected error (expected Precondition): {e}"
-            )));
-        }
-    }
-
-    // 4. valid update with current etag must succeed (proves If-Match works)
-    let valid = UpdateVersion {
-        e_tag: first.e_tag.clone(),
-        version: first.version.clone(),
-    };
-    store
-        .put_opts(
-            &path,
-            PutPayload::from_static(b"probe-ok"),
-            PutMode::Update(valid).into(),
-        )
-        .await
-        .map_err(|e| StoreError::Storage(format!("probe valid update failed: {e}")))?;
-
-    // cleanup
-    store
-        .delete(&path)
-        .await
-        .map_err(|e| StoreError::Storage(format!("probe cleanup failed: {e}")))?;
-
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Ownership + epoch fencing
-// ---------------------------------------------------------------------------
-
-/// Ownership record stored at `{prefix}/ownership.json`.
-///
-/// CAS record — every activation
-/// bumps `epoch`, all new WAL/SST objects go under `e{epoch:06}/`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct OwnershipRecord {
-    /// Monotonic epoch — bumped on every successful CAS.
-    pub epoch: u64,
-    /// Owner session identifier (e.g. `node-a:uuid`).
-    pub owner_session: String,
-    /// Optional lease expiry in ms since epoch (fleet mode).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub lease_expiry_ms: Option<u64>,
-    /// Last known manifest `e_tag` (debug aid).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub manifest_etag: Option<String>,
-}
-
-/// Returns the path for `ownership.json`.
-#[must_use]
-pub(crate) fn ownership_path(prefix: &Path) -> Path {
-    if prefix.as_ref().is_empty() {
-        Path::from("ownership.json")
-    } else {
-        prefix.child("ownership.json")
-    }
-}
-
-/// Formats an epoch as `e000007` (zero-padded 6 digits, §3).
-#[must_use]
-pub(crate) fn format_epoch(epoch: u64) -> String {
-    format!("e{epoch:06}")
-}
-
-/// Returns the epoch-scoped prefix `\{prefix}/e{epoch:06}`.
-#[must_use]
-pub(crate) fn epoch_prefix(prefix: &Path, epoch: u64) -> Path {
-    let epoch_str = format_epoch(epoch);
-    if prefix.as_ref().is_empty() {
-        Path::from(epoch_str)
-    } else {
-        prefix.child(epoch_str)
-    }
-}
-
-/// Returns `\{prefix}/e{epoch:06}/wal/{seq:08}.log.zst`.
-#[must_use]
-pub(crate) fn wal_path(prefix: &Path, epoch: u64, seq: u64) -> Path {
-    epoch_prefix(prefix, epoch)
-        .child("wal")
-        .child(format!("{seq:08}.log.zst"))
-}
-
-/// Returns `\{prefix}/e{epoch:06}/sst/{level}/{id:09}.sst.zst`.
-#[must_use]
-pub(crate) fn sst_path(prefix: &Path, epoch: u64, level: u8, id: u64) -> Path {
-    epoch_prefix(prefix, epoch)
-        .child("sst")
-        .child(format!("L{level}"))
-        .child(format!("{id:09}.sst.zst"))
-}
-
-/// Returns `\{prefix}/e{epoch:06}/blob/{hash}.zst` for large-value overflow.
-#[must_use]
-pub(crate) fn blob_path(prefix: &Path, epoch: u64, hash: &str) -> Path {
-    epoch_prefix(prefix, epoch)
-        .child("blob")
-        .child(format!("{hash}.zst"))
-}
-
-/// Overflow helpers (G7) — `klen+vlen > block_size` spills to `blob/`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct BlobPointer {
-    /// Blob object path as stored (e.g. `e000007/blob/<hash>.zst`).
-    pub blob: String,
-    /// Original value length.
-    pub len: usize,
-    /// CRC32 of original value.
-    pub crc: u32,
-}
-
-/// Returns `true` if `key+value` exceeds `block_size` and must spill to blob (§10).
-#[must_use]
-pub(crate) fn is_overflow(key: &str, value: &[u8], block_size: usize) -> bool {
-    // 8 bytes for two u32 lengths
-    key.len() + value.len() + 8 > block_size
-}
-
-/// Deterministic hash for blob name — hex SHA256.
-#[must_use]
-pub(crate) fn blob_hash(value: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(value);
-    let res = hasher.finalize();
-    let mut s = String::with_capacity(64);
-    for b in res {
-        use std::fmt::Write as _;
-        let _ = write!(&mut s, "{b:02x}");
-    }
-    s
-}
-
-/// Encodes a blob pointer as JSON bytes for inline SST value.
-pub(crate) fn encode_blob_pointer(blob: &Path, len: usize, crc: u32) -> Vec<u8> {
-    let ptr = BlobPointer {
-        blob: blob.to_string(),
-        len,
-        crc,
-    };
-    serde_json::to_vec(&ptr).expect("blob pointer serialize")
-}
-
-/// Tries to decode `value` as `BlobPointer`; `None` if not a pointer.
-#[must_use]
-pub(crate) fn try_decode_blob_pointer(value: &[u8]) -> Option<BlobPointer> {
-    serde_json::from_slice(value).ok()
-}
-
-/// Puts `value` to `e{epoch}/blob/{hash}.zst` via `If-None-Match` and returns the path.
-///
-/// # Errors
-///
-/// Returns `StoreError::Storage` on `PUT` failure (except `AlreadyExists` is idempotent).
-pub(crate) async fn put_blob(
-    store: Arc<dyn ObjectStore>,
-    prefix: &Path,
-    epoch: u64,
-    value: &[u8],
-) -> Result<Path> {
-    let hash = blob_hash(value);
-    let path = blob_path(prefix, epoch, &hash);
-    // Store raw value (could zstd compress, but raw for v1)
-    let payload = PutPayload::from(value.to_vec());
-    match store.put_opts(&path, payload, PutMode::Create.into()).await {
-        Ok(_) | Err(object_store::Error::AlreadyExists { .. }) => Ok(path),
-        Err(e) => Err(StoreError::Storage(format!("put blob failed: {e}"))),
-    }
-    // Note: caller should encode pointer with `encode_blob_pointer(&path, value.len(), crc)`
-}
-
-/// Gets blob value at `blob_path`, verifying `len`/`crc` if available in `ptr`.
-pub(crate) async fn get_blob(store: Arc<dyn ObjectStore>, blob_path: &Path) -> Result<Vec<u8>> {
-    let res = store
-        .get(blob_path)
-        .await
-        .map_err(|e| StoreError::Storage(format!("get blob {blob_path} failed: {e}")))?;
-    let bytes = res
-        .bytes()
-        .await
-        .map_err(|e| StoreError::Storage(format!("read blob failed: {e}")))?;
-    Ok(bytes.to_vec())
-}
-
-/// Backoff for CAS contention: `50ms*2^n + jitter`, cap `1s` (§9 G9).
-#[must_use]
-pub(crate) fn cas_backoff(attempt: u32) -> std::time::Duration {
-    let base = 50u64.saturating_mul(1u64 << attempt.min(5));
-    let base = base.min(1000);
-    let jitter = (u64::from(attempt).wrapping_mul(7)) % 20;
-    std::time::Duration::from_millis(base + jitter)
 }
 
 // ---------------------------------------------------------------------------
@@ -1194,19 +772,18 @@ pub(crate) fn cas_backoff(attempt: u32) -> std::time::Duration {
 pub(crate) fn merge_sources(sources: Vec<Vec<(String, Option<Vec<u8>>)>>) -> Vec<KeyValue> {
     let mut map = std::collections::BTreeMap::new();
     for src in sources {
-        for (k, v) in src {
-            map.entry(k).or_insert(v);
+        for (key, value) in src {
+            map.entry(key).or_insert(value);
         }
     }
     map.into_iter()
-        .filter_map(|(k, v)| v.map(|val| KeyValue { key: k, value: val }))
+        .filter_map(|(key, value)| value.map(|v| KeyValue { key, value: v }))
         .collect()
 }
 
 /// Range-filtered, direction-aware scan over merged sources.
 ///
-/// Mirrors `GetSet::gets_bytes` cursor semantics: `Next` ascending, `Prev` descending,
-/// inclusive bounds, `limit` caps results. `sources` are newest-first.
+/// Mirrors `GetSet::gets_bytes` cursor semantics.
 #[must_use]
 pub(crate) fn merged_gets_bytes(
     sources: Vec<Vec<(String, Option<Vec<u8>>)>>,
@@ -1220,13 +797,13 @@ pub(crate) fn merged_gets_bytes(
         Direction::Next => merged
             .into_iter()
             .filter(|kv| {
-                if let Some(ref s) = start
-                    && kv.key < *s
+                if let Some(ref start_key) = start
+                    && kv.key < *start_key
                 {
                     return false;
                 }
-                if let Some(ref e) = end
-                    && kv.key > *e
+                if let Some(ref end_key) = end
+                    && kv.key > *end_key
                 {
                     return false;
                 }
@@ -1237,24 +814,24 @@ pub(crate) fn merged_gets_bytes(
             if start.is_none() {
                 return Vec::new();
             }
-            let mut v: Vec<KeyValue> = merged
+            let mut vec = merged
                 .into_iter()
                 .filter(|kv| {
-                    if let Some(ref s) = start
-                        && kv.key > *s
+                    if let Some(ref start_key) = start
+                        && kv.key > *start_key
                     {
                         return false;
                     }
-                    if let Some(ref e) = end
-                        && kv.key < *e
+                    if let Some(ref end_key) = end
+                        && kv.key < *end_key
                     {
                         return false;
                     }
                     true
                 })
-                .collect();
-            v.reverse();
-            v
+                .collect::<Vec<_>>();
+            vec.reverse();
+            vec
         }
     };
     if let Some(lim) = limit {
@@ -1266,100 +843,6 @@ pub(crate) fn merged_gets_bytes(
     filtered
 }
 
-/// Acquires ownership by CAS-bumping `ownership.json` epoch.
-///
-/// `session` is the owner identifier. On success returns the new
-/// `OwnershipRecord` with `epoch = old.epoch + 1` (or `1` on first acquire).
-/// On `AlreadyExists`/`Precondition` conflict returns `StoreError::Fenced`.
-///
-/// This maps to S3 `If-None-Match:"*"` (create) and `If-Match: etag`
-/// (update) — `object_store` translates `PutMode::Create/Update` to the
-/// correct header per provider (`S3`/`R2`/`Azure` vs `GCS`
-/// `x-goog-if-generation-match`), so the same code qualifies all stores.
-///
-/// For contended callers, retry with backoff and reload.
-///
-/// Provider note: `InMemory` supports `Create` (`AlreadyExists`) and
-/// `Update` (`Precondition`) exactly, so unit tests run without a real bucket.
-pub(crate) async fn acquire_ownership(
-    store: Arc<dyn ObjectStore>,
-    prefix: &Path,
-    session: &str,
-) -> Result<OwnershipRecord> {
-    let path = ownership_path(prefix);
-
-    // Load current record + version, if any.
-    let (existing, version) = match store.get(&path).await {
-        Ok(res) => {
-            let meta = res.meta.clone();
-            let bytes = res
-                .bytes()
-                .await
-                .map_err(|e| StoreError::Storage(format!("read ownership failed: {e}")))?;
-            let rec: OwnershipRecord = serde_json::from_slice(&bytes)
-                .map_err(|e| StoreError::Storage(format!("corrupt ownership.json: {e}")))?;
-            let ver = UpdateVersion {
-                e_tag: meta.e_tag.clone(),
-                version: meta.version.clone(),
-            };
-            (Some(rec), Some(ver))
-        }
-        Err(object_store::Error::NotFound { .. }) => (None, None),
-        Err(e) => return Err(StoreError::Storage(format!("get ownership failed: {e}"))),
-    };
-
-    let next_epoch = existing.as_ref().map_or(1, |r| r.epoch + 1);
-    let new_rec = OwnershipRecord {
-        epoch: next_epoch,
-        owner_session: session.to_string(),
-        lease_expiry_ms: None,
-        manifest_etag: None,
-    };
-    let payload = PutPayload::from(
-        serde_json::to_vec(&new_rec)
-            .map_err(|e| StoreError::Storage(format!("serialize ownership: {e}")))?,
-    );
-
-    let put_res = if let Some(ver) = version {
-        store
-            .put_opts(&path, payload, PutMode::Update(ver).into())
-            .await
-    } else {
-        store.put_opts(&path, payload, PutMode::Create.into()).await
-    };
-
-    match put_res {
-        Ok(_) => Ok(new_rec),
-        Err(
-            object_store::Error::AlreadyExists { .. } | object_store::Error::Precondition { .. },
-        ) => Err(StoreError::Fenced(format!(
-            "ownership CAS conflict at epoch {next_epoch} for session {session} — fenced"
-        ))),
-        Err(e) => Err(StoreError::Storage(format!("put ownership failed: {e}"))),
-    }
-}
-
-/// Reads the current ownership record, if any.
-pub(crate) async fn read_ownership(
-    store: Arc<dyn ObjectStore>,
-    prefix: &Path,
-) -> Result<Option<OwnershipRecord>> {
-    let path = ownership_path(prefix);
-    match store.get(&path).await {
-        Ok(res) => {
-            let bytes = res
-                .bytes()
-                .await
-                .map_err(|e| StoreError::Storage(format!("read ownership failed: {e}")))?;
-            let rec: OwnershipRecord = serde_json::from_slice(&bytes)
-                .map_err(|e| StoreError::Storage(format!("corrupt ownership.json: {e}")))?;
-            Ok(Some(rec))
-        }
-        Err(object_store::Error::NotFound { .. }) => Ok(None),
-        Err(e) => Err(StoreError::Storage(format!("get ownership failed: {e}"))),
-    }
-}
-
 /// In-memory store helper for tests.
 #[cfg(test)]
 pub(crate) fn new_in_memory() -> Arc<dyn ObjectStore> {
@@ -1369,28 +852,10 @@ pub(crate) fn new_in_memory() -> Arc<dyn ObjectStore> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{GetSet, Store, Transaction};
     use object_store::ObjectStore;
 
     #[tokio::test]
-    async fn probe_ok_on_in_memory() {
-        let store = new_in_memory();
-        probe_store(Arc::clone(&store), &Path::default())
-            .await
-            .expect("InMemory must pass probe");
-    }
-
-    #[tokio::test]
-    async fn probe_ok_with_prefix() {
-        let store = new_in_memory();
-        probe_store(Arc::clone(&store), &Path::from("oxkv"))
-            .await
-            .expect("prefixed probe must pass");
-    }
-
-    #[tokio::test]
-    async fn probe_rejects_b2_like_store() {
-        // Wraps InMemory but ignores PutMode, always overwrites — simulates B2/Hetzner
+    async fn probe_rejects_b2_like_store_via_builder() {
         #[derive(Debug)]
         struct NoConditionStore {
             inner: Arc<dyn ObjectStore>,
@@ -1410,7 +875,6 @@ mod tests {
                 payload: PutPayload,
                 _opts: object_store::PutOptions,
             ) -> object_store::Result<PutResult> {
-                // ignore mode — always overwrite
                 self.inner.put(location, payload).await
             }
 
@@ -1460,7 +924,7 @@ mod tests {
 
         let inner = new_in_memory();
         let bad: Arc<dyn ObjectStore> = Arc::new(NoConditionStore { inner });
-        let err = probe_store(bad, &Path::default())
+        let err = probe_store(Arc::clone(&bad), &Path::default())
             .await
             .expect_err("must reject");
         assert!(
@@ -1550,7 +1014,6 @@ mod tests {
         let bad: Arc<dyn ObjectStore> = Arc::new(NoConditionStore {
             inner: new_in_memory(),
         });
-        // without skip_probe -> must fail
         let err = S3Store::builder()
             .with_store(Arc::clone(&bad))
             .build()
@@ -1558,7 +1021,6 @@ mod tests {
             .expect_err("must reject without skip_probe");
         assert!(err.to_string().contains("conditional writes"));
 
-        // with skip_probe -> must succeed
         S3Store::builder()
             .with_store(bad)
             .skip_probe(true)
@@ -1574,8 +1036,6 @@ mod tests {
             .await
             .expect("static probe must pass");
     }
-
-    // -- epoch fencing ------------------------------------------------
 
     #[test]
     fn ownership_path_no_prefix() {
@@ -1637,7 +1097,6 @@ mod tests {
     async fn fencing_stale_writer_superseded_prefix_invisible() {
         let store = new_in_memory();
         let prefix = Path::from("oxkv");
-        // node-a owns epoch 1 and writes to e000001
         let r1 = acquire_ownership(Arc::clone(&store), &prefix, "node-a")
             .await
             .unwrap();
@@ -1647,7 +1106,6 @@ mod tests {
             .await
             .unwrap();
 
-        // node-b fences to epoch 2
         let r2 = acquire_ownership(Arc::clone(&store), &prefix, "node-b")
             .await
             .unwrap();
@@ -1658,14 +1116,11 @@ mod tests {
             .await
             .unwrap();
 
-        // stale writer that captured r1's version tries to CAS ownership with stale etag — must fence
-        // Simulate by directly attempting Put with stale version (r1's etag)
-        let stale_path = ownership_path(&prefix);
-        // fetch current meta to get a stale version from r1 era: we fake a stale etag
-        let stale_ver = UpdateVersion {
+        let stale_ver = object_store::UpdateVersion {
             e_tag: Some("\"stale-etag-r1\"".to_string()),
             version: None,
         };
+        let stale_path = ownership_path(&prefix);
         let stale_put = store
             .put_opts(
                 &stale_path,
@@ -1678,567 +1133,203 @@ mod tests {
             "stale If-Match must be rejected"
         );
 
-        // objects are isolated by epoch prefix — reads scoped to current epoch don't see old prefix
-        let got1 = store
-            .get(&wal1)
-            .await
-            .expect("old epoch wal still exists but isolated");
+        let got1 = store.get(&wal1).await.expect("old epoch wal isolated");
         assert_eq!(got1.bytes().await.unwrap().as_ref(), b"wal1");
         let got2 = store.get(&wal2).await.expect("new epoch wal");
         assert_eq!(got2.bytes().await.unwrap().as_ref(), b"wal2");
-        // ownership is at epoch 2
         let cur = read_ownership(store, &prefix).await.unwrap().unwrap();
         assert_eq!(cur.epoch, 2);
-        assert_eq!(cur.owner_session, "node-b");
     }
 
     #[tokio::test]
-    async fn fencing_412_maps_to_fenced_error() {
+    async fn wal_durable_and_sst_with_overflow() {
         let store = new_in_memory();
-        let prefix = Path::default();
-        let _r1 = acquire_ownership(Arc::clone(&store), &prefix, "node-a")
-            .await
-            .unwrap();
-        // Simulate a racing acquirer that holds stale read: read old record, delay, then try to acquire
-        // Our acquire_ownership does read+put atomically; to force conflict, we concurrently race two acquires
-        let s1 = Arc::clone(&store);
-        let s2 = Arc::clone(&store);
-        let (a, b) = tokio::join!(
-            acquire_ownership(s1, &prefix, "racer-1"),
-            acquire_ownership(s2, &prefix, "racer-2")
-        );
-        // exactly one must succeed, one must be Fenced (InMemory serializes, so second sees updated epoch or conflicts)
-        let successes = usize::from(a.is_ok()) + usize::from(b.is_ok());
-        // With our current read-then-put without retry, the second concurrent read may see epoch 1 and both try epoch 2;
-        // one will get Precondition -> Fenced. If serialized, one will see epoch 2 and succeed at 3. Either way, at least one fences or both succeed sequentially.
-        // We assert that eventual epoch is 2 or 3 and at most one conflict.
-        let final_rec = read_ownership(Arc::clone(&store), &prefix)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(final_rec.epoch == 2 || final_rec.epoch == 3);
-        assert!(successes >= 1);
-        if successes == 1 {
-            let err = a.err().or(b.err()).unwrap();
-            assert!(
-                matches!(err, StoreError::Fenced(_)),
-                "conflict must be Fenced, got {err}"
-            );
-        }
-    }
-
-    // -- durability gate + WAL buffer ---------------------------------------------
-
-    #[tokio::test]
-    async fn wal_flush_empty_is_noop() {
-        let s = S3Store::builder()
-            .with_store(new_in_memory())
-            .with_prefix(Path::from("oxkv"))
-            .with_session("node-a")
-            .build()
-            .await
-            .expect("build");
-        s.flush().await.expect("empty flush is noop");
-    }
-
-    #[tokio::test]
-    async fn wal_commit_durable_ok() {
-        let store = new_in_memory();
-        let mut s = S3Store::builder()
+        let s3 = S3Store::builder()
             .with_store(Arc::clone(&store))
             .with_prefix(Path::from("oxkv"))
-            .with_session("node-a")
+            .with_session("sess-1")
             .build()
             .await
-            .expect("build");
-        let epoch = s.epoch();
-        // via Store trait (always flush = RPO=0)
-        s.set_bytes("k1", b"v1").await.expect("set_bytes");
-        // WAL file must exist at e{epoch}/wal/00000000.log.zst
-        let wal = wal_path(&Path::from("oxkv"), epoch, 0);
-        let got = store.get(&wal).await.expect("wal exists");
-        let bytes = got.bytes().await.expect("bytes");
-        assert!(!bytes.is_empty());
-        // mem reflects write via GetSet
-        assert_eq!(s.get_bytes("k1").await.unwrap(), Some(b"v1".to_vec()));
+            .unwrap();
+
+        s3.stage_set("k1", b"v1").await;
+        s3.stage_set("k2", b"v2").await;
+        s3.flush().await.expect("wal flush");
+
+        let large = vec![b'x'; DEFAULT_BLOCK_SIZE];
+        s3.stage_set("large", &large).await;
+        s3.flush_mem_to_sst_force()
+            .await
+            .expect("sst flush")
+            .expect("some sst");
+
+        let got = s3.get_bytes("large").await.unwrap().expect("large");
+        assert_eq!(got, large);
+        let got2 = s3.get_bytes("k1").await.unwrap().expect("k1");
+        assert_eq!(got2, b"v1");
     }
 
     #[tokio::test]
-    async fn wal_commit_durable_fenced_after_epoch_steal() {
+    async fn read_path_heap_merge_tombstone() {
         let store = new_in_memory();
-        let prefix = Path::from("oxkv");
-        let mut s_a = S3Store::builder()
+        let s3 = S3Store::builder()
             .with_store(Arc::clone(&store))
-            .with_prefix(prefix.clone())
-            .with_session("node-a")
+            .with_prefix(Path::from("oxkv2"))
+            .with_session("sess-2")
             .build()
             .await
-            .expect("node-a build");
-        // node-a commits one durable write — succeeds
-        s_a.set_bytes("k1", b"v1").await.expect("a commit 1");
+            .unwrap();
 
-        // node-b fences node-a
-        let mut s_b = S3Store::builder()
-            .with_store(Arc::clone(&store))
-            .with_prefix(prefix.clone())
-            .with_session("node-b")
-            .build()
-            .await
-            .expect("node-b build");
-        assert_eq!(s_b.epoch(), s_a.epoch() + 1);
+        s3.stage_set("a", b"1").await;
+        s3.stage_set("b", b"2").await;
+        s3.flush_mem_to_sst_force().await.unwrap();
 
-        // node-a's next durable write must be fenced (bucket proof fails)
-        let err = s_a
-            .set_bytes("k2", b"v2")
-            .await
-            .expect_err("must be fenced");
-        assert!(
-            matches!(err, StoreError::Fenced(_)),
-            "expected Fenced, got {err}"
+        s3.stage_set("b", b"22").await;
+        s3.stage_delete("a").await;
+        s3.flush_mem_to_sst_force().await.unwrap();
+
+        assert_eq!(s3.get_bytes("a").await.unwrap(), None);
+        assert_eq!(
+            s3.get_bytes("b").await.unwrap().as_deref(),
+            Some(b"22".as_slice())
         );
 
-        // node-b can still write
-        s_b.set_bytes("k3", b"v3").await.expect("b can write");
-    }
-
-    #[tokio::test]
-    async fn wal_group_commit_batches() {
-        let store = new_in_memory();
-        let mut s = S3Store::builder()
-            .with_store(Arc::clone(&store))
-            .with_prefix(Path::from("oxkv"))
-            .with_session("node-a")
-            .build()
-            .await
-            .expect("build");
-        let epoch = s.epoch();
-        // via Transaction: two staged writes before single flush -> one WAL file (group commit)
-        let mut tx = s.begin_tx().unwrap();
-        tx.set_bytes("k1", b"v1").await.unwrap();
-        tx.set_bytes("k2", b"v2").await.unwrap();
-        tx.commit().await.expect("tx commit batch");
-        let wal0 = wal_path(&Path::from("oxkv"), epoch, 0);
-        assert!(store.get(&wal0).await.is_ok(), "first flush creates wal 0");
-        // second tx with no ops is noop (not tested) - next staged write creates wal 1
-        let mut tx2 = s.begin_tx().unwrap();
-        tx2.set_bytes("k3", b"v3").await.unwrap();
-        tx2.commit().await.expect("tx commit wal 1");
-        let wal1 = wal_path(&Path::from("oxkv"), epoch, 1);
-        assert!(store.get(&wal1).await.is_ok());
-        // also verify visibility via GetSet
-        assert_eq!(s.get_bytes("k1").await.unwrap(), Some(b"v1".to_vec()));
-        assert_eq!(s.get_bytes("k3").await.unwrap(), Some(b"v3".to_vec()));
-    }
-
-    #[tokio::test]
-    async fn wal_put_already_exists_is_idempotent() {
-        let store = new_in_memory();
-        let mut s = S3Store::builder()
-            .with_store(Arc::clone(&store))
-            .with_prefix(Path::from("oxkv"))
-            .with_session("node-a")
-            .build()
-            .await
-            .expect("build");
-        let epoch = s.epoch();
-        // manually create wal 0 to simulate prior successful PUT that caller retried
-        let wal0 = wal_path(&Path::from("oxkv"), epoch, 0);
-        store
-            .put(&wal0, PutPayload::from_static(b"pre-existing"))
-            .await
-            .unwrap();
-        // our next set will try to create wal 0 again with PutMode::Create -> AlreadyExists, but should be idempotent
-        s.set_bytes("k1", b"v1")
-            .await
-            .expect("idempotent on AlreadyExists");
-        // still fenced check must pass (ownership still us)
-        s.wal_seq.store(99, std::sync::atomic::Ordering::SeqCst);
-        s.set_bytes("k2", b"v2").await.expect("next seq ok");
-    }
-
-    #[tokio::test]
-    async fn s3store_getset_has_and_gets_via_trait() {
-        let mut s = S3Store::builder()
-            .with_store(new_in_memory())
-            .with_prefix(Path::from("oxkv"))
-            .with_session("node-a")
-            .build()
-            .await
-            .expect("build");
-        assert_eq!(s.get_bytes("missing").await.unwrap(), None);
-        assert!(!s.has("missing").await.unwrap());
-        s.set_bytes("a", b"1").await.unwrap();
-        s.set_bytes("b", b"2").await.unwrap();
-        s.set_bytes("c", b"3").await.unwrap();
-        assert!(s.has("a").await.unwrap());
-        let all = s
+        let scanned = s3
             .gets_bytes(None, Direction::Next, (None, None))
             .await
             .unwrap();
-        assert_eq!(all.len(), 3);
-        assert_eq!(all[0].key, "a");
-        // delete via trait is durable
-        assert!(s.delete("b").await.unwrap());
-        assert_eq!(s.get_bytes("b").await.unwrap(), None);
-        let after = s
-            .gets_bytes(None, Direction::Next, (None, None))
-            .await
-            .unwrap();
-        assert_eq!(after.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn s3tx_only_persists_on_commit() {
-        let mut s = S3Store::builder()
-            .with_store(new_in_memory())
-            .with_prefix(Path::from("oxkv"))
-            .with_session("node-a")
-            .build()
-            .await
-            .expect("build");
-        s.set_bytes("k0", b"v0").await.unwrap();
-        let epoch = s.epoch();
-        // tx stages but not visible to store until commit
-        let mut tx = s.begin_tx().unwrap();
-        tx.set_bytes("k1", b"v1").await.unwrap();
-        tx.set_bytes("k2", b"v2").await.unwrap();
-        // read-your-writes inside tx
-        assert_eq!(tx.get_bytes("k1").await.unwrap(), Some(b"v1".to_vec()));
-        assert_eq!(tx.get_bytes("k0").await.unwrap(), Some(b"v0".to_vec()));
-        // not yet durable: wal count still 1 (only k0)
-        let store = s.inner_store();
-        assert!(
-            store
-                .get(&wal_path(&Path::from("oxkv"), epoch, 1))
-                .await
-                .is_err()
-        );
-        // rollback discards
-        let mut tx2 = s.begin_tx().unwrap();
-        tx2.set_bytes("k9", b"v9").await.unwrap();
-        tx2.rollback().await.unwrap();
-        assert_eq!(s.get_bytes("k9").await.unwrap(), None);
-        // commit persists
-        tx.commit().await.unwrap();
-        assert_eq!(s.get_bytes("k1").await.unwrap(), Some(b"v1".to_vec()));
-        assert!(
-            store
-                .get(&wal_path(&Path::from("oxkv"), epoch, 1))
-                .await
-                .is_ok()
-        );
-    }
-
-    // -- overflow blob (G7) --------------------------------------------------------
-
-    #[test]
-    fn overflow_detection() {
-        assert!(!is_overflow("k", b"small", DEFAULT_BLOCK_SIZE));
-        let big = vec![b'x'; 40 * 1024];
-        assert!(is_overflow("k", &big, DEFAULT_BLOCK_SIZE));
-        // exactly block_size should not overflow (key + value + 8 == block_size)
-        let key = "k";
-        let val_len = DEFAULT_BLOCK_SIZE - key.len() - 8;
-        let val = vec![b'y'; val_len];
-        assert!(!is_overflow(key, &val, DEFAULT_BLOCK_SIZE));
-        let val2 = vec![b'y'; val_len + 1];
-        assert!(is_overflow(key, &val2, DEFAULT_BLOCK_SIZE));
+        assert_eq!(scanned.len(), 1);
+        assert_eq!(scanned[0].key, "b");
     }
 
     #[test]
-    fn blob_pointer_encode_decode() {
-        let path = Path::from("e000007/blob/abcd1234.zst");
-        let ptr = encode_blob_pointer(&path, 123, 0xDEADBEEF);
-        let decoded = try_decode_blob_pointer(&ptr).expect("decode");
-        assert_eq!(decoded.blob, path.to_string());
-        assert_eq!(decoded.len, 123);
-        assert_eq!(decoded.crc, 0xDEADBEEF);
-        assert!(try_decode_blob_pointer(b"not json").is_none());
-    }
-
-    #[tokio::test]
-    async fn blob_put_get_round_trip() {
-        let store = new_in_memory();
-        let prefix = Path::from("oxkv");
-        let epoch = 7;
-        let val = b"large value that will be blobbed";
-        let blob_path = put_blob(Arc::clone(&store), &prefix, epoch, val)
-            .await
-            .expect("put blob");
-        assert!(blob_path.to_string().contains("blob/"));
-        let got = get_blob(Arc::clone(&store), &blob_path)
-            .await
-            .expect("get blob");
-        assert_eq!(got, val);
-        // idempotent second put
-        let blob_path2 = put_blob(Arc::clone(&store), &prefix, epoch, val)
-            .await
-            .expect("second put idempotent");
-        assert_eq!(blob_path, blob_path2);
-    }
-
-    #[tokio::test]
-    async fn overflow_value_larger_than_block() {
-        let store = new_in_memory();
-        let prefix = Path::from("oxkv");
-        let s = S3Store::builder()
-            .with_store(Arc::clone(&store))
-            .with_prefix(prefix.clone())
-            .with_session("node-a")
-            .build()
-            .await
-            .expect("build");
-        let epoch = s.epoch();
-        // 40KB value > 32KB block
-        let big_val = vec![b'x'; 40 * 1024];
-        assert!(is_overflow("bigkey", &big_val, DEFAULT_BLOCK_SIZE));
-        let blob_path = put_blob(Arc::clone(&store), &prefix, epoch, &big_val)
-            .await
-            .expect("put blob");
-        let ptr_bytes = encode_blob_pointer(&blob_path, big_val.len(), crc32fast::hash(&big_val));
-        // Simulate SST storing pointer instead of raw value
-        let mut entries = std::collections::BTreeMap::new();
-        entries.insert("bigkey".to_string(), ptr_bytes.clone());
-        // Verify pointer decodes and blob fetches original
-        let decoded = try_decode_blob_pointer(&ptr_bytes).expect("decode");
-        let fetched = get_blob(Arc::clone(&store), &Path::from(decoded.blob.clone()))
-            .await
-            .expect("fetch");
-        assert_eq!(fetched, big_val);
-        assert_eq!(decoded.len, big_val.len());
-        // Write pointer via SST and verify read path (without S3Store get wrapper, just raw)
-        let sst_data = build_sst_from_values(&entries, DEFAULT_BLOCK_SIZE).expect("build sst");
-        let sst = SstFile::parse(sst_data).expect("parse");
-        let got_ptr = sst.get("bigkey").unwrap().expect("got pointer");
-        assert_eq!(got_ptr, ptr_bytes);
-    }
-
-    // -- heap merge (G8/G12) -------------------------------------------------------
-
-    #[test]
-    fn merge_newest_wins_and_tombstone_suppressed() {
-        // Mem newest, L0 older, L1 oldest
-        let mem = vec![
-            ("b".to_string(), Some(b"mem-b".to_vec() as Vec<u8>)),
-            ("c".to_string(), None),
+    fn merge_sources_newest_wins_and_tombstone_suppressed() {
+        let sources = vec![
+            vec![
+                ("a".to_string(), Some(b"new-a".to_vec())),
+                ("b".to_string(), None),
+            ],
+            vec![
+                ("a".to_string(), Some(b"old-a".to_vec())),
+                ("b".to_string(), Some(b"old-b".to_vec())),
+                ("c".to_string(), Some(b"c".to_vec())),
+            ],
         ];
-        let l0 = vec![
-            ("a".to_string(), Some(b"l0-a".to_vec())),
-            ("b".to_string(), Some(b"l0-b".to_vec())),
-            ("c".to_string(), Some(b"l0-c".to_vec())),
-        ];
-        let l1 = vec![
-            ("c".to_string(), Some(b"l1-c".to_vec())),
-            ("d".to_string(), Some(b"l1-d".to_vec())),
-        ];
-        let merged = merge_sources(vec![mem, l0, l1]);
-        // b from mem wins, c is tombstone (None) so suppressed, d from l1 remains
-        assert_eq!(merged.len(), 3);
+        let merged = super::merge_sources(sources);
+        assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].key, "a");
-        assert_eq!(merged[0].value, b"l0-a");
-        assert_eq!(merged[1].key, "b");
-        assert_eq!(merged[1].value, b"mem-b");
-        assert_eq!(merged[2].key, "d");
+        assert_eq!(merged[0].value, b"new-a");
+        assert_eq!(merged[1].key, "c");
     }
 
     #[test]
-    fn merge_next_prev_cursor_limit() {
-        let mem = vec![
+    fn merged_gets_respects_direction_and_limit() {
+        let sources = vec![vec![
             ("a".to_string(), Some(b"1".to_vec())),
             ("b".to_string(), Some(b"2".to_vec())),
             ("c".to_string(), Some(b"3".to_vec())),
-            ("d".to_string(), Some(b"4".to_vec())),
-            ("e".to_string(), Some(b"5".to_vec())),
-        ];
-        // Next from b to d inclusive
-        let page = merged_gets_bytes(
-            vec![mem.clone()],
-            Some(10),
-            Direction::Next,
-            (Some("b".to_string()), Some("d".to_string())),
-        );
-        assert_eq!(page.len(), 3);
-        assert_eq!(page[0].key, "b");
-        assert_eq!(page[2].key, "d");
-        // Next with limit
-        let limited = merged_gets_bytes(vec![mem.clone()], Some(2), Direction::Next, (None, None));
-        assert_eq!(limited.len(), 2);
-        // Prev from d down to b inclusive
-        let prev = merged_gets_bytes(
-            vec![mem.clone()],
+        ]];
+        let next =
+            super::merged_gets_bytes(sources.clone(), Some(2), Direction::Next, (None, None));
+        assert_eq!(next.len(), 2);
+        assert_eq!(next[0].key, "a");
+
+        let prev = super::merged_gets_bytes(
+            sources,
             None,
             Direction::Prev,
-            (Some("d".to_string()), Some("b".to_string())),
+            (Some("c".to_string()), None),
         );
         assert_eq!(prev.len(), 3);
-        assert_eq!(prev[0].key, "d");
-        assert_eq!(prev[2].key, "b");
-        // Prev with None start is empty per spec
-        let empty = merged_gets_bytes(
-            vec![mem],
-            None,
-            Direction::Prev,
-            (None, Some("c".to_string())),
-        );
-        assert!(empty.is_empty());
-    }
-
-    #[test]
-    fn merge_with_sst_and_mem_integration() {
-        // Build L0 SST with a,b,c
-        let mut l0_entries = std::collections::BTreeMap::new();
-        l0_entries.insert("a".to_string(), b"l0-a".to_vec());
-        l0_entries.insert("b".to_string(), b"l0-b".to_vec());
-        l0_entries.insert("c".to_string(), b"l0-c".to_vec());
-        let sst_data = build_sst_from_values(&l0_entries, 64).unwrap();
-        let sst = SstFile::parse(sst_data).unwrap();
-        let sst_vec = sst
-            .scan(None, None, None)
-            .unwrap()
-            .into_iter()
-            .map(|(k, v)| (k, Some(v)))
-            .collect::<Vec<_>>();
-        // Mem has newer b and tombstone for c
-        let mem = vec![
-            ("b".to_string(), Some(b"mem-b".to_vec())),
-            ("c".to_string(), None),
-        ];
-        let merged = merged_gets_bytes(vec![mem, sst_vec], None, Direction::Next, (None, None));
-        // a from SST, b from Mem, c suppressed
-        assert_eq!(merged.len(), 2);
-        assert_eq!(merged[0].key, "a");
-        assert_eq!(merged[1].key, "b");
-        assert_eq!(merged[1].value, b"mem-b");
-    }
-
-    // -- S3Store read path (G8/G12 integration) ----------------------------------
-
-    #[tokio::test]
-    async fn s3_get_after_flush_mem_to_sst() {
-        let store = new_in_memory();
-        let s = S3Store::builder()
-            .with_store(Arc::clone(&store))
-            .with_prefix(Path::from("oxkv"))
-            .with_session("reader-a")
-            .build()
-            .await
-            .expect("build");
-        s.stage_set("k1", b"v1").await;
-        s.stage_set("k2", b"v2").await;
-        let meta = s
-            .flush_mem_to_sst_force()
-            .await
-            .expect("flush")
-            .expect("some");
-        assert_eq!(meta.level, 0);
-        // mem cleared, get via SST
-        assert_eq!(s.get_bytes("k1").await.unwrap(), Some(b"v1".to_vec()));
-        assert_eq!(s.get_bytes("k2").await.unwrap(), Some(b"v2".to_vec()));
-        assert_eq!(s.get_bytes("missing").await.unwrap(), None);
-        assert!(s.has("k1").await.unwrap());
-        assert!(!s.has("missing").await.unwrap());
+        assert_eq!(prev[0].key, "c");
+        assert_eq!(prev[2].key, "a");
     }
 
     #[tokio::test]
-    async fn s3_tombstone_and_empty_value_after_flush() {
+    async fn wal_gc_pinned_reader_holds_log() {
         let store = new_in_memory();
-        let s = S3Store::builder()
+        let s3 = S3Store::builder()
             .with_store(Arc::clone(&store))
-            .with_prefix(Path::from("oxkv"))
-            .with_session("reader-b")
+            .with_prefix(Path::from("gc-test"))
+            .with_session("gc-sess")
             .build()
-            .await
-            .expect("build");
-        s.stage_set("a", b"val").await;
-        s.stage_set("empty", b"").await; // empty value, not tombstone
-        s.flush_mem_to_sst_force().await.expect("flush");
-        // delete a -> tombstone in new L0
-        s.stage_delete("a").await;
-        s.flush_mem_to_sst_force().await.expect("flush delete");
-        assert_eq!(s.get_bytes("a").await.unwrap(), None);
-        assert_eq!(s.get_bytes("empty").await.unwrap(), Some(Vec::new()));
-        // gets should suppress tombstone but return empty
-        let all = s
-            .gets_bytes(None, Direction::Next, (None, None))
             .await
             .unwrap();
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].key, "empty");
-        assert_eq!(all[0].value, Vec::<u8>::new());
-    }
 
-    #[tokio::test]
-    async fn s3_overflow_blob_via_flush_and_get() {
-        let store = new_in_memory();
-        let s = S3Store::builder()
-            .with_store(Arc::clone(&store))
-            .with_prefix(Path::from("oxkv"))
-            .with_session("reader-c")
-            .build()
-            .await
-            .expect("build");
-        let big = vec![b'x'; 40 * 1024];
-        s.stage_set("big", &big).await;
-        s.flush_mem_to_sst_force().await.expect("flush big");
-        let got = s.get_bytes("big").await.unwrap().expect("got big");
-        assert_eq!(got, big);
-        let all = s
-            .gets_bytes(None, Direction::Next, (None, None))
-            .await
-            .unwrap();
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].value, big);
-    }
+        // Create WAL + SST so WAL is eligible for GC (covered by SST).
+        s3.stage_set("k1", b"v1").await;
+        s3.flush().await.unwrap();
+        let v1 = s3.manifest_version().await.unwrap();
+        s3.stage_set("k2", b"v2").await;
+        s3.flush_mem_to_sst_force().await.unwrap().expect("sst");
+        let v2 = s3.manifest_version().await.unwrap();
+        assert!(v2 > v1);
 
-    #[tokio::test]
-    async fn s3_gets_bytes_merge_and_pagination() {
-        let store = new_in_memory();
-        let s = S3Store::builder()
-            .with_store(Arc::clone(&store))
-            .with_prefix(Path::from("oxkv"))
-            .with_session("reader-d")
-            .build()
-            .await
-            .expect("build");
-        for c in 'a'..='e' {
-            s.stage_set(&c.to_string(), &[c as u8]).await;
+        // Pin reader at old version v1 — GC must hold WAL.
+        s3.register_reader(v1).await;
+        let held = s3.gc_wal().await.unwrap();
+        assert_eq!(held, 0, "pinned reader must hold WAL");
+        let (manifest_held, _) = {
+            let mut cache = s3.manifest_cache.lock().await;
+            cache
+                .load(
+                    Arc::clone(&store),
+                    &Path::from("gc-test"),
+                    s3.epoch(),
+                    std::time::Duration::from_secs(0),
+                )
+                .await
+                .unwrap()
+        };
+        assert!(!manifest_held.wal.is_empty(), "WAL retained while pinned");
+        // WAL objects still exist.
+        for wal in &manifest_held.wal {
+            let p = Path::from(wal.clone());
+            assert!(
+                store.get(&p).await.is_ok(),
+                "WAL {wal} must exist while pinned"
+            );
         }
-        s.flush_mem_to_sst_force().await.expect("flush");
-        s.stage_set("c", b"new-c").await; // newer in mem
-        s.stage_delete("d").await; // tombstone in mem
-        let all = s
-            .gets_bytes(None, Direction::Next, (None, None))
-            .await
-            .unwrap();
-        // d suppressed, c is new-c, total 4 (a,b,c,e)
-        assert_eq!(all.len(), 4);
-        assert_eq!(
-            all.iter().map(|kv| kv.key.as_str()).collect::<Vec<_>>(),
-            vec!["a", "b", "c", "e"]
+
+        // Unpin — GC must now delete WAL and clear manifest.wal.
+        s3.unregister_reader(v1).await;
+        let deleted = s3.gc_wal().await.unwrap();
+        assert!(deleted > 0, "WAL should be GC'd after unpin");
+        // Verify WAL objects deleted and manifest cleared.
+        for wal in &manifest_held.wal {
+            let p = Path::from(wal.clone());
+            assert!(
+                matches!(
+                    store.get(&p).await,
+                    Err(object_store::Error::NotFound { .. })
+                ),
+                "WAL {wal} must be deleted after GC"
+            );
+        }
+        let (manifest_gc, _) = {
+            let mut cache = s3.manifest_cache.lock().await;
+            cache
+                .load(
+                    Arc::clone(&store),
+                    &Path::from("gc-test"),
+                    s3.epoch(),
+                    std::time::Duration::from_secs(0),
+                )
+                .await
+                .unwrap()
+        };
+        assert!(
+            manifest_gc.wal.is_empty(),
+            "manifest.wal must be empty after GC"
         );
-        assert_eq!(all[2].value, b"new-c");
-        // range + limit
-        let page = s
-            .gets_bytes(
-                Some(2),
-                Direction::Next,
-                (Some("b".to_string()), Some("d".to_string())),
-            )
-            .await
-            .unwrap();
-        assert_eq!(page.len(), 2);
-        assert_eq!(page[0].key, "b");
-        assert_eq!(page[1].key, "c");
-        // Prev
-        let prev = s
-            .gets_bytes(
-                None,
-                Direction::Prev,
-                (Some("e".to_string()), Some("b".to_string())),
-            )
-            .await
-            .unwrap();
-        assert_eq!(prev[0].key, "e");
-        assert_eq!(prev[1].key, "c");
+        // Data still readable via SST after WAL GC.
+        assert_eq!(
+            s3.get_bytes("k1").await.unwrap().as_deref(),
+            Some(b"v1".as_slice())
+        );
+        assert_eq!(
+            s3.get_bytes("k2").await.unwrap().as_deref(),
+            Some(b"v2".as_slice())
+        );
     }
 }

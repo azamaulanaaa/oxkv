@@ -1,10 +1,9 @@
-//! Manifest cache for S3Store — ETag poll + TTL 1s (§6-§7 G8).
+//! Manifest persisted at `{prefix}/manifest.json`.
+#![allow(unreachable_pub, missing_docs)]
+#![allow(clippy::pedantic, clippy::all)]
 //!
-//! `manifest.json` at `{prefix}/manifest.json` is the single consistent point.
-//! Readers pin `{epoch, version}`; writers CAS via `If-Match: etag`.
-
-#![cfg(not(target_arch = "wasm32"))]
-#![allow(unreachable_pub, missing_docs, clippy::all, clippy::pedantic)]
+//! The manifest is the single consistent point for the store. Writers CAS it
+//! with `If-Match: etag`; readers poll `ETag` with a 1 s TTL.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -15,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::store::{Result, StoreError};
 
-/// SST metadata stored in manifest.
+/// Metadata for one SST file recorded in the manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SstMeta {
     /// Object id, e.g. `e000007/sst/L0/000000123.sst.zst`.
@@ -60,7 +59,7 @@ impl Manifest {
 
 /// Path for `manifest.json`.
 #[must_use]
-pub fn manifest_path(prefix: &Path) -> Path {
+pub(crate) fn manifest_path(prefix: &Path) -> Path {
     if prefix.as_ref().is_empty() {
         Path::from("manifest.json")
     } else {
@@ -69,7 +68,7 @@ pub fn manifest_path(prefix: &Path) -> Path {
 }
 
 /// Reads manifest at `prefix/manifest.json`; `None` if not found.
-pub async fn read_manifest(
+pub(crate) async fn read_manifest(
     store: Arc<dyn ObjectStore>,
     prefix: &Path,
 ) -> Result<Option<(Manifest, String)>> {
@@ -94,7 +93,7 @@ pub async fn read_manifest(
 ///
 /// `expected_etag` is `None` for create, `Some(etag)` for update.
 /// On success returns the new etag.
-pub async fn cas_manifest(
+pub(crate) async fn cas_manifest(
     store: Arc<dyn ObjectStore>,
     prefix: &Path,
     manifest: &Manifest,
@@ -126,9 +125,9 @@ pub async fn cas_manifest(
     Ok(res.e_tag.unwrap_or_default())
 }
 
-/// In-memory cache with ETag + TTL.
+/// In-memory cache with `ETag` + TTL.
 #[derive(Debug)]
-pub struct ManifestCache {
+pub(crate) struct ManifestCache {
     entry: Option<CachedEntry>,
 }
 
@@ -149,15 +148,15 @@ impl ManifestCache {
     /// Returns cached manifest if `TTL` not expired.
     #[must_use]
     pub fn get_cached(&self, ttl: Duration) -> Option<(Manifest, String)> {
-        let e = self.entry.as_ref()?;
-        if e.fetched_at.elapsed() < ttl {
-            Some((e.manifest.clone(), e.etag.clone()))
+        let entry = self.entry.as_ref()?;
+        if entry.fetched_at.elapsed() < ttl {
+            Some((entry.manifest.clone(), entry.etag.clone()))
         } else {
             None
         }
     }
 
-    /// Updates cache with `manifest`+`etag` at `now`.
+    /// Updates cache with `manifest`+`etag` at now.
     pub fn update(&mut self, manifest: Manifest, etag: String) {
         self.entry = Some(CachedEntry {
             manifest,
@@ -171,8 +170,8 @@ impl ManifestCache {
         self.entry = None;
     }
 
-    /// Loads manifest with ETag poll: if cached etag matches remote and TTL not expired,
-    /// uses `If-None-Match` to avoid re-fetching.
+    /// Loads manifest with `ETag` poll: if cached `etag` matches remote and
+    /// `TTL` not expired, uses `If-None-Match` to avoid re-fetching.
     ///
     /// If remote returns `NotModified`, returns cached.
     /// If `NotFound`, returns empty manifest for `epoch`.
@@ -184,7 +183,6 @@ impl ManifestCache {
         ttl: Duration,
     ) -> Result<(Manifest, String)> {
         if let Some((manifest, etag)) = self.get_cached(ttl) {
-            // Try conditional GET with If-None-Match
             let path = manifest_path(prefix);
             let opts = GetOptions {
                 if_none_match: Some(etag.clone()),
@@ -192,7 +190,6 @@ impl ManifestCache {
             };
             match store.get_opts(&path, opts).await {
                 Ok(res) => {
-                    // Modified — parse new
                     let new_etag = res.meta.e_tag.clone().unwrap_or_default();
                     let bytes = res
                         .bytes()
@@ -215,7 +212,6 @@ impl ManifestCache {
             }
         }
 
-        // No cache or expired: do plain GET
         match read_manifest(Arc::clone(&store), prefix).await? {
             Some((manifest, etag)) => {
                 self.update(manifest.clone(), etag.clone());
@@ -266,7 +262,6 @@ mod tests {
         assert_eq!(loaded, manifest);
         assert_eq!(etag, etag2);
 
-        // Update with correct etag
         let mut manifest2 = loaded.clone();
         manifest2.version = 1;
         let etag3 = cas_manifest(Arc::clone(&store), &prefix, &manifest2, Some(etag.clone()))
@@ -274,7 +269,6 @@ mod tests {
             .expect("update");
         assert_ne!(etag, etag3);
 
-        // Stale etag must conflict
         let err = cas_manifest(Arc::clone(&store), &prefix, &manifest, Some(etag))
             .await
             .expect_err("stale must conflict");
@@ -289,7 +283,6 @@ mod tests {
         let mut cache = ManifestCache::new();
         let ttl = Duration::from_secs(1);
 
-        // Initially empty
         let (m1, e1) = cache
             .load(Arc::clone(&store), &prefix, epoch, ttl)
             .await
@@ -297,7 +290,6 @@ mod tests {
         assert_eq!(m1.version, 0);
         assert_eq!(m1.epoch, epoch);
 
-        // Create manifest — e1 is empty for first create (None), not Some("")
         let manifest = Manifest {
             version: 1,
             epoch,
@@ -319,9 +311,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Within TTL, load should use If-None-Match and get either NotModified or new
-        // We sleep a tiny amount to ensure not expired, but cache still has old etag
-        // The cache currently holds empty manifest with old etag, so next load should detect modification
         cache.clear();
         let (m2, _e2) = cache
             .load(Arc::clone(&store), &prefix, epoch, ttl)
@@ -330,7 +319,6 @@ mod tests {
         assert_eq!(m2.version, 1);
         assert_eq!(m2.sst.len(), 1);
 
-        // Second load within TTL should hit cache via NotModified
         let (m3, _e3) = cache
             .load(Arc::clone(&store), &prefix, epoch, ttl)
             .await
@@ -361,7 +349,6 @@ mod tests {
             .unwrap();
         assert_eq!(m1.version, 5);
         tokio::time::sleep(Duration::from_millis(20)).await;
-        // After TTL expiry, get_cached should be None, but load will still fetch
         assert!(cache.get_cached(ttl).is_none());
         let (m2, _) = cache
             .load(Arc::clone(&store), &prefix, epoch, ttl)

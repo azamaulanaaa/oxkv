@@ -1,10 +1,9 @@
-//! SST (Sorted String Table) builder and reader for S3Store — L0.
+//! SST (Sorted String Table) builder and reader for `S3Store` — L0.
+#![allow(unreachable_pub, missing_docs)]
+#![allow(clippy::pedantic, clippy::all)]
 //!
-//! Fixed `32KB` blocks, `CRC32` per block, `bloom` filter, footer index.
+//! Fixed `32 KiB` blocks, `CRC32` per block, `bloom` filter, footer index.
 //! See `docs/s3-lsm-design.md` §4, §10.
-
-#![cfg(not(target_arch = "wasm32"))]
-#![allow(unreachable_pub, missing_docs, clippy::all, clippy::pedantic)]
 
 use std::collections::BTreeMap;
 
@@ -17,17 +16,20 @@ use crate::store::{Result, StoreError};
 // ---------------------------------------------------------------------------
 
 /// SST magic bytes `OXKV`.
-pub const SST_MAGIC: [u8; 4] = *b"OXKV";
+pub(crate) const SST_MAGIC: [u8; 4] = *b"OXKV";
+
 /// SST format version.
-pub const SST_VERSION: u32 = 1;
-/// Default block size `32KB`.
-pub const DEFAULT_BLOCK_SIZE: usize = 32 * 1024;
+pub(crate) const SST_VERSION: u32 = 1;
+
+/// Default block size `32 KiB`.
+pub(crate) const DEFAULT_BLOCK_SIZE: usize = 32 * 1024;
+
 /// Tombstone marker: `vlen == u32::MAX` means deleted.
-pub const TOMBSTONE_VLEN: u32 = u32::MAX;
+pub(crate) const TOMBSTONE_VLEN: u32 = u32::MAX;
 
 /// Per-block index entry stored in footer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BlockMeta {
+pub(crate) struct BlockMeta {
     /// Minimum key in block (inclusive).
     pub min_key: String,
     /// Maximum key in block (inclusive).
@@ -42,7 +44,7 @@ pub struct BlockMeta {
 
 /// Footer stored before magic.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SstFooter {
+pub(crate) struct SstFooter {
     /// Block index (sorted by `min_key`).
     pub index: Vec<BlockMeta>,
     /// Bloom filter bits (simple, 10 bits per key, k=3).
@@ -51,13 +53,13 @@ pub struct SstFooter {
     pub bloom_k: u32,
     /// Number of bits `m`.
     pub bloom_m: u64,
-    /// CRC32 of all block bytes concatenated.
+    /// `CRC32` of all block bytes concatenated.
     pub file_crc: u32,
 }
 
 /// Simple bloom filter — 10 bits per key, k=3.
 #[derive(Debug, Clone)]
-pub struct Bloom {
+pub(crate) struct Bloom {
     bits: Vec<u8>,
     k: u32,
     m: usize,
@@ -66,9 +68,8 @@ pub struct Bloom {
 impl Bloom {
     /// Creates a bloom for `n` expected items.
     #[must_use]
-    pub fn new(n: usize) -> Self {
+    pub(crate) fn new(n: usize) -> Self {
         let n = n.max(1);
-        // 10 bits per item ~ 1% FP, k=3
         let m = n * 10;
         let bytes = (m + 7) / 8;
         Self {
@@ -79,7 +80,6 @@ impl Bloom {
     }
 
     fn hash(item: &str, seed: u32) -> u64 {
-        // Combine crc32 of item+seed for dispersion
         let mut data = Vec::with_capacity(item.len() + 4);
         data.extend_from_slice(item.as_bytes());
         data.extend_from_slice(&seed.to_le_bytes());
@@ -87,7 +87,7 @@ impl Bloom {
     }
 
     /// Inserts `key`.
-    pub fn set(&mut self, key: &str) {
+    pub(crate) fn set(&mut self, key: &str) {
         for i in 0..self.k {
             let h = Self::hash(key, i) % self.m as u64;
             let bit = h as usize;
@@ -97,7 +97,7 @@ impl Bloom {
 
     /// Checks membership (may false-positive).
     #[must_use]
-    pub fn check(&self, key: &str) -> bool {
+    pub(crate) fn check(&self, key: &str) -> bool {
         for i in 0..self.k {
             let h = Self::hash(key, i) % self.m as u64;
             let bit = h as usize;
@@ -110,7 +110,7 @@ impl Bloom {
 
     /// Returns bits for serialization.
     #[must_use]
-    pub fn bits(&self) -> &[u8] {
+    pub(crate) fn bits(&self) -> &[u8] {
         &self.bits
     }
 }
@@ -128,8 +128,8 @@ pub fn build_sst(
     let mut blocks: Vec<Vec<u8>> = Vec::new();
     let mut index: Vec<BlockMeta> = Vec::new();
     let mut bloom = Bloom::new(entries.len());
-    for k in entries.keys() {
-        bloom.set(k);
+    for key in entries.keys() {
+        bloom.set(key);
     }
 
     let mut cur_block = Vec::new();
@@ -137,13 +137,13 @@ pub fn build_sst(
     let mut cur_max: Option<String> = None;
     let mut offset: u64 = 0;
 
-    for (k, v) in entries {
+    for (key, value) in entries {
         let mut rec = Vec::new();
-        let klen = u32::try_from(k.len())
+        let klen = u32::try_from(key.len())
             .map_err(|e| StoreError::Serialization(format!("key too long: {e}")))?;
         rec.extend_from_slice(&klen.to_le_bytes());
-        rec.extend_from_slice(k.as_bytes());
-        match v {
+        rec.extend_from_slice(key.as_bytes());
+        match value {
             Some(val) => {
                 let vlen = u32::try_from(val.len())
                     .map_err(|e| StoreError::Serialization(format!("value too long: {e}")))?;
@@ -154,9 +154,9 @@ pub fn build_sst(
                 rec.extend_from_slice(&TOMBSTONE_VLEN.to_le_bytes());
             }
         }
-        // If adding this record would overflow block, seal current block first
         if !cur_block.is_empty() && cur_block.len() + rec.len() > block_size {
             let crc = crc32fast::hash(&cur_block);
+            // `cur_min`/`cur_max` are guaranteed `Some` when `cur_block` is non-empty.
             let meta = BlockMeta {
                 min_key: cur_min.clone().expect("min"),
                 max_key: cur_max.clone().expect("max"),
@@ -170,9 +170,9 @@ pub fn build_sst(
             cur_min = None;
         }
         if cur_min.is_none() {
-            cur_min = Some(k.clone());
+            cur_min = Some(key.clone());
         }
-        cur_max = Some(k.clone());
+        cur_max = Some(key.clone());
         cur_block.extend_from_slice(&rec);
     }
     if !cur_block.is_empty() {
@@ -188,11 +188,10 @@ pub fn build_sst(
         index.push(meta);
     }
 
-    // Handle empty SST: one empty index, empty bloom
     let file_crc = {
         let mut hasher = crc32fast::Hasher::new();
-        for b in &blocks {
-            hasher.update(b);
+        for block in &blocks {
+            hasher.update(block);
         }
         hasher.finalize()
     };
@@ -208,8 +207,8 @@ pub fn build_sst(
         .map_err(|e| StoreError::Storage(format!("serialize footer: {e}")))?;
 
     let mut out = Vec::new();
-    for b in blocks {
-        out.extend_from_slice(&b);
+    for block in blocks {
+        out.extend_from_slice(&block);
     }
     out.extend_from_slice(&footer_bytes);
     out.extend_from_slice(&(footer_bytes.len() as u32).to_le_bytes());
@@ -219,7 +218,7 @@ pub fn build_sst(
 }
 
 /// Convenience for `BTreeMap<String, Vec<u8>>` (no tombstones) — used by tests.
-pub fn build_sst_from_values(
+pub(crate) fn build_sst_from_values(
     entries: &BTreeMap<String, Vec<u8>>,
     block_size: usize,
 ) -> Result<Vec<u8>> {
@@ -236,7 +235,7 @@ pub fn build_sst_from_values(
 
 /// Parsed SST file (zero-copy view over bytes).
 #[derive(Debug)]
-pub struct SstFile {
+pub(crate) struct SstFile {
     /// Raw file bytes.
     data: Vec<u8>,
     /// Footer.
@@ -247,7 +246,7 @@ pub struct SstFile {
 
 impl SstFile {
     /// Parses `data` as SST, verifying magic and version.
-    pub fn parse(data: Vec<u8>) -> Result<Self> {
+    pub(crate) fn parse(data: Vec<u8>) -> Result<Self> {
         if data.len() < 12 {
             return Err(StoreError::Storage("sst too small".to_string()));
         }
@@ -289,13 +288,13 @@ impl SstFile {
 
     /// Returns footer.
     #[must_use]
-    pub fn footer(&self) -> &SstFooter {
+    pub(crate) fn footer(&self) -> &SstFooter {
         &self.footer
     }
 
     /// Checks bloom (false-positive possible, never false-negative).
     #[must_use]
-    pub fn may_contain(&self, key: &str) -> bool {
+    pub(crate) fn may_contain(&self, key: &str) -> bool {
         if self.footer.index.is_empty() {
             return false;
         }
@@ -315,8 +314,8 @@ impl SstFile {
         true
     }
 
-    /// Returns block bytes for `meta`, verifying CRC.
-    pub fn block_bytes(&self, meta: &BlockMeta) -> Result<Vec<u8>> {
+    /// Returns block bytes for `meta`, verifying `CRC`.
+    pub(crate) fn block_bytes(&self, meta: &BlockMeta) -> Result<Vec<u8>> {
         let start = meta.offset as usize;
         let end = start + meta.len as usize;
         if end > self.footer_offset {
@@ -335,7 +334,7 @@ impl SstFile {
 
     /// Point lookup with tombstone distinction: `Ok(Some(Some(v)))` = value,
     /// `Ok(Some(None))` = tombstone, `Ok(None)` = not in this SST.
-    pub fn get_option(&self, key: &str) -> Result<Option<Option<Vec<u8>>>> {
+    pub(crate) fn get_option(&self, key: &str) -> Result<Option<Option<Vec<u8>>>> {
         if !self.may_contain(key) {
             return Ok(None);
         }
@@ -355,7 +354,7 @@ impl SstFile {
                 if pos + 4 + klen + 4 > bytes.len() {
                     break;
                 }
-                let k = std::str::from_utf8(&bytes[pos + 4..pos + 4 + klen])
+                let key_in_block = std::str::from_utf8(&bytes[pos + 4..pos + 4 + klen])
                     .map_err(|e| StoreError::Storage(format!("utf8: {e}")))?;
                 let v_start = pos + 4 + klen;
                 let vlen = u32::from_le_bytes([
@@ -365,7 +364,7 @@ impl SstFile {
                     bytes[v_start + 3],
                 ]) as usize;
                 if vlen == TOMBSTONE_VLEN as usize {
-                    if k == key {
+                    if key_in_block == key {
                         return Ok(Some(None));
                     }
                     pos = v_start + 4;
@@ -374,9 +373,9 @@ impl SstFile {
                 if v_start + 4 + vlen > bytes.len() {
                     break;
                 }
-                if k == key {
-                    let v = bytes[v_start + 4..v_start + 4 + vlen].to_vec();
-                    return Ok(Some(Some(v)));
+                if key_in_block == key {
+                    let val = bytes[v_start + 4..v_start + 4 + vlen].to_vec();
+                    return Ok(Some(Some(val)));
                 }
                 pos = v_start + 4 + vlen;
             }
@@ -386,7 +385,7 @@ impl SstFile {
 
     /// Point lookup: returns value if present (`None` for missing or tombstone).
     /// Empty `Some(vec![])` is a valid empty value, not tombstone.
-    pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
+    pub(crate) fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
         if !self.may_contain(key) {
             return Ok(None);
         }
@@ -406,7 +405,7 @@ impl SstFile {
                 if pos + 4 + klen + 4 > bytes.len() {
                     break;
                 }
-                let k = std::str::from_utf8(&bytes[pos + 4..pos + 4 + klen])
+                let key_in_block = std::str::from_utf8(&bytes[pos + 4..pos + 4 + klen])
                     .map_err(|e| StoreError::Storage(format!("utf8: {e}")))?;
                 let v_start = pos + 4 + klen;
                 let vlen = u32::from_le_bytes([
@@ -416,7 +415,7 @@ impl SstFile {
                     bytes[v_start + 3],
                 ]) as usize;
                 if vlen == TOMBSTONE_VLEN as usize {
-                    if k == key {
+                    if key_in_block == key {
                         return Ok(None);
                     }
                     pos = v_start + 4;
@@ -425,9 +424,9 @@ impl SstFile {
                 if v_start + 4 + vlen > bytes.len() {
                     break;
                 }
-                if k == key {
-                    let v = bytes[v_start + 4..v_start + 4 + vlen].to_vec();
-                    return Ok(Some(v));
+                if key_in_block == key {
+                    let val = bytes[v_start + 4..v_start + 4 + vlen].to_vec();
+                    return Ok(Some(val));
                 }
                 pos = v_start + 4 + vlen;
             }
@@ -435,8 +434,9 @@ impl SstFile {
         Ok(None)
     }
 
-    /// Range scan: returns sorted KVs in `[start, end]` inclusive, honoring direction.
-    /// `limit` caps results. Tombstones are omitted; empty values are returned.
+    /// Range scan: returns sorted KVs in `[start, end]` inclusive, honoring
+    /// direction. `limit` caps results. Tombstones are omitted; empty values
+    /// are returned.
     pub fn scan(
         &self,
         start: Option<&str>,
@@ -445,14 +445,13 @@ impl SstFile {
     ) -> Result<Vec<(String, Vec<u8>)>> {
         let mut out = Vec::new();
         for meta in &self.footer.index {
-            // prune blocks outside range
-            if let Some(s) = start {
-                if meta.max_key.as_str() < s {
+            if let Some(start_key) = start {
+                if meta.max_key.as_str() < start_key {
                     continue;
                 }
             }
-            if let Some(e) = end {
-                if meta.min_key.as_str() > e {
+            if let Some(end_key) = end {
+                if meta.min_key.as_str() > end_key {
                     continue;
                 }
             }
@@ -468,7 +467,7 @@ impl SstFile {
                 if pos + 4 + klen + 4 > bytes.len() {
                     break;
                 }
-                let k = std::str::from_utf8(&bytes[pos + 4..pos + 4 + klen])
+                let key_str = std::str::from_utf8(&bytes[pos + 4..pos + 4 + klen])
                     .map_err(|e| StoreError::Storage(format!("utf8: {e}")))?
                     .to_string();
                 let v_start = pos + 4 + klen;
@@ -479,7 +478,7 @@ impl SstFile {
                     bytes[v_start + 3],
                 ]) as usize;
                 let is_tombstone = vlen == TOMBSTONE_VLEN as usize;
-                let v = if is_tombstone {
+                let value = if is_tombstone {
                     None
                 } else {
                     if v_start + 4 + vlen > bytes.len() {
@@ -488,21 +487,19 @@ impl SstFile {
                     Some(bytes[v_start + 4..v_start + 4 + vlen].to_vec())
                 };
                 let in_range = match (start, end) {
-                    (Some(s), Some(e)) => k.as_str() >= s && k.as_str() <= e,
-                    (Some(s), None) => k.as_str() >= s,
-                    (None, Some(e)) => k.as_str() <= e,
+                    (Some(s), Some(e)) => key_str.as_str() >= s && key_str.as_str() <= e,
+                    (Some(s), None) => key_str.as_str() >= s,
+                    (None, Some(e)) => key_str.as_str() <= e,
                     (None, None) => true,
                 };
                 if in_range {
-                    if let Some(val) = &v {
-                        out.push((k.clone(), val.clone()));
+                    if let Some(val) = &value {
+                        out.push((key_str.clone(), val.clone()));
                         if let Some(lim) = limit {
                             if out.len() >= lim {
                                 return Ok(out);
                             }
                         }
-                    } else {
-                        // tombstone — do not return
                     }
                 }
                 pos = if is_tombstone {
@@ -512,14 +509,14 @@ impl SstFile {
                 };
             }
         }
-        // Already sorted because blocks and entries are sorted
         if let Some(lim) = limit {
             out.truncate(lim);
         }
         Ok(out)
     }
 
-    /// Range scan including tombstones: returns `(key, Option<value>)` where `None` is tombstone.
+    /// Range scan including tombstones: returns `(key, Option<value>)` where
+    /// `None` is tombstone.
     pub fn scan_with_tombstones(
         &self,
         start: Option<&str>,
@@ -528,13 +525,13 @@ impl SstFile {
     ) -> Result<Vec<(String, Option<Vec<u8>>)>> {
         let mut out = Vec::new();
         for meta in &self.footer.index {
-            if let Some(s) = start {
-                if meta.max_key.as_str() < s {
+            if let Some(start_key) = start {
+                if meta.max_key.as_str() < start_key {
                     continue;
                 }
             }
-            if let Some(e) = end {
-                if meta.min_key.as_str() > e {
+            if let Some(end_key) = end {
+                if meta.min_key.as_str() > end_key {
                     continue;
                 }
             }
@@ -550,7 +547,7 @@ impl SstFile {
                 if pos + 4 + klen + 4 > bytes.len() {
                     break;
                 }
-                let k = std::str::from_utf8(&bytes[pos + 4..pos + 4 + klen])
+                let key_str = std::str::from_utf8(&bytes[pos + 4..pos + 4 + klen])
                     .map_err(|e| StoreError::Storage(format!("utf8: {e}")))?
                     .to_string();
                 let v_start = pos + 4 + klen;
@@ -561,7 +558,7 @@ impl SstFile {
                     bytes[v_start + 3],
                 ]) as usize;
                 let is_tombstone = vlen == TOMBSTONE_VLEN as usize;
-                let v = if is_tombstone {
+                let value = if is_tombstone {
                     None
                 } else {
                     if v_start + 4 + vlen > bytes.len() {
@@ -570,13 +567,13 @@ impl SstFile {
                     Some(bytes[v_start + 4..v_start + 4 + vlen].to_vec())
                 };
                 let in_range = match (start, end) {
-                    (Some(s), Some(e)) => k.as_str() >= s && k.as_str() <= e,
-                    (Some(s), None) => k.as_str() >= s,
-                    (None, Some(e)) => k.as_str() <= e,
+                    (Some(s), Some(e)) => key_str.as_str() >= s && key_str.as_str() <= e,
+                    (Some(s), None) => key_str.as_str() >= s,
+                    (None, Some(e)) => key_str.as_str() <= e,
                     (None, None) => true,
                 };
                 if in_range {
-                    out.push((k.clone(), v));
+                    out.push((key_str.clone(), value));
                     if let Some(lim) = limit {
                         if out.len() >= lim {
                             return Ok(out);
@@ -596,7 +593,7 @@ impl SstFile {
         Ok(out)
     }
 
-    /// Verifies file-level CRC.
+    /// Verifies file-level `CRC`.
     pub fn verify_file_crc(&self) -> Result<()> {
         let mut hasher = crc32fast::Hasher::new();
         for meta in &self.footer.index {
@@ -620,19 +617,19 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn sample_entries() -> BTreeMap<String, Option<Vec<u8>>> {
-        let mut m = BTreeMap::new();
-        m.insert("a".to_string(), Some(b"val-a".to_vec()));
-        m.insert("b".to_string(), Some(b"val-b".to_vec()));
-        m.insert("c".to_string(), Some(b"val-c".to_vec()));
-        m
+        let mut map = BTreeMap::new();
+        map.insert("a".to_string(), Some(b"val-a".to_vec()));
+        map.insert("b".to_string(), Some(b"val-b".to_vec()));
+        map.insert("c".to_string(), Some(b"val-c".to_vec()));
+        map
     }
 
     fn sample_values() -> BTreeMap<String, Vec<u8>> {
-        let mut m = BTreeMap::new();
-        m.insert("a".to_string(), b"val-a".to_vec());
-        m.insert("b".to_string(), b"val-b".to_vec());
-        m.insert("c".to_string(), b"val-c".to_vec());
-        m
+        let mut map = BTreeMap::new();
+        map.insert("a".to_string(), b"val-a".to_vec());
+        map.insert("b".to_string(), b"val-b".to_vec());
+        map.insert("c".to_string(), b"val-c".to_vec());
+        map
     }
 
     #[test]
@@ -640,7 +637,7 @@ mod tests {
         let entries = sample_entries();
         let data = build_sst(&entries, 64).expect("build");
         let sst = SstFile::parse(data).expect("parse");
-        assert_eq!(sst.footer.index.len(), 1); // 3 KVs @14B each =42B fits in 64B block
+        assert_eq!(sst.footer.index.len(), 1);
         assert!(sst.may_contain("a"));
         assert!(!sst.may_contain("z"));
         assert_eq!(sst.get("b").unwrap(), Some(b"val-b".to_vec()));
@@ -673,7 +670,6 @@ mod tests {
     fn crc_detects_corruption() {
         let entries = sample_entries();
         let mut data = build_sst(&entries, 1024).unwrap();
-        // Flip a byte in first block
         data[0] ^= 0xFF;
         let sst = SstFile::parse(data).unwrap();
         let err = sst.get("a").unwrap_err();
@@ -685,16 +681,19 @@ mod tests {
         let entries = sample_entries();
         let data = build_sst(&entries, 1024).unwrap();
         let sst = SstFile::parse(data).unwrap();
-        for k in entries.keys() {
-            assert!(sst.may_contain(k), "bloom must contain inserted key {k}");
+        for key in entries.keys() {
+            assert!(
+                sst.may_contain(key),
+                "bloom must contain inserted key {key}"
+            );
         }
     }
 
     #[test]
     fn sst_range_scan() {
         let mut entries = BTreeMap::new();
-        for c in 'a'..='z' {
-            entries.insert(c.to_string(), Some(vec![c as u8]));
+        for ch in 'a'..='z' {
+            entries.insert(ch.to_string(), Some(vec![ch as u8]));
         }
         let data = build_sst(&entries, 64).unwrap();
         let sst = SstFile::parse(data).unwrap();
@@ -708,7 +707,7 @@ mod tests {
     fn sst_tombstone_not_returned() {
         let mut entries = BTreeMap::new();
         entries.insert("a".to_string(), Some(b"v".to_vec()));
-        entries.insert("b".to_string(), None); // tombstone
+        entries.insert("b".to_string(), None);
         let data = build_sst(&entries, 1024).unwrap();
         let sst = SstFile::parse(data).unwrap();
         assert_eq!(sst.get("b").unwrap(), None);
@@ -720,8 +719,8 @@ mod tests {
     #[test]
     fn sst_empty_value_vs_tombstone() {
         let mut entries = BTreeMap::new();
-        entries.insert("a".to_string(), Some(Vec::new())); // empty value, not tombstone
-        entries.insert("b".to_string(), None); // tombstone
+        entries.insert("a".to_string(), Some(Vec::new()));
+        entries.insert("b".to_string(), None);
         let data = build_sst(&entries, 1024).unwrap();
         let sst = SstFile::parse(data).unwrap();
         assert_eq!(sst.get("a").unwrap(), Some(Vec::new()));
