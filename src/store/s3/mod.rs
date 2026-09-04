@@ -1,5 +1,4 @@
 //! S3-backed LSM store
-#![allow(unused_imports)]
 
 use std::sync::Arc;
 
@@ -8,7 +7,7 @@ use object_store::path::Path;
 use object_store::{ObjectStore, PutMode, PutPayload, PutResult, UpdateVersion};
 use serde::{Deserialize, Serialize};
 
-use crate::store::{Direction, KeyValue, Result, StoreError};
+use crate::store::{Direction, GetSet, KeyValue, Result, Store, StoreError, Transaction};
 
 type MemMap = std::collections::BTreeMap<String, Option<Vec<u8>>>;
 type MemTable = Arc<tokio::sync::RwLock<MemMap>>;
@@ -264,6 +263,151 @@ async fn put_wal_and_gate(
         None => Err(StoreError::Fenced(
             "fenced: ownership missing after wal put".to_string(),
         )),
+    }
+}
+
+/// Transaction for `S3Store` — staged overlay, durable only on `commit` (like `BTreeTx`).
+pub struct S3Tx {
+    inner: Arc<dyn ObjectStore>,
+    prefix: Path,
+    epoch: u64,
+    session: String,
+    mem: MemTable,
+    wal_seq: Arc<std::sync::atomic::AtomicU64>,
+    wal_buffer: WalBuffer,
+    overlay: std::collections::BTreeMap<String, Option<Vec<u8>>>,
+}
+
+#[async_trait]
+impl GetSet for S3Store {
+    async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        self.get_bytes_inner(key).await
+    }
+
+    async fn has(&self, key: &str) -> Result<bool> {
+        Ok(self.get_bytes_inner(key).await?.is_some())
+    }
+
+    async fn delete(&mut self, key: &str) -> Result<bool> {
+        let prev = self.get_bytes_inner(key).await?;
+        let existed = prev.is_some();
+        self.stage_delete(key).await;
+        self.flush().await?;
+        Ok(existed)
+    }
+
+    async fn set_bytes(&mut self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
+        let prev = self.get_bytes_inner(key).await?;
+        self.stage_set(key, value).await;
+        self.flush().await?;
+        Ok(prev)
+    }
+
+    async fn gets_bytes(
+        &self,
+        limit: Option<u32>,
+        direction: Direction,
+        cursor: (Option<String>, Option<String>),
+    ) -> Result<Vec<KeyValue>> {
+        self.gets_bytes_inner(limit, direction, cursor).await
+    }
+}
+
+#[async_trait]
+impl GetSet for S3Tx {
+    async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        if let Some(v) = self.overlay.get(key) {
+            return Ok(v.clone());
+        }
+        let mem = self.mem.read().await;
+        match mem.get(key) {
+            Some(Some(v)) => Ok(Some(v.clone())),
+            Some(None) => Ok(None),
+            None => Ok(None),
+        }
+    }
+
+    async fn has(&self, key: &str) -> Result<bool> {
+        Ok(self.get_bytes(key).await?.is_some())
+    }
+
+    async fn delete(&mut self, key: &str) -> Result<bool> {
+        let existed = self.get_bytes(key).await?.is_some();
+        if existed {
+            self.overlay.insert(key.to_string(), None);
+        }
+        Ok(existed)
+    }
+
+    async fn set_bytes(&mut self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
+        let prev = self.get_bytes(key).await?;
+        self.overlay.insert(key.to_string(), Some(value.to_vec()));
+        Ok(prev)
+    }
+
+    async fn gets_bytes(
+        &self,
+        limit: Option<u32>,
+        direction: Direction,
+        cursor: (Option<String>, Option<String>),
+    ) -> Result<Vec<KeyValue>> {
+        let mem = self.mem.read().await;
+        let mut merged = mem.clone();
+        merged.extend(self.overlay.clone());
+        Ok(apply_gets(live_kvs(&merged), limit, direction, cursor))
+    }
+}
+
+#[async_trait]
+impl Transaction for S3Tx {
+    async fn commit(self) -> Result<()> {
+        if self.overlay.is_empty() {
+            return Ok(());
+        }
+        {
+            let mut mem = self.mem.write().await;
+            mem.extend(self.overlay.clone());
+        }
+        {
+            let mut wal = self.wal_buffer.lock().await;
+            wal.extend(self.overlay.clone());
+        }
+        let ops = drain_wal_buffer(&self.wal_buffer).await;
+        if ops.is_empty() {
+            return Ok(());
+        }
+        let payload = encode_wal_ops(&ops)?;
+        put_wal_and_gate(
+            Arc::clone(&self.inner),
+            &self.prefix,
+            self.epoch,
+            &self.session,
+            &self.wal_seq,
+            payload,
+        )
+        .await
+    }
+
+    async fn rollback(self) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Store for S3Store {
+    type Transaction = S3Tx;
+
+    fn begin_tx(&mut self) -> Result<Self::Transaction> {
+        Ok(S3Tx {
+            inner: Arc::clone(&self.inner),
+            prefix: self.prefix.clone(),
+            epoch: self.epoch,
+            session: self.session.clone(),
+            mem: Arc::clone(&self.mem),
+            wal_seq: Arc::clone(&self.wal_seq),
+            wal_buffer: Arc::clone(&self.wal_buffer),
+            overlay: std::collections::BTreeMap::new(),
+        })
     }
 }
 
@@ -649,7 +793,7 @@ pub(crate) fn new_in_memory() -> Arc<dyn ObjectStore> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::StoreError;
+    use crate::store::{GetSet, Store, Transaction};
     use object_store::ObjectStore;
 
     #[tokio::test]
@@ -1019,5 +1163,193 @@ mod tests {
             .await
             .expect("build");
         s.flush().await.expect("empty flush is noop");
+    }
+
+    #[tokio::test]
+    async fn wal_commit_durable_ok() {
+        let store = new_in_memory();
+        let mut s = S3Store::builder()
+            .with_store(Arc::clone(&store))
+            .with_prefix(Path::from("oxkv"))
+            .with_session("node-a")
+            .build()
+            .await
+            .expect("build");
+        let epoch = s.epoch();
+        // via Store trait (always flush = RPO=0)
+        s.set_bytes("k1", b"v1").await.expect("set_bytes");
+        // WAL file must exist at e{epoch}/wal/00000000.log.zst
+        let wal = wal_path(&Path::from("oxkv"), epoch, 0);
+        let got = store.get(&wal).await.expect("wal exists");
+        let bytes = got.bytes().await.expect("bytes");
+        assert!(!bytes.is_empty());
+        // mem reflects write via GetSet
+        assert_eq!(s.get_bytes("k1").await.unwrap(), Some(b"v1".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn wal_commit_durable_fenced_after_epoch_steal() {
+        let store = new_in_memory();
+        let prefix = Path::from("oxkv");
+        let mut s_a = S3Store::builder()
+            .with_store(Arc::clone(&store))
+            .with_prefix(prefix.clone())
+            .with_session("node-a")
+            .build()
+            .await
+            .expect("node-a build");
+        // node-a commits one durable write — succeeds
+        s_a.set_bytes("k1", b"v1").await.expect("a commit 1");
+
+        // node-b fences node-a
+        let mut s_b = S3Store::builder()
+            .with_store(Arc::clone(&store))
+            .with_prefix(prefix.clone())
+            .with_session("node-b")
+            .build()
+            .await
+            .expect("node-b build");
+        assert_eq!(s_b.epoch(), s_a.epoch() + 1);
+
+        // node-a's next durable write must be fenced (bucket proof fails)
+        let err = s_a
+            .set_bytes("k2", b"v2")
+            .await
+            .expect_err("must be fenced");
+        assert!(
+            matches!(err, StoreError::Fenced(_)),
+            "expected Fenced, got {err}"
+        );
+
+        // node-b can still write
+        s_b.set_bytes("k3", b"v3").await.expect("b can write");
+    }
+
+    #[tokio::test]
+    async fn wal_group_commit_batches() {
+        let store = new_in_memory();
+        let mut s = S3Store::builder()
+            .with_store(Arc::clone(&store))
+            .with_prefix(Path::from("oxkv"))
+            .with_session("node-a")
+            .build()
+            .await
+            .expect("build");
+        let epoch = s.epoch();
+        // via Transaction: two staged writes before single flush -> one WAL file (group commit)
+        let mut tx = s.begin_tx().unwrap();
+        tx.set_bytes("k1", b"v1").await.unwrap();
+        tx.set_bytes("k2", b"v2").await.unwrap();
+        tx.commit().await.expect("tx commit batch");
+        let wal0 = wal_path(&Path::from("oxkv"), epoch, 0);
+        assert!(store.get(&wal0).await.is_ok(), "first flush creates wal 0");
+        // second tx with no ops is noop (not tested) - next staged write creates wal 1
+        let mut tx2 = s.begin_tx().unwrap();
+        tx2.set_bytes("k3", b"v3").await.unwrap();
+        tx2.commit().await.expect("tx commit wal 1");
+        let wal1 = wal_path(&Path::from("oxkv"), epoch, 1);
+        assert!(store.get(&wal1).await.is_ok());
+        // also verify visibility via GetSet
+        assert_eq!(s.get_bytes("k1").await.unwrap(), Some(b"v1".to_vec()));
+        assert_eq!(s.get_bytes("k3").await.unwrap(), Some(b"v3".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn wal_put_already_exists_is_idempotent() {
+        let store = new_in_memory();
+        let mut s = S3Store::builder()
+            .with_store(Arc::clone(&store))
+            .with_prefix(Path::from("oxkv"))
+            .with_session("node-a")
+            .build()
+            .await
+            .expect("build");
+        let epoch = s.epoch();
+        // manually create wal 0 to simulate prior successful PUT that caller retried
+        let wal0 = wal_path(&Path::from("oxkv"), epoch, 0);
+        store
+            .put(&wal0, PutPayload::from_static(b"pre-existing"))
+            .await
+            .unwrap();
+        // our next set will try to create wal 0 again with PutMode::Create -> AlreadyExists, but should be idempotent
+        s.set_bytes("k1", b"v1")
+            .await
+            .expect("idempotent on AlreadyExists");
+        // still fenced check must pass (ownership still us)
+        s.wal_seq.store(99, std::sync::atomic::Ordering::SeqCst);
+        s.set_bytes("k2", b"v2").await.expect("next seq ok");
+    }
+
+    #[tokio::test]
+    async fn s3store_getset_has_and_gets_via_trait() {
+        let mut s = S3Store::builder()
+            .with_store(new_in_memory())
+            .with_prefix(Path::from("oxkv"))
+            .with_session("node-a")
+            .build()
+            .await
+            .expect("build");
+        assert_eq!(s.get_bytes("missing").await.unwrap(), None);
+        assert!(!s.has("missing").await.unwrap());
+        s.set_bytes("a", b"1").await.unwrap();
+        s.set_bytes("b", b"2").await.unwrap();
+        s.set_bytes("c", b"3").await.unwrap();
+        assert!(s.has("a").await.unwrap());
+        let all = s
+            .gets_bytes(None, Direction::Next, (None, None))
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].key, "a");
+        // delete via trait is durable
+        assert!(s.delete("b").await.unwrap());
+        assert_eq!(s.get_bytes("b").await.unwrap(), None);
+        let after = s
+            .gets_bytes(None, Direction::Next, (None, None))
+            .await
+            .unwrap();
+        assert_eq!(after.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn s3tx_only_persists_on_commit() {
+        let mut s = S3Store::builder()
+            .with_store(new_in_memory())
+            .with_prefix(Path::from("oxkv"))
+            .with_session("node-a")
+            .build()
+            .await
+            .expect("build");
+        s.set_bytes("k0", b"v0").await.unwrap();
+        let epoch = s.epoch();
+        // tx stages but not visible to store until commit
+        let mut tx = s.begin_tx().unwrap();
+        tx.set_bytes("k1", b"v1").await.unwrap();
+        tx.set_bytes("k2", b"v2").await.unwrap();
+        // read-your-writes inside tx
+        assert_eq!(tx.get_bytes("k1").await.unwrap(), Some(b"v1".to_vec()));
+        assert_eq!(tx.get_bytes("k0").await.unwrap(), Some(b"v0".to_vec()));
+        // not yet durable: wal count still 1 (only k0)
+        let store = s.inner_store();
+        assert!(
+            store
+                .get(&wal_path(&Path::from("oxkv"), epoch, 1))
+                .await
+                .is_err()
+        );
+        // rollback discards
+        let mut tx2 = s.begin_tx().unwrap();
+        tx2.set_bytes("k9", b"v9").await.unwrap();
+        tx2.rollback().await.unwrap();
+        assert_eq!(s.get_bytes("k9").await.unwrap(), None);
+        // commit persists
+        tx.commit().await.unwrap();
+        assert_eq!(s.get_bytes("k1").await.unwrap(), Some(b"v1".to_vec()));
+        assert!(
+            store
+                .get(&wal_path(&Path::from("oxkv"), epoch, 1))
+                .await
+                .is_ok()
+        );
     }
 }
