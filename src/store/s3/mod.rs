@@ -50,6 +50,8 @@ pub struct S3Store {
     wal_buffer: WalBuffer,
     sst_seq: Arc<std::sync::atomic::AtomicU64>,
     manifest_cache: Arc<tokio::sync::Mutex<ManifestCache>>,
+    /// Pinned reader versions for WAL GC watermark.
+    readers: Arc<tokio::sync::Mutex<std::collections::BTreeMap<u64, usize>>>,
 }
 
 impl std::fmt::Debug for S3Store {
@@ -439,6 +441,89 @@ impl S3Store {
         }
         Ok(merged_gets_bytes(sources, limit, direction, cursor))
     }
+
+    pub async fn register_reader(&self, version: u64) {
+        let mut readers = self.readers.lock().await;
+        *readers.entry(version).or_insert(0) += 1;
+    }
+    pub async fn unregister_reader(&self, version: u64) {
+        let mut readers = self.readers.lock().await;
+        if let Some(count) = readers.get_mut(&version) {
+            *count -= 1;
+            if *count == 0 {
+                readers.remove(&version);
+            }
+        }
+    }
+    pub async fn min_reader_version(&self) -> Option<u64> {
+        let readers = self.readers.lock().await;
+        readers.keys().next().copied()
+    }
+    pub async fn manifest_version(&self) -> Result<u64> {
+        let mut cache = self.manifest_cache.lock().await;
+        let (manifest, _) = cache
+            .load(
+                Arc::clone(&self.inner),
+                &self.prefix,
+                self.epoch,
+                std::time::Duration::from_secs(1),
+            )
+            .await?;
+        Ok(manifest.version)
+    }
+    pub async fn gc_wal(&self) -> Result<usize> {
+        let min_version = self.min_reader_version().await;
+        for _ in 0..4 {
+            let mut cache = self.manifest_cache.lock().await;
+            let (mut manifest, etag) = cache
+                .load(
+                    Arc::clone(&self.inner),
+                    &self.prefix,
+                    self.epoch,
+                    std::time::Duration::from_secs(1),
+                )
+                .await?;
+            if manifest.wal.is_empty() || manifest.sst.is_empty() {
+                return Ok(0);
+            }
+            if let Some(min) = min_version {
+                if min < manifest.version {
+                    return Ok(0);
+                }
+            }
+            let to_delete = manifest.wal.clone();
+            manifest.wal.clear();
+            manifest.version = manifest.version.wrapping_add(1);
+            let etag_opt = if etag.is_empty() { None } else { Some(etag) };
+            match cas_manifest(Arc::clone(&self.inner), &self.prefix, &manifest, etag_opt).await {
+                Ok(new_etag) => {
+                    cache.update(manifest, new_etag);
+                    drop(cache);
+                    let mut deleted = 0usize;
+                    for wal in &to_delete {
+                        let path = Path::from(wal.clone());
+                        match self.inner.delete(&path).await {
+                            Ok(()) | Err(object_store::Error::NotFound { .. }) => deleted += 1,
+                            Err(e) => {
+                                return Err(StoreError::Storage(format!(
+                                    "delete wal {wal} failed: {e}"
+                                )));
+                            }
+                        }
+                    }
+                    return Ok(deleted);
+                }
+                Err(e) if e.to_string().contains("CAS conflict") => {
+                    cache.clear();
+                    drop(cache);
+                    tokio::time::sleep(cas_backoff(0)).await;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(0)
+    }
 }
 
 /// Transaction for S3Store.
@@ -695,6 +780,7 @@ impl S3StoreBuilder {
             wal_buffer: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             sst_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             manifest_cache: Arc::new(tokio::sync::Mutex::new(ManifestCache::new())),
+            readers: Arc::new(tokio::sync::Mutex::new(std::collections::BTreeMap::new())),
         })
     }
 }
