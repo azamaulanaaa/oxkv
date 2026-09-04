@@ -12,6 +12,7 @@ use object_store::{ObjectStore, PutMode, PutPayload};
 use crate::store::{Direction, GetSet, KeyValue, Result, Store, StoreError, Transaction};
 
 mod blob;
+mod manifest;
 mod ownership;
 mod probe;
 mod sst;
