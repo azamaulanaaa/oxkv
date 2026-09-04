@@ -26,7 +26,7 @@ redb = ["dep:redb"]
 otel = ["dep:opentelemetry"]
 ## Enables [`S3Store`] — LSM on S3 (native-only, `#[cfg(not(target_arch = "wasm32"))]`).
 ## Each `dep:` below is justified inline where the dependency is declared.
-s3 = ["dep:object_store", "dep:uuid", "dep:tokio", "dep:crc32fast"]
+s3 = ["dep:object_store", "dep:uuid", "dep:tokio", "dep:crc32fast", "dep:sha2"]
 
 [dependencies]
 opentelemetry = { version = "0.32", default-features = false, features = [
@@ -39,6 +39,8 @@ object_store = { version = "0.12", optional = true, features = ["aws", "gcp", "a
 tokio = { version = "1.53.1", optional = true, features = ["sync"] }
 # - crc32fast: per-block CRC and file-level CRC for SST integrity (matches SST footer `file_crc`).
 crc32fast = { version = "1", optional = true }
+# - sha2: SHA-256 hex for content-addressed blob names (large-value overflow objects).
+sha2 = { version = "0.10", optional = true }
 pest = "2.9.0"
 pest_derive = "2.9.0"
 redb = { version = "4.2.0", optional = true }

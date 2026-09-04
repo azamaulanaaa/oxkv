@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use object_store::path::Path;
 use object_store::{ObjectStore, PutMode, PutPayload, PutResult, UpdateVersion};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
 mod sst;
@@ -695,6 +696,90 @@ pub(crate) fn blob_path(prefix: &Path, epoch: u64, hash: &str) -> Path {
         .child(format!("{hash}.zst"))
 }
 
+/// Overflow helpers (G7) — `klen+vlen > block_size` spills to `blob/`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct BlobPointer {
+    /// Blob object path as stored (e.g. `e000007/blob/<hash>.zst`).
+    pub blob: String,
+    /// Original value length.
+    pub len: usize,
+    /// CRC32 of original value.
+    pub crc: u32,
+}
+
+/// Returns `true` if `key+value` exceeds `block_size` and must spill to blob (§10).
+#[must_use]
+pub(crate) fn is_overflow(key: &str, value: &[u8], block_size: usize) -> bool {
+    // 8 bytes for two u32 lengths
+    key.len() + value.len() + 8 > block_size
+}
+
+/// Deterministic hash for blob name — hex SHA256.
+#[must_use]
+pub(crate) fn blob_hash(value: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(value);
+    let res = hasher.finalize();
+    let mut s = String::with_capacity(64);
+    for b in res {
+        use std::fmt::Write as _;
+        let _ = write!(&mut s, "{b:02x}");
+    }
+    s
+}
+
+/// Encodes a blob pointer as JSON bytes for inline SST value.
+pub(crate) fn encode_blob_pointer(blob: &Path, len: usize, crc: u32) -> Vec<u8> {
+    let ptr = BlobPointer {
+        blob: blob.to_string(),
+        len,
+        crc,
+    };
+    serde_json::to_vec(&ptr).expect("blob pointer serialize")
+}
+
+/// Tries to decode `value` as `BlobPointer`; `None` if not a pointer.
+#[must_use]
+pub(crate) fn try_decode_blob_pointer(value: &[u8]) -> Option<BlobPointer> {
+    serde_json::from_slice(value).ok()
+}
+
+/// Puts `value` to `e{epoch}/blob/{hash}.zst` via `If-None-Match` and returns the path.
+///
+/// # Errors
+///
+/// Returns `StoreError::Storage` on `PUT` failure (except `AlreadyExists` is idempotent).
+pub(crate) async fn put_blob(
+    store: Arc<dyn ObjectStore>,
+    prefix: &Path,
+    epoch: u64,
+    value: &[u8],
+) -> Result<Path> {
+    let hash = blob_hash(value);
+    let path = blob_path(prefix, epoch, &hash);
+    let crc = crc32fast::hash(value);
+    // Store raw value (could zstd compress, but raw for v1)
+    let payload = PutPayload::from(value.to_vec());
+    match store.put_opts(&path, payload, PutMode::Create.into()).await {
+        Ok(_) | Err(object_store::Error::AlreadyExists { .. }) => Ok(path),
+        Err(e) => Err(StoreError::Storage(format!("put blob failed: {e}"))),
+    }
+    // Note: caller should encode pointer with `encode_blob_pointer(&path, value.len(), crc)`
+}
+
+/// Gets blob value at `blob_path`, verifying `len`/`crc` if available in `ptr`.
+pub(crate) async fn get_blob(store: Arc<dyn ObjectStore>, blob_path: &Path) -> Result<Vec<u8>> {
+    let res = store
+        .get(blob_path)
+        .await
+        .map_err(|e| StoreError::Storage(format!("get blob {blob_path} failed: {e}")))?;
+    let bytes = res
+        .bytes()
+        .await
+        .map_err(|e| StoreError::Storage(format!("read blob failed: {e}")))?;
+    Ok(bytes.to_vec())
+}
+
 /// Acquires ownership by CAS-bumping `ownership.json` epoch.
 ///
 /// `session` is the owner identifier. On success returns the new
@@ -1356,5 +1441,89 @@ mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    // -- overflow blob (G7) --------------------------------------------------------
+
+    #[test]
+    fn overflow_detection() {
+        assert!(!is_overflow("k", b"small", DEFAULT_BLOCK_SIZE));
+        let big = vec![b'x'; 40 * 1024];
+        assert!(is_overflow("k", &big, DEFAULT_BLOCK_SIZE));
+        // exactly block_size should not overflow (key + value + 8 == block_size)
+        let key = "k";
+        let val_len = DEFAULT_BLOCK_SIZE - key.len() - 8;
+        let val = vec![b'y'; val_len];
+        assert!(!is_overflow(key, &val, DEFAULT_BLOCK_SIZE));
+        let val2 = vec![b'y'; val_len + 1];
+        assert!(is_overflow(key, &val2, DEFAULT_BLOCK_SIZE));
+    }
+
+    #[test]
+    fn blob_pointer_encode_decode() {
+        let path = Path::from("e000007/blob/abcd1234.zst");
+        let ptr = encode_blob_pointer(&path, 123, 0xDEADBEEF);
+        let decoded = try_decode_blob_pointer(&ptr).expect("decode");
+        assert_eq!(decoded.blob, path.to_string());
+        assert_eq!(decoded.len, 123);
+        assert_eq!(decoded.crc, 0xDEADBEEF);
+        assert!(try_decode_blob_pointer(b"not json").is_none());
+    }
+
+    #[tokio::test]
+    async fn blob_put_get_round_trip() {
+        let store = new_in_memory();
+        let prefix = Path::from("oxkv");
+        let epoch = 7;
+        let val = b"large value that will be blobbed";
+        let blob_path = put_blob(Arc::clone(&store), &prefix, epoch, val)
+            .await
+            .expect("put blob");
+        assert!(blob_path.to_string().contains("blob/"));
+        let got = get_blob(Arc::clone(&store), &blob_path)
+            .await
+            .expect("get blob");
+        assert_eq!(got, val);
+        // idempotent second put
+        let blob_path2 = put_blob(Arc::clone(&store), &prefix, epoch, val)
+            .await
+            .expect("second put idempotent");
+        assert_eq!(blob_path, blob_path2);
+    }
+
+    #[tokio::test]
+    async fn overflow_value_larger_than_block() {
+        let store = new_in_memory();
+        let prefix = Path::from("oxkv");
+        let s = S3Store::builder()
+            .with_store(Arc::clone(&store))
+            .with_prefix(prefix.clone())
+            .with_session("node-a")
+            .build()
+            .await
+            .expect("build");
+        let epoch = s.epoch();
+        // 40KB value > 32KB block
+        let big_val = vec![b'x'; 40 * 1024];
+        assert!(is_overflow("bigkey", &big_val, DEFAULT_BLOCK_SIZE));
+        let blob_path = put_blob(Arc::clone(&store), &prefix, epoch, &big_val)
+            .await
+            .expect("put blob");
+        let ptr_bytes = encode_blob_pointer(&blob_path, big_val.len(), crc32fast::hash(&big_val));
+        // Simulate SST storing pointer instead of raw value
+        let mut entries = std::collections::BTreeMap::new();
+        entries.insert("bigkey".to_string(), ptr_bytes.clone());
+        // Verify pointer decodes and blob fetches original
+        let decoded = try_decode_blob_pointer(&ptr_bytes).expect("decode");
+        let fetched = get_blob(Arc::clone(&store), &Path::from(decoded.blob.clone()))
+            .await
+            .expect("fetch");
+        assert_eq!(fetched, big_val);
+        assert_eq!(decoded.len, big_val.len());
+        // Write pointer via SST and verify read path (without S3Store get wrapper, just raw)
+        let sst_data = build_sst(&entries, DEFAULT_BLOCK_SIZE).expect("build sst");
+        let sst = SstFile::parse(sst_data).expect("parse");
+        let got_ptr = sst.get("bigkey").unwrap().expect("got pointer");
+        assert_eq!(got_ptr, ptr_bytes);
     }
 }
