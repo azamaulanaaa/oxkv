@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use moka::future::Cache;
 use object_store::path::Path;
 use object_store::{ObjectStore, PutMode, PutPayload};
 
@@ -52,6 +53,8 @@ pub struct S3Store {
     manifest_cache: Arc<tokio::sync::Mutex<ManifestCache>>,
     /// Pinned reader versions for WAL GC watermark.
     readers: Arc<tokio::sync::Mutex<std::collections::BTreeMap<u64, usize>>>,
+    /// SST file cache — moka LRU, ~8k entries.
+    sst_cache: Cache<String, Arc<SstFile>>,
 }
 
 impl std::fmt::Debug for S3Store {
@@ -334,7 +337,10 @@ impl S3Store {
         }
     }
 
-    async fn fetch_sst(&self, id: &str) -> Result<SstFile> {
+    async fn fetch_sst(&self, id: &str) -> Result<Arc<SstFile>> {
+        if let Some(cached) = self.sst_cache.get(id).await {
+            return Ok(cached);
+        }
         let path = Path::from(id.to_string());
         let res = self
             .inner
@@ -347,7 +353,11 @@ impl S3Store {
             .map_err(|e| StoreError::Storage(format!("read sst {id} failed: {e}")))?;
         let sst = SstFile::parse(bytes.to_vec())?;
         sst.verify_file_crc()?;
-        Ok(sst)
+        let arc = Arc::new(sst);
+        self.sst_cache
+            .insert(id.to_string(), Arc::clone(&arc))
+            .await;
+        Ok(arc)
     }
 
     pub async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
@@ -538,6 +548,7 @@ pub struct S3Tx {
     wal_buffer: WalBuffer,
     sst_seq: Arc<std::sync::atomic::AtomicU64>,
     manifest_cache: Arc<tokio::sync::Mutex<ManifestCache>>,
+    sst_cache: Cache<String, Arc<SstFile>>,
     overlay: std::collections::BTreeMap<String, Option<Vec<u8>>>,
 }
 
@@ -706,6 +717,7 @@ impl Store for S3Store {
             wal_buffer: Arc::clone(&self.wal_buffer),
             sst_seq: Arc::clone(&self.sst_seq),
             manifest_cache: Arc::clone(&self.manifest_cache),
+            sst_cache: self.sst_cache.clone(),
             overlay: std::collections::BTreeMap::new(),
         })
     }
@@ -782,6 +794,7 @@ impl S3StoreBuilder {
             sst_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             manifest_cache: Arc::new(tokio::sync::Mutex::new(ManifestCache::new())),
             readers: Arc::new(tokio::sync::Mutex::new(std::collections::BTreeMap::new())),
+            sst_cache: Cache::builder().max_capacity(8192).build(),
         })
     }
 }
