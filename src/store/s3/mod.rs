@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use moka::future::Cache;
 use object_store::path::Path;
 use object_store::{ObjectStore, PutMode, PutPayload, PutResult};
 
@@ -47,6 +48,8 @@ pub struct S3Store {
     /// Pinned reader versions for WAL GC watermark (G5).
     /// `BTreeMap<version, count>` — `min_key` is the watermark.
     readers: Arc<tokio::sync::Mutex<std::collections::BTreeMap<u64, usize>>>,
+    /// SST file cache for `G11` budgets — `moka` LRU, ~8k entries (≈256 MB with 32KB blocks).
+    sst_cache: Cache<String, Arc<SstFile>>,
 }
 
 impl std::fmt::Debug for S3Store {
@@ -431,7 +434,10 @@ impl S3Store {
         }
     }
 
-    async fn fetch_sst(&self, id: &str) -> Result<SstFile> {
+    async fn fetch_sst(&self, id: &str) -> Result<Arc<SstFile>> {
+        if let Some(cached) = self.sst_cache.get(id).await {
+            return Ok(cached);
+        }
         let path = Path::from(id.to_string());
         let res = self
             .inner
@@ -442,8 +448,11 @@ impl S3Store {
             .bytes()
             .await
             .map_err(|e| StoreError::Storage(format!("read sst {id} failed: {e}")))?;
-        let sst = SstFile::parse(bytes.to_vec())?;
+        let sst = Arc::new(SstFile::parse(bytes.to_vec())?);
         sst.verify_file_crc()?;
+        self.sst_cache
+            .insert(id.to_string(), Arc::clone(&sst))
+            .await;
         Ok(sst)
     }
 
@@ -756,6 +765,7 @@ impl S3StoreBuilder {
             sst_seq: std::sync::atomic::AtomicU64::new(0),
             manifest_cache: Arc::new(tokio::sync::Mutex::new(ManifestCache::new())),
             readers: Arc::new(tokio::sync::Mutex::new(std::collections::BTreeMap::new())),
+            sst_cache: Cache::builder().max_capacity(8192).build(),
         })
     }
 }
