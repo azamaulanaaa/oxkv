@@ -138,23 +138,11 @@ pub fn build_sst(
     let mut offset: u64 = 0;
 
     for (key, value) in entries {
-        let mut rec = Vec::new();
-        let klen = u32::try_from(key.len())
-            .map_err(|e| StoreError::Serialization(format!("key too long: {e}")))?;
-        rec.extend_from_slice(&klen.to_le_bytes());
-        rec.extend_from_slice(key.as_bytes());
-        match value {
-            Some(val) => {
-                let vlen = u32::try_from(val.len())
-                    .map_err(|e| StoreError::Serialization(format!("value too long: {e}")))?;
-                rec.extend_from_slice(&vlen.to_le_bytes());
-                rec.extend_from_slice(val);
-            }
-            None => {
-                rec.extend_from_slice(&TOMBSTONE_VLEN.to_le_bytes());
-            }
-        }
-        if !cur_block.is_empty() && cur_block.len() + rec.len() > block_size {
+        // Compute record length without allocating, so we can decide to cut
+        // the block before writing. Tombstone and empty value both occupy
+        // 4+key.len()+4 bytes; non-empty value adds value.len().
+        let rec_len = 4 + key.len() + 4 + value.as_ref().map_or(0, Vec::len);
+        if !cur_block.is_empty() && cur_block.len() + rec_len > block_size {
             let crc = crc32fast::hash(&cur_block);
             // `cur_min`/`cur_max` are guaranteed `Some` when `cur_block` is non-empty.
             let meta = BlockMeta {
@@ -173,7 +161,22 @@ pub fn build_sst(
             cur_min = Some(key.clone());
         }
         cur_max = Some(key.clone());
-        cur_block.extend_from_slice(&rec);
+        // Write record directly into cur_block without intermediate Vec.
+        let klen = u32::try_from(key.len())
+            .map_err(|e| StoreError::Serialization(format!("key too long: {e}")))?;
+        cur_block.extend_from_slice(&klen.to_le_bytes());
+        cur_block.extend_from_slice(key.as_bytes());
+        match value {
+            Some(val) => {
+                let vlen = u32::try_from(val.len())
+                    .map_err(|e| StoreError::Serialization(format!("value too long: {e}")))?;
+                cur_block.extend_from_slice(&vlen.to_le_bytes());
+                cur_block.extend_from_slice(val);
+            }
+            None => {
+                cur_block.extend_from_slice(&TOMBSTONE_VLEN.to_le_bytes());
+            }
+        }
     }
     if !cur_block.is_empty() {
         let crc = crc32fast::hash(&cur_block);
