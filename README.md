@@ -9,8 +9,8 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 - **Cursor-based pagination** — bidirectional traversal (`Next` / `Prev`) with inclusive range cursors and limit control
 - **Lucene-style query engine** — filter stored JSON documents with a query language supporting field paths, ranges, wildcards, regex, fuzzy matching, and boolean operators
 - **JSON serialization** — extension methods for inserting and retrieving `serde_json::Value` types via JSON, stored as raw bytes
-- **WASM bindings** — thread-safe wrappers in `src/wasm.rs` expose every store method to JavaScript as async promises
-- **Extensible backends** — the crate defines three traits (`GetSet`, `Transaction`, `Store`) that any backend can implement; ships with an in-memory B-tree backend (`btree`, default), a persistent [Redb](https://github.com/cberner/redb) backend (`redb`), and an LSM-on-S3 backend (`s3`, native-only)
+- **WASM bindings** — thread-safe wrappers in `src/wasm.rs` expose `BTreeStore` to JavaScript as async promises (WASM target only supports `btree`; `redb`/`s3`/`otel` are native-only)
+- **Extensible backends** — the crate defines three traits (`GetSet`, `Transaction`, `Store`) that any backend can implement; ships with an in-memory B-tree backend (`btree`, default, the only WASM backend), a persistent [Redb](https://github.com/cberner/redb) backend (`redb`, native-only), and an LSM-on-S3 backend (`s3`, native-only)
 - **S3 backend** — LSM on S3/GCS/Azure via [`object_store`](https://docs.rs/object_store): epoch-fenced single writer, WAL with RPO=0, MemTable + SST (L0/L1) with Bloom + CRC, blob overflow for large values, moka SST cache, WAL replay on restart, GC and L0→L1 compaction
 - **Validation hooks** — reject invalid writes before they reach storage, scoped to a single key, a key prefix, or the whole store
 - **Reactivity** — watch keys or prefixes and observe every committed change via channels or observer traits; rolled-back transactions never notify
