@@ -10,7 +10,8 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 - **Lucene-style query engine** — filter stored JSON documents with a query language supporting field paths, ranges, wildcards, regex, fuzzy matching, and boolean operators
 - **JSON serialization** — extension methods for inserting and retrieving `serde_json::Value` types via JSON, stored as raw bytes
 - **WASM bindings** — thread-safe wrappers in `src/wasm.rs` expose every store method to JavaScript as async promises
-- **Extensible backends** — the crate defines three traits (`GetSet`, `Transaction`, `Store`) that any backend can implement; ships with an in-memory B-tree backend and a persistent [Redb](https://github.com/cberner/redb) backend
+- **Extensible backends** — the crate defines three traits (`GetSet`, `Transaction`, `Store`) that any backend can implement; ships with an in-memory B-tree backend (`btree`, default), a persistent [Redb](https://github.com/cberner/redb) backend (`redb`), and an LSM-on-S3 backend (`s3`, native-only)
+- **S3 backend** — LSM on S3/GCS/Azure via [`object_store`](https://docs.rs/object_store): epoch-fenced single writer, WAL with RPO=0, MemTable + SST (L0/L1) with Bloom + CRC, blob overflow for large values, moka SST cache, WAL replay on restart, GC and L0→L1 compaction
 - **Validation hooks** — reject invalid writes before they reach storage, scoped to a single key, a key prefix, or the whole store
 - **Reactivity** — watch keys or prefixes and observe every committed change via channels or observer traits; rolled-back transactions never notify
 - **Save/Load** — serialize the entire store contents into a single contiguous `Uint8Array` and reconstruct it from binary data
@@ -31,6 +32,8 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 | [`store::Observer`] | Receives change notifications after they become durable |
 | [`store::HookStore`] | Decorator adding validators and change watching to any store |
 | [`store::OtelStore`] | Feature-gated decorator adding OpenTelemetry traces and metrics to any store |
+| [`store::S3Store`] / [`store::S3StoreBuilder`] | Feature-gated (`s3`, native-only) LSM on S3 via `object_store`; single-writer epoch fencing, WAL + SST + blob overflow |
+| [`store::StoreError::Fenced`] | Terminal fencing error — another owner acquired the epoch via `ownership.json` CAS |
 
 ## Quick Start
 
@@ -304,6 +307,52 @@ What you get per operation (`get`, `has`, `set`, `delete`, `gets`, `begin_tx`,
 Decorators compose: `OtelStore::new(HookStore::new(RedbStore::new()?))` measures
 the full validation pipeline.
 
+## S3 Backend (feature `s3`, native-only)
+
+`S3Store` is an LSM tree on S3-compatible storage (S3, GCS, Azure) via `object_store`. It is `#[cfg(not(target_arch = "wasm32"))]` and shares the same `GetSet`/`Store`/`Transaction` traits as the other backends, so application code is portable.
+
+```rust,ignore
+use std::sync::Arc;
+use object_store::{memory::InMemory, path::Path};
+use oxkv::{S3Store, store::*};
+
+let store: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
+// In prod replace InMemory with AmazonS3Builder / parse_url("s3://bucket/prefix")
+let mut s3 = S3Store::builder()
+    .with_store(store)
+    .with_prefix(Path::from("my-app/oxkv"))
+    .build()
+    .await
+    .unwrap();
+
+s3.set_bytes("hello", b"world").await.unwrap();
+assert_eq!(s3.get_bytes("hello").await.unwrap().as_deref(), Some(b"world".as_slice()));
+
+// Transactions stage in an overlay and become durable only on commit (WAL RPO=0)
+let mut tx = s3.begin_tx().unwrap();
+tx.set_bytes("a", b"1").await.unwrap();
+tx.commit().await.unwrap();
+```
+
+What it does under the hood:
+
+- **Probe** — on `build()` validates `If-None-Match` / `If-Match` conditional writes (`PutMode::Create` / `Update`) at `{prefix}/probe/canary`; use `.skip_probe(true)` only for stores known to be broken (e.g. B2 without the flag).
+- **Single-writer fencing** — `ownership.json` CAS at `{prefix}/ownership.json` bumps a monotonic `epoch`; every WAL/SST `PUT` is followed by an ownership gate and returns `StoreError::Fenced` if superseded. The fenced instance must stop writing and rebuild.
+- **WAL (RPO=0)** — each `set_bytes`/`delete`/transaction commit encodes `[u32 key len][key][u32 value len][value]` (tombstone = `u32::MAX`) and `PUT`s to `e{epoch:06}/wal/{seq:08}.log` with `If-None-Match`, then CAS-appends the id to `manifest.json`. `MemTable` is mutated only after the WAL is durable. WAL is replayed from the manifest on `build()` so restart recovers not-yet-SSTed writes.
+- **MemTable → SST** — buffered writes flush to `e{epoch}/sst/L0/{seq}.sst` when >32 MiB (or forced). Large values overflow to `e{epoch}/blob/{sha256}` and the SST stores a pointer `(blob path, len, crc32)` instead. Reads resolve the pointer with length + CRC verification.
+- **Manifest** — `manifest.json` tracks `{epoch, version, wal: [ids], sst: [{id, level, min_key, max_key, size}]}` and is updated via `If-Match` ETag CAS with jittered backoff. An in-memory `ManifestCache` (1 s TTL) and `moka` SST cache (256 MiB, weigher by file size) avoid hot-path GETs. Every SST `GET` verifies `verify_file_crc()`.
+- **GC & compaction** — `gc_wal()` deletes WAL covered by an SST once no reader pins that version (`register_reader`/`unregister_reader` watermark; with no pins all covered WAL is eligible). `compact()` merges L0→L1 when `L0 files ≥4` or `>128 MiB`, building a new `L1/{seq}.sst` with BTreeMap newest-wins dedup, CAS-swapping the manifest, then deleting old objects and invalidating the cache. Both are idempotent via `If-None-Match` + manifest dedup.
+- **Read path** — `get_bytes` checks `MemTable` then SSTs newest-first within `[min_key, max_key]`; `gets_bytes` heap-merges `MemTable` + SSTs with tombstone suppression. Both deref blob pointers.
+
+Enable it:
+
+```toml
+[dependencies]
+oxkv = { version = "0.3", features = ["s3"] }
+```
+
+`cargo test --features s3` and `cargo bench --features s3` exercise it against `InMemory` (bench uses `skip_probe(true)` so the numbers are comparable to `btree_mem`/`redb_mem`).
+
 ## WASM Bindings
 
 The WASM module in `src/wasm.rs` provides thread-safe wrappers for `BTreeStore`, exposing every store method to JavaScript as async promises.
@@ -384,14 +433,14 @@ wasm-pack test --node
 ## Benchmarking
 
 Criterion benchmarks live in [`benches/kv_bench.rs`](benches/kv_bench.rs) and
-cover both shipped backends (`btree_mem`, `redb_mem`) at two store sizes:
-1,000 and 1,000,000 items.
+cover all shipped backends (`btree_mem`, `redb_mem`, `s3_mem` via `object_store::memory::InMemory` with `skip_probe(true)`) at 1K / 100K / 1M scales with a sampling strategy that keeps the full suite in minutes, not hours.
 
 ```bash
-cargo bench --bench kv_bench                     # everything (slow - see note)
+cargo bench --bench kv_bench                     # everything (tuned to minutes)
 cargo bench --bench kv_bench 1000                # quick sweep of the 1k groups
 cargo bench --bench kv_bench point_update        # just the changes matrix
 cargo bench --bench kv_bench 1000000items_100    # one specific cell of the matrix
+cargo bench --features s3 --bench kv_bench       # include S3 (InMemory)
 ```
 
 Query-engine benchmarks live in [`benches/query_bench.rs`](benches/query_bench.rs)
@@ -415,14 +464,16 @@ previous run and flags regressions/improvements automatically.
 
 ### Workloads
 
-| Group | Measures |
-| --------- | ----------- |
-| `seq_insert/{backend}/{n}` | building a store from scratch — every key inserted sequentially |
-| `random_get/{backend}/{n}` | reading every item in scattered (prime-stride) order |
-| `page_fetch_100/…` | one paginated range fetch of 100 entries from rotating start cursors |
-| `point_update/{backend}/{n}items_{m}changes` | updating an existing store: 1k-item stores take 1 and 10 changes; 1M-item stores take 1, 100, and 1,000 |
-| `tx_commit_batch_1000/…` | committing a pre-staged 1,000-write transaction (staging is untimed, so this isolates durability cost) |
-| `seq_delete/{backend}/{n}` | deleting every key from a freshly built store (capped at 100k to keep per-iteration rebuilds sane) |
+| Group | Scale | Measures |
+| --------- | ------- | ----------- |
+| `seq_insert/{backend}/{n}` | 1K, 100K | building a store from scratch — every key inserted sequentially |
+| `seq_delete/{backend}/{n}` | 1K, 100K (cap 100K) | deleting every key from a freshly built store (cap keeps per-iteration rebuilds sane) |
+| `random_get/{backend}/{n}` | 1K, 100K, 1M | scattered reads (prime-stride order); at 1M each iteration samples 10K gets out of a 1M-key store so depth is preserved without 1M GETs per iteration |
+| `page_fetch_100/{backend}/{n}` | 1K, 1M | one paginated range fetch of 100 entries from rotating start cursors |
+| `point_update/{backend}/{n}items_{m}changes` | 1K×{1,10}, 1M×{1,100,1000} | in-place updates of a few keys inside a large store |
+| `tx_commit_batch_1000/{backend}` | 1K | committing a pre-staged 1,000-write transaction (staging is untimed, so this isolates durability cost) |
+
+Scale strategy (see `benches/kv_bench.rs` header): full-scan writes (`seq_insert`, `seq_delete`) scale linearly so they run at 1K+100K only — 1M depth is still exercised via `random_get`/`point_update`/`page_fetch`, whose per-iteration work is bounded (sampled reads / one page / few updates) against a 1M-key store built once and reused. Tree/SST depth and index size are identical to a full 1M scan; only the repeated per-iteration cost is removed.
 
 Setup work (populating stores for read/update benchmarks, staging
 transactions) runs in untimed warmup or setup phases, so measured numbers
@@ -430,14 +481,12 @@ count only the operation under test.
 
 ### Runtime notes
 
-- The 1,000-item groups complete in about a minute total.
-- The 1M btree groups take a few minutes each.
-- `seq_insert/redb_mem/1000000` is **very slow** (every one of the 1M writes
-  commits individually, which is oxkv's durability contract). Run it
-  deliberately via its filter when you want that number:
+- 1K groups complete in ~tens of seconds; 100K full-scan groups use 15 samples with 2 s warmup / 10 s measurement; 1M sampled groups use 10 samples with the same short window — the full suite stays in minutes.
+- Throughput is reported as `Elements` = ops per iteration (so `random_get/s3_mem/1000000` reports 10K, not 1M).
+- `redb_mem` durability is per-write (`seq_insert` commits individually per oxkv's contract) so it is the slowest backend at 100K. Filter deliberately when you want that number:
 
   ```bash
-  cargo bench --bench kv_bench seq_insert/redb_mem/1000000
+  cargo bench --bench kv_bench seq_insert/redb_mem/100000
   ```
 
 ## Building for WebAssembly
@@ -449,9 +498,15 @@ wasm-pack build --target web   # or nodejs, bundler, etc.
 ## Architecture
 
 - `src/wasm.rs` — manual wasm-bindgen wrappers for `BTreeStore` (thread-safe JS-facing types)
-- `src/store/mod.rs` — core traits (`GetSet`, `Transaction`, `Store`, `GetSetExt`, `StoreExt`) and error types
-- `src/store/btree.rs` — in-memory B-tree backend with transaction overlay support
-- `src/store/redb.rs` — persistent backend built on Redb with transaction isolation
+- `src/store/mod.rs` — core traits (`GetSet`, `Transaction`, `Store`, `GetSetExt`, `StoreExt`) and error types (`StoreError::Fenced` for S3 fencing)
+- `src/store/btree.rs` — in-memory B-tree backend with transaction overlay support (`btree` feature, default)
+- `src/store/redb.rs` — persistent backend built on Redb with transaction isolation (`redb`)
+- `src/store/s3/mod.rs` — LSM-on-S3 backend (`s3`, native-only): `S3Store`/`S3StoreBuilder`, `S3Tx`, WAL + MemTable + SST + manifest + GC/compaction
+- `src/store/s3/sst.rs` — SST file format (blocks, Bloom filter, CRC32)
+- `src/store/s3/blob.rs` — blob overflow for large values (`e{epoch}/blob/{hash}` with CRC)
+- `src/store/s3/manifest.rs` — `manifest.json` with ETag CAS and `ManifestCache`
+- `src/store/s3/ownership.rs` — `ownership.json` epoch fencing
+- `src/store/s3/probe.rs` — conditional-write probe (`If-None-Match` / `If-Match`)
 - `src/store/hooks.rs` — `HookStore` decorator providing validation hooks and change notifications
 - `src/store/otel.rs` — `OtelStore` decorator emitting OpenTelemetry spans and metrics (feature `otel`)
 - `src/query/mod.rs` — query AST types and the pest-based parser (`query/query.pest` grammar)
