@@ -536,8 +536,29 @@ impl S3Store {
         let mut sources: Vec<Vec<(String, Option<Vec<u8>>)>> = Vec::new();
         {
             let mem = self.mem.read().await;
+            // Filter MemTable by range upfront — page_fetch_100 at LARGE would
+            // otherwise clone 1M entries to return 100.
             let mem_vec: Vec<(String, Option<Vec<u8>>)> =
-                mem.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                if scan_start.is_none() && scan_end.is_none() {
+                    mem.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                } else {
+                    mem.iter()
+                        .filter(|(k, _)| {
+                            if let Some(lo) = scan_start
+                                && k.as_str() < lo
+                            {
+                                return false;
+                            }
+                            if let Some(hi) = scan_end
+                                && k.as_str() > hi
+                            {
+                                return false;
+                            }
+                            true
+                        })
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect()
+                };
             sources.push(mem_vec);
         }
         let (manifest, _etag) = {
@@ -1282,18 +1303,58 @@ impl GetSet for S3Tx {
             return Ok(Vec::new());
         }
         let mut sources: Vec<Vec<(String, Option<Vec<u8>>)>> = Vec::new();
-        // Overlay newest
-        let overlay_vec: Vec<(String, Option<Vec<u8>>)> = self
-            .overlay
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
+        // Overlay newest — filter by range to avoid cloning entire overlay
+        // when only a page is needed.
+        let overlay_vec: Vec<(String, Option<Vec<u8>>)> =
+            if scan_start.is_none() && scan_end.is_none() {
+                self.overlay
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect()
+            } else {
+                self.overlay
+                    .iter()
+                    .filter(|(k, _)| {
+                        if let Some(lo) = scan_start
+                            && k.as_str() < lo
+                        {
+                            return false;
+                        }
+                        if let Some(hi) = scan_end
+                            && k.as_str() > hi
+                        {
+                            return false;
+                        }
+                        true
+                    })
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect()
+            };
         sources.push(overlay_vec);
         // Shared MemTable
         {
             let mem = self.mem.read().await;
             let mem_vec: Vec<(String, Option<Vec<u8>>)> =
-                mem.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                if scan_start.is_none() && scan_end.is_none() {
+                    mem.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                } else {
+                    mem.iter()
+                        .filter(|(k, _)| {
+                            if let Some(lo) = scan_start
+                                && k.as_str() < lo
+                            {
+                                return false;
+                            }
+                            if let Some(hi) = scan_end
+                                && k.as_str() > hi
+                            {
+                                return false;
+                            }
+                            true
+                        })
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect()
+                };
             sources.push(mem_vec);
         }
         // SSTs
