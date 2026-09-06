@@ -80,10 +80,10 @@ impl Bloom {
     }
 
     fn hash(item: &str, seed: u32) -> u64 {
-        let mut data = Vec::with_capacity(item.len() + 4);
-        data.extend_from_slice(item.as_bytes());
-        data.extend_from_slice(&seed.to_le_bytes());
-        u64::from(crc32fast::hash(&data))
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(item.as_bytes());
+        hasher.update(&seed.to_le_bytes());
+        u64::from(hasher.finalize())
     }
 
     /// Inserts `key`.
