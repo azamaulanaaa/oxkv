@@ -1,7 +1,7 @@
 #![allow(missing_docs)]
 
-//! Benchmarks for storing and manipulating key-value data at 1,000-item and
-//! 1,000,000-item scales across both shipped backends.
+//! Benchmarks for storing and manipulating key-value data at 1,000-item,
+//! 100,000-item, and 1,000,000-item scales across all shipped backends.
 //!
 //! Run everything with `cargo bench`, a single group with
 //! `cargo bench -- seq_insert`, or tune wall-clock with criterion's standard
@@ -14,12 +14,19 @@
 //! - `tx_commit_batch_1000` — commit of a pre-staged 1,000-write transaction
 //!   (staging happens in untimed setup, so the number measures durability cost)
 //! - `seq_delete` — deletion of every key from a freshly populated store
+//! - `point_update` — in-place updates of a few keys inside a large store
 //!
-//! Notes on scale: at 1,000,000 items the setup work dominates wall-clock, so
-//! large-scale groups use fewer samples and longer measurement windows.
-//! Deletion is capped at 100,000 keys because its per-iteration setup must
-//! rebuild the full store; capping keeps total suite runtime sane while still
-//! exercising delete at meaningful depth.
+//! Scale strategy (keeps the full suite in minutes, not hours):
+//! - Full-scan writes (`seq_insert`, `seq_delete`) scale linearly, so they
+//!   run at 1K and 100K only. A 1M store would cost 1M writes *per iteration*
+//!   (times samples, times backends) with no extra signal beyond linearity.
+//! - Depth is still tested at 1M via `random_get`, `page_fetch_100`, and
+//!   `point_update`, whose per-iteration work is bounded (a capped read
+//!   sample / one page / a few updates) against a 1M-key store built once
+//!   and reused. Tree depth, SST levels, and index size are identical to a
+//!   full 1M scan; only the repeated per-iteration cost is removed.
+//! - Large-store groups use fewer samples with short warmup/measurement
+//!   windows (see `configure`).
 //!
 //! S3 backend (feature `s3`) uses `object_store::memory::InMemory` with
 //! `skip_probe(true)` so the numbers are comparable to `btree_mem`/`redb_mem`
@@ -42,9 +49,14 @@ use oxkv::S3Store;
 use oxkv::{Direction, GetSet, Store, Transaction};
 
 const SMALL: usize = 1_000;
+const MEDIUM: usize = 100_000;
 const LARGE: usize = 1_000_000;
 const DELETE_CAP: usize = 100_000;
 const TX_BATCH: usize = 1_000;
+/// Point reads measured per iteration against a LARGE store. The store still
+/// holds 1M keys (depth preserved); only the repeated work is capped so a
+/// single iteration costs 10K gets instead of 1M.
+const READ_SAMPLES: usize = 10_000;
 const PAGE: u32 = 100;
 const PAYLOAD: [u8; 64] = [b'x'; 64];
 /// Prime stride used for deterministic pseudo-random key selection.
@@ -73,13 +85,24 @@ async fn populate<S: GetSet>(store: &mut S, keys: &[String]) {
     }
 }
 
-fn configure(group: &mut criterion::BenchmarkGroup<'_, WallTime>, elements: usize) {
+/// Tune sampling by *store size* while reporting throughput by *ops per
+/// iteration* (they differ for sampled reads at LARGE scale).
+fn configure(group: &mut criterion::BenchmarkGroup<'_, WallTime>, store: usize, ops: usize) {
     group.throughput(Throughput::Elements(
-        elements.try_into().expect("element count fits u64"),
+        ops.try_into().expect("element count fits u64"),
     ));
-    if elements >= LARGE {
+    if store >= LARGE {
+        // One-time 1M populate is kept; repeated per-iteration work is cheap
+        // (sampled reads / one page / few updates), so a short window suffices.
         group.sample_size(10);
-        group.measurement_time(Duration::from_secs(20));
+        group.warm_up_time(Duration::from_secs(2));
+        group.measurement_time(Duration::from_secs(10));
+    } else if store >= MEDIUM || ops >= MEDIUM {
+        // 100K full-scan writes/reads: each iteration is ~seconds, so cut
+        // criterion's default 100 samples down to stay in minutes.
+        group.sample_size(15);
+        group.warm_up_time(Duration::from_secs(2));
+        group.measurement_time(Duration::from_secs(10));
     }
 }
 
@@ -88,7 +111,7 @@ where
     S: GetSet + Store + Default,
 {
     let mut group = c.benchmark_group(format!("seq_insert/{backend}/{n}"));
-    configure(&mut group, n);
+    configure(&mut group, n, n);
     let keys: Vec<String> = (0..n).map(key).collect();
 
     group.bench_function("store", |b| {
@@ -110,7 +133,10 @@ where
     S: GetSet + Default,
 {
     let mut group = c.benchmark_group(format!("random_get/{backend}/{n}"));
-    configure(&mut group, n);
+    // At LARGE scale the store holds 1M keys but each iteration samples
+    // READ_SAMPLES gets, keeping depth while bounding repeated work.
+    let take = if n >= LARGE { READ_SAMPLES } else { n };
+    configure(&mut group, n, take);
     let keys: Vec<String> = (0..n).map(key).collect();
     let order: Vec<usize> = shuffled(n);
 
@@ -126,7 +152,7 @@ where
                 s
             });
             rt.block_on(async {
-                for i in &order {
+                for i in order.iter().take(take) {
                     black_box(s.get_bytes(&keys[*i]).await.expect("get"));
                 }
             });
@@ -141,7 +167,11 @@ where
     S: GetSet + Default,
 {
     let mut group = c.benchmark_group(format!("page_fetch_{PAGE}/{backend}/{n}"));
-    configure(&mut group, usize::try_from(PAGE).expect("page size fits"));
+    configure(
+        &mut group,
+        n,
+        usize::try_from(PAGE).expect("page size fits"),
+    );
     let keys: Vec<String> = (0..n).map(key).collect();
 
     // Populated lazily on the first (untimed warmup) iteration so that
@@ -182,7 +212,7 @@ where
 {
     const NAME: &str = "tx_commit_batch_1000";
     let mut group = c.benchmark_group(format!("{NAME}/{backend}"));
-    configure(&mut group, TX_BATCH);
+    configure(&mut group, TX_BATCH, TX_BATCH);
     let keys: Vec<String> = (0..TX_BATCH).map(key).collect();
 
     // Staging runs in untimed setup; the measured section is only the commit,
@@ -217,12 +247,7 @@ where
 {
     let n = requested.min(DELETE_CAP);
     let mut group = c.benchmark_group(format!("seq_delete/{backend}/{n}"));
-    configure(&mut group, n);
-    if requested > DELETE_CAP {
-        // Setup rebuilds the whole store per iteration; cap keeps runtime sane.
-        group.sample_size(10);
-        group.measurement_time(Duration::from_secs(20));
-    }
+    configure(&mut group, n, n);
     let keys: Vec<String> = (0..n).map(key).collect();
 
     group.bench_function("delete", |b| {
@@ -266,7 +291,7 @@ fn point_update<S>(
     let mut group = crit.benchmark_group(format!(
         "point_update/{backend}/{items}items_{changes}changes"
     ));
-    configure(&mut group, changes);
+    configure(&mut group, items, changes);
     let keys: Vec<String> = (0..items).map(key).collect();
 
     // Populated lazily on the first (untimed warmup) iteration so that
@@ -300,6 +325,7 @@ fn point_update<S>(
 // because S3Store is not Default and requires async builder.
 // ---------------------------------------------------------------------------
 #[cfg(feature = "s3")]
+#[allow(clippy::wildcard_imports)]
 mod s3_bench {
     use std::sync::Arc;
 
@@ -324,7 +350,7 @@ mod s3_bench {
 
     pub(crate) fn seq_insert(rt: &tokio::runtime::Runtime, c: &mut Criterion, n: usize) {
         let mut group = c.benchmark_group(format!("seq_insert/s3_mem/{n}"));
-        configure(&mut group, n);
+        configure(&mut group, n, n);
         let keys: Vec<String> = (0..n).map(key).collect();
         group.bench_function("store", |b| {
             b.iter(|| {
@@ -341,7 +367,8 @@ mod s3_bench {
 
     pub(crate) fn random_get(rt: &tokio::runtime::Runtime, c: &mut Criterion, n: usize) {
         let mut group = c.benchmark_group(format!("random_get/s3_mem/{n}"));
-        configure(&mut group, n);
+        let take = if n >= LARGE { READ_SAMPLES } else { n };
+        configure(&mut group, n, take);
         let keys: Vec<String> = (0..n).map(key).collect();
         let order = shuffled(n);
         let mut store: Option<S3Store> = None;
@@ -355,7 +382,7 @@ mod s3_bench {
                     })
                 });
                 rt.block_on(async {
-                    for i in &order {
+                    for i in order.iter().take(take) {
                         black_box(s.get_bytes(&keys[*i]).await.expect("get"));
                     }
                 });
@@ -366,7 +393,11 @@ mod s3_bench {
 
     pub(crate) fn page_fetch(rt: &tokio::runtime::Runtime, c: &mut Criterion, n: usize) {
         let mut group = c.benchmark_group(format!("page_fetch_{PAGE}/s3_mem/{n}"));
-        configure(&mut group, usize::try_from(PAGE).expect("page size fits"));
+        configure(
+            &mut group,
+            n,
+            usize::try_from(PAGE).expect("page size fits"),
+        );
         let keys: Vec<String> = (0..n).map(key).collect();
         let mut store: Option<S3Store> = None;
         let starts: Vec<String> = (0..128usize).map(|j| key((j * 7919 + n / 2) % n)).collect();
@@ -396,7 +427,7 @@ mod s3_bench {
 
     pub(crate) fn tx_commit_batch(rt: &tokio::runtime::Runtime, c: &mut Criterion) {
         let mut group = c.benchmark_group("tx_commit_batch_1000/s3_mem");
-        configure(&mut group, TX_BATCH);
+        configure(&mut group, TX_BATCH, TX_BATCH);
         let keys: Vec<String> = (0..TX_BATCH).map(key).collect();
         group.bench_function("commit", |b| {
             b.iter_batched(
@@ -424,11 +455,7 @@ mod s3_bench {
     pub(crate) fn seq_delete(rt: &tokio::runtime::Runtime, c: &mut Criterion, requested: usize) {
         let n = requested.min(DELETE_CAP);
         let mut group = c.benchmark_group(format!("seq_delete/s3_mem/{n}"));
-        configure(&mut group, n);
-        if requested > DELETE_CAP {
-            group.sample_size(10);
-            group.measurement_time(Duration::from_secs(20));
-        }
+        configure(&mut group, n, n);
         let keys: Vec<String> = (0..n).map(key).collect();
         group.bench_function("delete", |b| {
             b.iter_batched(
@@ -460,7 +487,7 @@ mod s3_bench {
     ) {
         let mut group =
             c.benchmark_group(format!("point_update/s3_mem/{items}items_{changes}changes"));
-        configure(&mut group, changes);
+        configure(&mut group, items, changes);
         let keys: Vec<String> = (0..items).map(key).collect();
         let mut store: Option<S3Store> = None;
         group.bench_function("update", |b| {
@@ -490,28 +517,45 @@ mod s3_bench {
 fn benchmark(c: &mut Criterion) {
     let rt = runtime();
 
-    for &n in &[SMALL, LARGE] {
+    // Full-scan writes: 1K + 100K only (linear scaling; 1M depth is covered
+    // by the read/update/page benches without 1M writes per iteration).
+    for &n in &[SMALL, MEDIUM] {
         #[cfg(feature = "btree")]
         {
             seq_insert::<BTreeStore>(&rt, c, "btree_mem", n);
-            random_get::<BTreeStore>(&rt, c, "btree_mem", n);
-            page_fetch::<BTreeStore>(&rt, c, "btree_mem", n);
             seq_delete::<BTreeStore>(&rt, c, "btree_mem", n);
         }
         #[cfg(feature = "redb")]
         {
             seq_insert::<RedbStore>(&rt, c, "redb_mem", n);
-            random_get::<RedbStore>(&rt, c, "redb_mem", n);
-            page_fetch::<RedbStore>(&rt, c, "redb_mem", n);
             seq_delete::<RedbStore>(&rt, c, "redb_mem", n);
         }
         #[cfg(feature = "s3")]
         {
             s3_bench::seq_insert(&rt, c, n);
-            s3_bench::random_get(&rt, c, n);
-            s3_bench::page_fetch(&rt, c, n);
             s3_bench::seq_delete(&rt, c, n);
         }
+    }
+
+    // Reads at all three scales; LARGE samples READ_SAMPLES gets out of a
+    // 1M-key store (see `random_get`).
+    for &n in &[SMALL, MEDIUM, LARGE] {
+        #[cfg(feature = "btree")]
+        random_get::<BTreeStore>(&rt, c, "btree_mem", n);
+        #[cfg(feature = "redb")]
+        random_get::<RedbStore>(&rt, c, "redb_mem", n);
+        #[cfg(feature = "s3")]
+        s3_bench::random_get(&rt, c, n);
+    }
+
+    // Range fetch: per-iteration work is one page; store depth varies.
+    for &n in &[SMALL, LARGE] {
+        #[cfg(feature = "btree")]
+        page_fetch::<BTreeStore>(&rt, c, "btree_mem", n);
+        #[cfg(feature = "redb")]
+        page_fetch::<RedbStore>(&rt, c, "redb_mem", n);
+        #[cfg(feature = "s3")]
+        s3_bench::page_fetch(&rt, c, n);
     }
 
     #[cfg(feature = "btree")]
