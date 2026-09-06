@@ -165,13 +165,15 @@ impl S3Store {
 
         let mut payload_buf = Vec::new();
         for (key, value) in &ops {
-            match value {
-                Some(val) => crate::store::encode_record(&mut payload_buf, key, val)
-                    .map_err(|e| StoreError::Storage(format!("encode wal: {e}")))?,
-                None => {
-                    crate::store::encode_record(&mut payload_buf, key, &[])
-                        .map_err(|e| StoreError::Storage(format!("encode wal tombstone: {e}")))?;
-                }
+            if let Some(val) = value {
+                crate::store::encode_record(&mut payload_buf, key, val)
+                    .map_err(|e| StoreError::Storage(format!("encode wal: {e}")))?;
+            } else {
+                let klen = u32::try_from(key.len())
+                    .map_err(|e| StoreError::Storage(format!("key too long: {e}")))?;
+                payload_buf.extend_from_slice(&klen.to_le_bytes());
+                payload_buf.extend_from_slice(key.as_bytes());
+                payload_buf.extend_from_slice(&TOMBSTONE_VLEN.to_le_bytes());
             }
         }
 
