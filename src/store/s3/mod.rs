@@ -320,7 +320,7 @@ impl S3Store {
         // Fully prefixed id (same layout as `wal_path`) so `fetch_sst` can
         // resolve it with `Path::from(id)` and manifests stay prefix-safe.
         let sst_id = sst_path(&self.prefix, self.epoch, 0, seq).to_string();
-        let sst_path = Path::from(sst_id.clone());
+        let sst_path = Path::from(sst_id.as_str());
         let put_res = self
             .inner
             .put_opts(
@@ -419,7 +419,7 @@ impl S3Store {
 
     async fn resolve_value(&self, raw: Vec<u8>) -> Result<Vec<u8>> {
         if let Some(ptr) = try_decode_blob_pointer(&raw) {
-            let blob_path = Path::from(ptr.blob.clone());
+            let blob_path = Path::from(ptr.blob.as_str());
             let bytes = get_blob(Arc::clone(&self.inner), &blob_path).await?;
             if bytes.len() != ptr.len {
                 return Err(StoreError::Storage(format!(
@@ -446,7 +446,7 @@ impl S3Store {
         if let Some(cached) = self.sst_cache.get(id).await {
             return Ok(cached);
         }
-        let path = Path::from(id.to_string());
+        let path = Path::from(id);
         let res = self
             .inner
             .get(&path)
@@ -683,7 +683,7 @@ impl S3Store {
                     drop(cache);
                     let mut deleted = 0usize;
                     for wal in &to_delete {
-                        let path = Path::from(wal.clone());
+                        let path = Path::from(wal.as_str());
                         match self.inner.delete(&path).await {
                             Ok(()) | Err(object_store::Error::NotFound { .. }) => deleted += 1,
                             Err(e) => {
@@ -782,7 +782,7 @@ impl S3Store {
                     Some(raw) => {
                         // Resolve blob pointers if any (L0 may contain pointers).
                         let val = if let Some(ptr) = try_decode_blob_pointer(&raw) {
-                            let blob_path = Path::from(ptr.blob.clone());
+                            let blob_path = Path::from(ptr.blob.as_str());
                             get_blob(Arc::clone(&self.inner), &blob_path).await?
                         } else {
                             raw
@@ -848,7 +848,7 @@ impl S3Store {
                         cache.update(manifest.clone(), new_etag);
                         drop(cache);
                         for m in l0_metas.iter().chain(l1_overlapping.iter()) {
-                            let p = Path::from(m.id.clone());
+                            let p = Path::from(m.id.as_str());
                             let _ = self.inner.delete(&p).await;
                         }
                         return Ok(None);
@@ -868,7 +868,7 @@ impl S3Store {
             .sst_seq
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let l1_id = sst_path(&self.prefix, self.epoch, 1, seq).to_string();
-        let l1_path = Path::from(l1_id.clone());
+        let l1_path = Path::from(l1_id.as_str());
         let put_res = self
             .inner
             .put_opts(
@@ -946,7 +946,7 @@ impl S3Store {
                     // Invalidate sst_cache for deleted, keep new.
                     for m in l0_metas.iter().chain(l1_overlapping.iter()) {
                         self.sst_cache.remove(m.id.as_str()).await;
-                        let p = Path::from(m.id.clone());
+                        let p = Path::from(m.id.as_str());
                         let _ = self.inner.delete(&p).await;
                     }
                     return Ok(Some(new_meta));
@@ -989,7 +989,7 @@ pub struct S3Tx {
 impl S3Tx {
     async fn resolve_value(&self, raw: Vec<u8>) -> Result<Vec<u8>> {
         if let Some(ptr) = try_decode_blob_pointer(&raw) {
-            let blob_path = Path::from(ptr.blob.clone());
+            let blob_path = Path::from(ptr.blob.as_str());
             let bytes = get_blob(Arc::clone(&self.inner), &blob_path).await?;
             if bytes.len() != ptr.len {
                 return Err(StoreError::Storage(format!(
@@ -1016,7 +1016,7 @@ impl S3Tx {
         if let Some(cached) = self.sst_cache.get(id).await {
             return Ok(cached);
         }
-        let path = Path::from(id.to_string());
+        let path = Path::from(id);
         let res = self
             .inner
             .get(&path)
