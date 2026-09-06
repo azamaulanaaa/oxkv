@@ -323,8 +323,8 @@ impl SstFile {
         true
     }
 
-    /// Returns block bytes for `meta`, verifying `CRC`.
-    pub(crate) fn block_bytes(&self, meta: &BlockMeta) -> Result<Vec<u8>> {
+    /// Returns block bytes for `meta`, verifying `CRC` (zero-copy).
+    pub(crate) fn block_bytes(&self, meta: &BlockMeta) -> Result<&[u8]> {
         let start = meta.offset as usize;
         let end = start + meta.len as usize;
         if end > self.footer_offset {
@@ -338,7 +338,7 @@ impl SstFile {
                 meta.min_key, meta.max_key, meta.crc, crc
             )));
         }
-        Ok(bytes.to_vec())
+        Ok(bytes)
     }
 
     /// Point lookup with tombstone distinction: `Ok(Some(Some(v)))` = value,
