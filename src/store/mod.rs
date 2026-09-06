@@ -29,17 +29,17 @@ pub use hooks::{
     ChangeEvent, ChangeKind, HookStore, HookTx, Observer, Scope, StoreView, Validator,
 };
 mod hooks;
-#[cfg(feature = "otel")]
+#[cfg(all(feature = "otel", not(target_arch = "wasm32")))]
 pub use otel::{OtelStore, OtelTx};
-#[cfg(feature = "otel")]
+#[cfg(all(feature = "otel", not(target_arch = "wasm32")))]
 mod otel;
-#[cfg(feature = "redb")]
+#[cfg(all(feature = "redb", not(target_arch = "wasm32")))]
 pub use redb::{RedbStore, RedbTx};
-#[cfg(feature = "redb")]
+#[cfg(all(feature = "redb", not(target_arch = "wasm32")))]
 mod redb;
-#[cfg(feature = "s3")]
+#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
 pub use s3::{S3Store, S3StoreBuilder};
-#[cfg(feature = "s3")]
+#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
 mod s3;
 
 /// A specialized `Result` type for store operations.
