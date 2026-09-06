@@ -524,6 +524,15 @@ impl S3Store {
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
+        // Normalize cursor to [lower, upper] for range filtering; Prev stores
+        // upper in cursor.0 and lower in cursor.1.
+        let (scan_start, scan_end) = match direction {
+            Direction::Next => (cursor.0.as_deref(), cursor.1.as_deref()),
+            Direction::Prev => (cursor.1.as_deref(), cursor.0.as_deref()),
+        };
+        if direction == Direction::Prev && cursor.0.is_none() {
+            return Ok(Vec::new());
+        }
         let mut sources: Vec<Vec<(String, Option<Vec<u8>>)>> = Vec::new();
         {
             let mem = self.mem.read().await;
@@ -544,19 +553,17 @@ impl S3Store {
         };
         for meta in manifest.sst.iter().rev() {
             let overlaps = {
-                let start = cursor.0.as_deref();
-                let end = cursor.1.as_deref();
                 let min = meta.min_key.as_str();
                 let max = meta.max_key.as_str();
-                let after_start = start.is_none_or(|s| max >= s);
-                let before_end = end.is_none_or(|e| min <= e);
-                after_start && before_end
+                let after_lower = scan_start.is_none_or(|s| max >= s);
+                let before_upper = scan_end.is_none_or(|e| min <= e);
+                after_lower && before_upper
             };
-            if !overlaps && cursor.0.is_some() {
+            if !overlaps {
                 continue;
             }
             let sst = self.fetch_sst(&meta.id).await?;
-            let scan = sst.scan_with_tombstones(None, None, None)?;
+            let scan = sst.scan_with_tombstones(scan_start, scan_end, None)?;
             let mut resolved: Vec<(String, Option<Vec<u8>>)> = Vec::with_capacity(scan.len());
             for (key, value) in scan {
                 match value {
@@ -1267,6 +1274,13 @@ impl GetSet for S3Tx {
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
+        let (scan_start, scan_end) = match direction {
+            Direction::Next => (cursor.0.as_deref(), cursor.1.as_deref()),
+            Direction::Prev => (cursor.1.as_deref(), cursor.0.as_deref()),
+        };
+        if direction == Direction::Prev && cursor.0.is_none() {
+            return Ok(Vec::new());
+        }
         let mut sources: Vec<Vec<(String, Option<Vec<u8>>)>> = Vec::new();
         // Overlay newest
         let overlay_vec: Vec<(String, Option<Vec<u8>>)> = self
@@ -1296,19 +1310,17 @@ impl GetSet for S3Tx {
         };
         for meta in manifest.sst.iter().rev() {
             let overlaps = {
-                let start = cursor.0.as_deref();
-                let end = cursor.1.as_deref();
                 let min = meta.min_key.as_str();
                 let max = meta.max_key.as_str();
-                let after_start = start.is_none_or(|s| max >= s);
-                let before_end = end.is_none_or(|e| min <= e);
-                after_start && before_end
+                let after_lower = scan_start.is_none_or(|s| max >= s);
+                let before_upper = scan_end.is_none_or(|e| min <= e);
+                after_lower && before_upper
             };
-            if !overlaps && cursor.0.is_some() {
+            if !overlaps {
                 continue;
             }
             let sst = self.fetch_sst(&meta.id).await?;
-            let scan = sst.scan_with_tombstones(None, None, None)?;
+            let scan = sst.scan_with_tombstones(scan_start, scan_end, None)?;
             let mut resolved: Vec<(String, Option<Vec<u8>>)> = Vec::with_capacity(scan.len());
             for (key, value) in scan {
                 match value {
