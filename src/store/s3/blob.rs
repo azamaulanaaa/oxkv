@@ -66,6 +66,11 @@ pub(crate) fn encode_blob_pointer(blob: &Path, len: usize, crc: u32) -> Vec<u8> 
 /// Tries to decode `value` as `BlobPointer`; `None` if not a pointer.
 #[must_use]
 pub(crate) fn try_decode_blob_pointer(value: &[u8]) -> Option<BlobPointer> {
+    // Fast-reject: blob pointers are JSON objects `{"blob":...}`; most values
+    // are not JSON at all. Avoid serde parse for the common case.
+    if value.len() < 10 || value.first() != Some(&b'{') {
+        return None;
+    }
     serde_json::from_slice(value).ok()
 }
 
