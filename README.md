@@ -208,7 +208,7 @@ assert_eq!(event.new_value, Some(b"hello".to_vec()));
 
 - Validators run before every write, including transactional staging; an
   error rejects the write without touching the underlying store. Validators
-  receive a read-only `StoreView` so rules can compare against other keys �
+  receive a read-only `StoreView` so rules can compare against other keys
   inside a transaction it reflects the transaction's own staged writes.
   Staged writes are re-validated at commit time, so staging-time decisions
   cannot be invalidated by later writes in the same transaction; during
