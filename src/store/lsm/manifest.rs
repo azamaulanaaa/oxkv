@@ -6,12 +6,12 @@
 //! with `If-Match: etag`; readers poll `ETag` with a 1 s TTL.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
 use crate::store::storage::{GetOptions, ObjectPath, ObjectVersion, PutMode, Storage};
-use crate::store::{Result, StoreError};
+use crate::store::{Result, StoreError, now_millis};
 
 /// Metadata for one SST file recorded in the manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,7 +124,7 @@ pub(crate) struct ManifestCache {
 struct CachedEntry {
     manifest: Manifest,
     etag: String,
-    fetched_at: Instant,
+    fetched_at_ms: u64,
 }
 
 impl ManifestCache {
@@ -138,7 +138,7 @@ impl ManifestCache {
     #[must_use]
     pub fn get_cached(&self, ttl: Duration) -> Option<(Manifest, String)> {
         let entry = self.entry.as_ref()?;
-        if entry.fetched_at.elapsed() < ttl {
+        if u128::from(now_millis().wrapping_sub(entry.fetched_at_ms)) < ttl.as_millis() {
             Some((entry.manifest.clone(), entry.etag.clone()))
         } else {
             None
@@ -150,7 +150,7 @@ impl ManifestCache {
         self.entry = Some(CachedEntry {
             manifest,
             etag,
-            fetched_at: Instant::now(),
+            fetched_at_ms: now_millis(),
         });
     }
 

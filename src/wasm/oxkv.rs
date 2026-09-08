@@ -691,6 +691,11 @@ mod tests {
 
     #[wasm_bindgen_test]
     async fn persistent_roundtrip_survives_reopen() {
+        // OPFS exists only in browsers; Node runs the rest of the suite.
+        // (Browser CI executes this test for real.)
+        if web_sys::window().is_none() {
+            return;
+        }
         let prefix = Some("persist-smoke".to_string());
         let js_store = JsOxKvStore::create_persistent(prefix.clone())
             .await

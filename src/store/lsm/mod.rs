@@ -42,6 +42,11 @@ type MemMap = std::collections::BTreeMap<String, Option<Vec<u8>>>;
 type MemTable = Arc<async_lock::RwLock<MemMap>>;
 type WalBuffer = Arc<async_lock::Mutex<Vec<(String, Option<Vec<u8>>)>>>;
 
+/// Process-unique session suffix for builders without an explicit session.
+/// A counter (not wall time): `std::time` clocks panic on `wasm32`, and
+/// fencing safety comes from the monotonic epoch, not session uniqueness.
+static SESSION_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// S3-backed store (incremental — probe + fencing + WAL gate + SST).
 pub struct OxKvStore {
     inner: Arc<dyn Storage>,
@@ -125,7 +130,7 @@ impl OxKvStore {
 
     /// Stages `set` into `MemTable` + WAL buffer (commit = mem).
     ///
-    /// Does not hit S3 — use [`Self::flush`] or [`Self::commit_durable`] for RPO=0.
+    /// Does not hit storage — use [`Self::flush`] or [`Self::commit_durable_set`] for RPO=0.
     pub async fn stage_set(&self, key: &str, value: &[u8]) {
         self.mem
             .write()
@@ -1596,12 +1601,8 @@ impl OxKvStoreBuilder {
         }
 
         let session = self.session.unwrap_or_else(|| {
-            format!(
-                "sess-{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_nanos())
-            )
+            let n = SESSION_CTR.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            format!("sess-{n}")
         });
         let rec = acquire_ownership(Arc::clone(&store), &self.prefix, &session).await?;
 

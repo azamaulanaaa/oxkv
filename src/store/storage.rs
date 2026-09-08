@@ -123,7 +123,7 @@ pub struct GetOutput {
 
 /// Minimal object-store surface required by the LSM engine.
 ///
-/// See the [module-level contracts](self) for how backends must report
+/// See the module-level contracts above for how backends must report
 /// missing objects and write conflicts.
 #[async_trait::async_trait]
 pub trait Storage: Send + Sync + 'static {
@@ -604,10 +604,10 @@ fn is_not_found(err: &wasm_bindgen::JsValue) -> bool {
 /// Wraps a JS rejection as [`StoreError::Storage`] with context.
 #[cfg(target_arch = "wasm32")]
 fn js_err(context: &str, err: wasm_bindgen::JsValue) -> StoreError {
-    let detail = err
-        .dyn_into::<web_sys::DomException>()
-        .map(|d| format!("{}: {}", d.name(), d.message()))
-        .unwrap_or_else(|e| format!("{e:?}"));
+    let detail = err.dyn_into::<web_sys::DomException>().map_or_else(
+        |e| format!("{e:?}"),
+        |d| format!("{}: {}", d.name(), d.message()),
+    );
     StoreError::Storage(format!("{context}: {detail}"))
 }
 

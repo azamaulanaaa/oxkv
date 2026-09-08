@@ -62,6 +62,29 @@ pub(crate) async fn sleep(duration: std::time::Duration) {
     futures_timer::Delay::new(duration).await;
 }
 
+/// Portable millisecond clock for TTLs and ids.
+///
+/// `std::time::Instant` panics on `wasm32-unknown-unknown`, so TTLs use this
+/// instead: epoch millis natively, `Date.now()` on wasm. Backwards jumps only
+/// ever extend a cache TTL — never a correctness issue.
+#[cfg(feature = "oxkv")]
+pub(crate) fn now_millis() -> u64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        // `Date.now()` (~1.7e12, always finite and non-negative) fits in u64
+        // with room to spare, so this saturating cast is exact in practice.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let millis = js_sys::Date::now() as u64;
+        millis
+    }
+}
+
 /// Errors that can occur during store operations.
 #[derive(Debug, Error)]
 pub enum StoreError {
