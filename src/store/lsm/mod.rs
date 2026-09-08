@@ -2216,6 +2216,35 @@ mod tests {
 
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn manifest_wal_list_stays_bounded() {
+        let inner = new_in_memory();
+        let mut s3 = OxKvStore::builder()
+            .with_store(Arc::clone(&inner))
+            .with_prefix(ObjectPath::from("oxkv-wal-bound"))
+            .with_session("sess-wal-bound")
+            .skip_probe(true)
+            .build()
+            .await
+            .unwrap();
+
+        // 2.5x the maintenance threshold: without the force-flush + GC drain
+        // the list would hold every WAL id (quadratic manifest cost).
+        for i in 0..2_500 {
+            s3.set_bytes(&format!("k{i:05}"), b"v").await.unwrap();
+        }
+
+        let path = ObjectPath::from("oxkv-wal-bound").child("manifest.json");
+        let out = inner.get(&path).await.expect("manifest readable");
+        let manifest: Manifest = serde_json::from_slice(&out.bytes).expect("manifest parses");
+        assert!(
+            manifest.wal.len() <= WAL_MAINTENANCE_COUNT,
+            "wal list len {}",
+            manifest.wal.len()
+        );
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn read_path_heap_merge_tombstone() {
         let store = new_in_memory();
         let s3 = OxKvStore::builder()
