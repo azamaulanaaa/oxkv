@@ -11,7 +11,7 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 - **JSON serialization** — extension methods for inserting and retrieving `serde_json::Value` types via JSON, stored as raw bytes
 - **WASM bindings** — thread-safe wrappers in `src/wasm.rs` expose `BTreeStore` and `OxKvStore` to JavaScript as async promises (`otel` native-only, OXKV snapshot portable across all)
 - **Extensible backends** — the crate defines three traits (`GetSet`, `Transaction`, `Store`) that any backend can implement; ships with an in-memory B-tree backend (`btree`, test and bench baseline + WASM baseline) and an LSM backend (`oxkv`, native + wasm) generic over `Storage` + `Cache` (S3/GCS/Azure via `oxkv-s3`)
-- **LSM backend** — portable LSM over pluggable `Storage` (in-memory `MemStorage` everywhere including browsers; S3/GCS/Azure/local via [`object_store`](https://docs.rs/object_store) with `oxkv-s3`, OPFS later): epoch-fenced single writer, WAL with RPO=0, MemTable + SST (L0/L1) with Bloom + CRC, blob overflow for large values, `LruCache` SST cache (trait, `moka` optional), WAL replay, GC and L0→L1 compaction
+- **LSM backend** — portable LSM over pluggable `Storage` (in-memory `MemStorage` everywhere including browsers; S3/GCS/Azure/local via [`object_store`](https://docs.rs/object_store) with `oxkv-s3`, OPFS later): epoch-fenced single writer, WAL with RPO=0, `MemTable` + SST (L0/L1) with Bloom + CRC, blob overflow for large values, `LruCache` SST cache (trait, `moka` optional), WAL replay, GC and L0→L1 compaction
 - **Validation hooks** — reject invalid writes before they reach storage, scoped to a single key, a key prefix, or the whole store
 - **Reactivity** — watch keys or prefixes and observe every committed change via channels or observer traits; rolled-back transactions never notify
 - **Save/Load** — serialize the entire store contents into a single contiguous `Uint8Array` and reconstruct it from binary data
@@ -37,10 +37,10 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 
 ## Quick Start
 
-```rust,ignore
-use oxkv::{BTreeStore, store::*};
+```rust
+use oxkv::{BTreeStore, Direction, GetSet, GetSetExt, Store, Transaction};
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() {
     let mut store = BTreeStore::default();
 
@@ -77,7 +77,10 @@ Any store can scan its entries and return only the JSON documents that match a
 query string, using `gets`. It mirrors `gets_bytes`: same `limit`, `direction`
 and cursor semantics — when no query is passed it is a plain pass-through.
 
-```rust,ignore
+```rust,no_run
+# #[tokio::main(flavor = "current_thread")]
+# async fn main() {
+#     let store = oxkv::BTreeStore::default();
 use oxkv::{Direction, GetSetExt};
 
 // Find users aged 30-40 tagged "rust", newest keys last, max 10 results
@@ -94,6 +97,7 @@ let matches = store
 for kv in &matches {
     println!("{} -> {}", kv.key, String::from_utf8_lossy(&kv.value));
 }
+# }
 ```
 
 ### How Matching Works
@@ -103,26 +107,35 @@ and quoted phrases behave identically whether unscoped or field-scoped:
 unscoped terms search every leaf in the document; `field:` paths descend into
 objects (`address.city`) and fan out across arrays (`tags`).
 
-```rust,ignore
+```rust
+use oxkv::{eval, parse};
+use serde_json::json;
+
+fn matches(doc: &serde_json::Value, query: &str) -> bool {
+    let parsed = parse(query).unwrap();
+    eval(&parsed, doc)
+}
+
 let doc = json!({
     "bio": "i am born on 2000",
     "lang": "rust",
+    "age": 30,
     "tags": ["systems", "kv"],
     "address": { "city": "Berlin" }
 });
 
 // Bare terms match word tokens fuzzily (Levenshtein <= 2 by default):
-assert!(matches(doc, "born"));        // token hit
-assert!(matches(doc, "boren"));       // typo within default slop
-assert!(matches(doc, "bio:born"));    // scoped: same matching, one leaf
-assert!(matches(doc, "carrs"));       // typos are tolerated everywhere
+assert!(matches(&doc, "born"));        // token hit
+assert!(matches(&doc, "boren"));       // typo within default slop
+assert!(matches(&doc, "bio:born"));    // scoped: same matching, one leaf
+assert!(matches(&doc, "systms"));      // typo: one letter off "systems"
 
 // Quoted phrases match as case-insensitive substrings:
-assert!(matches(doc, "\"am born on\""));
-assert!(matches(doc, "address.city:\"berlin\""));
+assert!(matches(&doc, "\"am born on\""));
+assert!(matches(&doc, "address.city:\"berlin\""));
 
 // Numbers with parseable targets compare numerically:
-assert!(matches(doc, "age:30"));      // exact even though matching is fuzzy
+assert!(matches(&doc, "age:30"));      // exact even though matching is fuzzy
 ```
 
 Rules of thumb:
@@ -167,9 +180,10 @@ calls without a query).
 Wrap any backend in a `HookStore` to validate values before they are stored
 and to listen for changes:
 
-```rust,ignore
-use oxkv::{BTreeStore, HookStore, Scope};
-use oxkv::store::{ChangeEvent, ChangeKind, Scope, Validator};
+```rust
+# #[tokio::main(flavor = "current_thread")]
+# async fn main() {
+use oxkv::{BTreeStore, ChangeEvent, ChangeKind, GetSet, HookStore, Scope, Validator};
 
 struct RequireJson(Scope);
 
@@ -204,6 +218,7 @@ let event: ChangeEvent = rx.try_recv().unwrap();
 assert_eq!(event.kind, ChangeKind::Set);
 assert_eq!(event.old_value, None);
 assert_eq!(event.new_value, Some(b"hello".to_vec()));
+# }
 ```
 
 - Validators run before every write, including transactional staging; an
@@ -311,9 +326,11 @@ the full validation pipeline.
 
 `OxKvStore` is an LSM tree over any [`Storage`](src/store/storage.rs) backend: in-memory `MemStorage` (native + wasm, including the browser `OxKvStore`), or S3-compatible storage (S3, GCS, Azure) and local FS via `object_store` with `oxkv-s3`. It shares the same `GetSet`/`Store`/`Transaction` traits as the other backends, so application code is portable. Snapshot bytes (`OXKV` magic `+` version + records) are identical across `BTreeStore` and `OxKvStore` on every target — `save`/`load` round-trip everywhere.
 
-```rust,ignore
+```rust
+# #[tokio::main(flavor = "current_thread")]
+# async fn main() {
 use std::sync::Arc;
-use oxkv::{OxKvStore, store::*};
+use oxkv::{GetSet, MemStorage, ObjectPath, OxKvStore, Storage, Store, Transaction};
 
 let store: Arc<dyn Storage> = Arc::new(MemStorage::new());
 // In prod replace MemStorage with an object_store backend (feature `oxkv-s3`):
@@ -332,6 +349,7 @@ assert_eq!(kv.get_bytes("hello").await.unwrap().as_deref(), Some(b"world".as_sli
 let mut tx = kv.begin_tx().unwrap();
 tx.set_bytes("a", b"1").await.unwrap();
 tx.commit().await.unwrap();
+# }
 ```
 
 What it does under the hood:
@@ -339,9 +357,9 @@ What it does under the hood:
 - **Probe** — on `build()` validates `If-None-Match` / `If-Match` conditional writes (`PutMode::Create` / `Update`) at `{prefix}/probe/canary`; use `.skip_probe(true)` only for stores known to be broken (e.g. B2).
 - **Single-writer fencing** — `ownership.json` CAS at `{prefix}/ownership.json` bumps a monotonic `epoch`; every WAL/SST `PUT` is gated and returns `StoreError::Fenced` if superseded.
 - **WAL (RPO=0)** — each `set_bytes`/`delete`/transaction `commit` encodes `[u32 key len][key][u32 value len][value]` (tombstone = `u32::MAX`) and `PUT`s to `e{epoch:06}/wal/{seq:08}.log` with `If-None-Match`, then CAS-appends the id to `manifest.json`. `MemTable` mutates only after WAL durable; replayed on `build()`.
-- **MemTable → SST** — buffered writes flush to `e{epoch}/sst/L0/{seq}.sst` when >32 MiB (or forced). Large values overflow to `e{epoch}/blob/{sha256}` and the SST stores a pointer `(blob path, len, crc32)` instead. Reads resolve the pointer with length + CRC verification.
-- **Manifest** — `manifest.json` tracks `{epoch, version, wal: [ids], sst: [{id, level, min_key, max_key, size}]}` and is updated via `If-Match` ETag CAS with jittered backoff. An in-memory `ManifestCache` (1 s TTL) and `LruCache` SST cache (256 MiB, weigher by file size, `moka` optional) avoid hot-path GETs. Every SST `GET` verifies `verify_file_crc()`.
-- **GC & compaction** — `gc_wal()` deletes WAL covered by an SST once no reader pins that version (`register_reader`/`unregister_reader` watermark; with no pins all covered WAL is eligible). `compact()` merges L0→L1 when `L0 files ≥4` or `>128 MiB`, building a new `L1/{seq}.sst` with BTreeMap newest-wins dedup, CAS-swapping the manifest, then deleting old objects and invalidating the cache. Both are idempotent via `If-None-Match` + manifest dedup.
+- **`MemTable` → SST** — buffered writes flush to `e{epoch}/sst/L0/{seq}.sst` when >32 MiB (or forced). Large values overflow to `e{epoch}/blob/{sha256}` and the SST stores a pointer `(blob path, len, crc32)` instead. Reads resolve the pointer with length + CRC verification.
+- **Manifest** — `manifest.json` tracks `{epoch, version, wal: [ids], sst: [{id, level, min_key, max_key, size}]}` and is updated via `If-Match` `ETag` CAS with jittered backoff. An in-memory `ManifestCache` (1 s TTL) and `LruCache` SST cache (256 MiB, weigher by file size, `moka` optional) avoid hot-path GETs. Every SST `GET` verifies `verify_file_crc()`.
+- **GC & compaction** — `gc_wal()` deletes WAL covered by an SST once no reader pins that version (`register_reader`/`unregister_reader` watermark; with no pins all covered WAL is eligible). `compact()` merges L0→L1 when `L0 files ≥4` or `>128 MiB`, building a new `L1/{seq}.sst` with `BTreeMap` newest-wins dedup, CAS-swapping the manifest, then deleting old objects and invalidating the cache. Both are idempotent via `If-None-Match` + manifest dedup.
 - **Read path** — `get_bytes` checks `MemTable` then SSTs newest-first within `[min_key, max_key]`; `gets_bytes` heap-merges `MemTable` + SSTs with tombstone suppression. Both deref blob pointers.
 
 Enable it:
@@ -406,10 +424,27 @@ for (const { key, value } of results) {
 }
 ```
 
+### LSM from JavaScript
+
+`OxKvStore` exposes the same API over the LSM engine — in-memory via `create()`,
+durable across reloads via `createPersistent()` (OPFS). Snapshots stay portable:
+bytes saved by either class restore into the other.
+
+```js
+import init, { OxKvStore } from "./pkg/oxkv.js";
+
+await init();
+const lsm = await OxKvStore.create();
+await lsm.set("user1", { name: "Ada" });
+
+const durable = await OxKvStore.createPersistent("my-app");
+await durable.setBytes("k", new TextEncoder().encode("v"));
+```
+
 ### Streaming Snapshots from JavaScript
 
 Snapshot export/import works over native JS streams — pipe straight to a file,
-network upload or IndexedDB without buffering the whole store:
+network upload or `IndexedDB` without buffering the whole store:
 
 ```js
 // Export: ReadableStream of Uint8Array chunks
@@ -459,7 +494,7 @@ cargo bench --bench kv_bench                     # everything (tuned to minutes)
 cargo bench --bench kv_bench 1000                # quick sweep of the 1k groups
 cargo bench --bench kv_bench point_update        # just the changes matrix
 cargo bench --bench kv_bench 1000000items_100    # one specific cell of the matrix
-cargo bench --features oxkv --bench kv_bench       # include OxKv (InMemory)
+cargo bench --features oxkv --bench kv_bench       # include OxKv (MemStorage)
 ```
 
 Query-engine benchmarks live in [`benches/query_bench.rs`](benches/query_bench.rs)
@@ -518,10 +553,10 @@ wasm-pack build --target web   # or nodejs, bundler, etc.
 - `src/wasm.rs` — manual wasm-bindgen wrappers for `BTreeStore` + `OxKvStore` (thread-safe JS-facing types; OXKV snapshot portable across all backends)
 - `src/store/mod.rs` — core traits (`GetSet`, `Transaction`, `Store`, `GetSetExt`, `StoreExt`) and error types (`StoreError::Fenced`, `StoreError::NotModified`)
 - `src/store/btree.rs` — in-memory B-tree backend (`btree`, test/bench + WASM baseline)
-- `src/store/lsm/mod.rs` — LSM backend generic over `Storage`+`Cache` (`oxkv`, native + wasm): `OxKvStore`/`OxKvStoreBuilder`/`OxKvTx`, WAL + MemTable + SST + manifest + GC/compaction
+- `src/store/lsm/mod.rs` — LSM backend generic over `Storage`+`Cache` (`oxkv`, native + wasm): `OxKvStore`/`OxKvStoreBuilder`/`OxKvTx`, WAL + `MemTable` + SST + manifest + GC/compaction
 - `src/store/lsm/sst.rs` — SST file format (blocks, Bloom filter, CRC32)
 - `src/store/lsm/blob.rs` — blob overflow for large values (`e{epoch}/blob/{hash}` with CRC)
-- `src/store/lsm/manifest.rs` — `manifest.json` with ETag CAS and `ManifestCache`
+- `src/store/lsm/manifest.rs` — `manifest.json` with `ETag` CAS and `ManifestCache`
 - `src/store/lsm/ownership.rs` — `ownership.json` epoch fencing
 - `src/store/lsm/probe.rs` — conditional-write probe (`If-None-Match` / `If-Match`)
 - `src/store/storage.rs` — `Storage` trait + `MemStorage` (in-memory, every target) + `object_store` impl (S3/memory/local, native `oxkv-s3`; OPFS future)
