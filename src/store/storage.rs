@@ -132,9 +132,7 @@ impl Storage for Arc<dyn ObjectStore> {
 fn map_get_error(path: &Path, err: object_store::Error) -> StoreError {
     match err {
         object_store::Error::NotFound { .. } => StoreError::Storage(format!("not found: {path}")),
-        object_store::Error::NotModified { .. } => {
-            StoreError::Storage(format!("not modified: {path}"))
-        }
+        object_store::Error::NotModified { .. } => StoreError::NotModified,
         object_store::Error::Precondition { .. } => {
             StoreError::Storage(format!("precondition failed: {path}: {err}"))
         }

@@ -82,6 +82,10 @@ pub enum StoreError {
     /// `ownership.json` CAS.
     #[error("fenced: {0}")]
     Fenced(String),
+
+    /// Conditional read not modified — `ETag` matches `If-None-Match`.
+    #[error("not modified")]
+    NotModified,
 }
 
 impl PartialEq for StoreError {
@@ -94,6 +98,7 @@ impl PartialEq for StoreError {
             (StoreError::Utf8(a), StoreError::Utf8(b)) => a == b,
             (StoreError::Utf8Slice(a), StoreError::Utf8Slice(b)) => a == b,
             (StoreError::Json(a), StoreError::Json(b)) => a.to_string() == b.to_string(),
+            (StoreError::NotModified, StoreError::NotModified) => true,
             _ => false,
         }
     }

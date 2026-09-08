@@ -57,11 +57,11 @@ mod moka_impl {
 
 /// Simple weight-aware LRU cache suitable for `WASM` and single-threaded targets.
 ///
-/// Backed by a `tokio::sync::RwLock` + `HashMap` for now so it satisfies
-/// `Send+Sync` and can be `Clone`. A future `!Send` variant can be added for
-/// `wasm32` behind `cfg(target_arch = "wasm32")` without changing the engine.
+/// Backed by `futures::lock::Mutex` + `HashMap` so it needs no `tokio` and
+/// satisfies `Send+Sync` + `Clone`. A future `!Send` variant can be added
+/// for `wasm32` behind `cfg(target_arch = "wasm32")` without changing the engine.
 pub struct LruCache<K, V> {
-    inner: Arc<tokio::sync::RwLock<LruInner<K, V>>>,
+    inner: Arc<futures::lock::Mutex<LruInner<K, V>>>,
     capacity: usize,
     weigher: Arc<dyn Fn(&K, &V) -> u32 + Send + Sync>,
 }
@@ -94,7 +94,7 @@ where
         weigher: impl Fn(&K, &V) -> u32 + Send + Sync + 'static,
     ) -> Self {
         Self {
-            inner: Arc::new(tokio::sync::RwLock::new(LruInner {
+            inner: Arc::new(futures::lock::Mutex::new(LruInner {
                 map: std::collections::HashMap::new(),
                 order: std::collections::VecDeque::new(),
                 weight: 0,
@@ -112,7 +112,7 @@ where
     V: Clone + Send + Sync + 'static,
 {
     async fn get(&self, key: &K) -> Option<V> {
-        let mut inner = self.inner.write().await;
+        let mut inner = self.inner.lock().await;
         let val = inner.map.get(key).cloned();
         if val.is_some() {
             // Move to back (most-recent).
@@ -126,7 +126,7 @@ where
 
     async fn insert(&self, key: K, value: V) {
         let weight = (self.weigher)(&key, &value) as usize;
-        let mut inner = self.inner.write().await;
+        let mut inner = self.inner.lock().await;
 
         if let Some(old) = inner.map.get(&key) {
             let old_w = (self.weigher)(&key, old) as usize;
@@ -151,7 +151,7 @@ where
     }
 
     async fn remove(&self, key: &K) {
-        let mut inner = self.inner.write().await;
+        let mut inner = self.inner.lock().await;
         if let Some(v) = inner.map.remove(key) {
             let w = (self.weigher)(key, &v) as usize;
             inner.weight = inner.weight.saturating_sub(w);
@@ -159,5 +159,43 @@ where
                 inner.order.remove(pos);
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "s3"))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn weight_eviction_removes_oldest() {
+        let cache = LruCache::new(10, |_: &String, v: &usize| *v as u32);
+        cache.insert("a".to_string(), 6).await;
+        cache.insert("b".to_string(), 6).await;
+        assert!(cache.get(&"a".to_string()).await.is_none());
+        assert_eq!(cache.get(&"b".to_string()).await, Some(6));
+    }
+
+    #[tokio::test]
+    async fn touch_moves_to_back() {
+        let cache = LruCache::new(10, |_: &String, v: &usize| *v as u32);
+        cache.insert("a".to_string(), 5).await;
+        cache.insert("b".to_string(), 5).await;
+        let _ = cache.get(&"a".to_string()).await;
+        cache.insert("c".to_string(), 5).await;
+        assert!(cache.get(&"b".to_string()).await.is_none());
+        assert!(cache.get(&"a".to_string()).await.is_some());
+        assert!(cache.get(&"c".to_string()).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn remove_clears_weight() {
+        let cache = LruCache::new(10, |_: &String, v: &usize| *v as u32);
+        cache.insert("a".to_string(), 6).await;
+        cache.remove(&"a".to_string()).await;
+        assert!(cache.get(&"a".to_string()).await.is_none());
+        cache.insert("b".to_string(), 6).await;
+        cache.insert("c".to_string(), 4).await;
+        assert_eq!(cache.get(&"b".to_string()).await, Some(6));
+        assert_eq!(cache.get(&"c".to_string()).await, Some(4));
     }
 }
