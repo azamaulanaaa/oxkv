@@ -49,7 +49,7 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```rust
 //! use oxkv::{BTreeStore, GetSet, HookStore, Scope, StoreView, Validator};
 //!
 //! struct RequireJson(Scope);
@@ -71,7 +71,7 @@
 //!
 //! #[tokio::main(flavor = "current_thread")]
 //! async fn main() {
-//!     let mut store = HookStore::new(BTreeStore::default())
+//!     let store = HookStore::new(BTreeStore::default())
 //!         .with_validator(RequireJson(Scope::Prefix("user:".into())));
 //!
 //!     let mut rx = store.watch("user:42");
