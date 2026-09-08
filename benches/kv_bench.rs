@@ -348,6 +348,9 @@ mod oxkv_bench {
     use super::*;
 
     static OXKV_CTR: AtomicUsize = AtomicUsize::new(0);
+    /// `zipf_get` counters are cumulative across criterion cycles, so the
+    /// stats line reports once per process instead of once per cycle.
+    static ZIPF_REPORTED: std::sync::Once = std::sync::Once::new();
 
     pub(crate) async fn new_oxkv_store() -> OxKvStore {
         let id = OXKV_CTR.fetch_add(1, Ordering::Relaxed);
@@ -659,15 +662,19 @@ mod oxkv_bench {
                     }
                 });
             });
-            if let Some(stats) = s.sst_cache_stats() {
-                eprintln!(
-                    "[zipf_get] hit_ratio={:.3} hits={} misses={} evictions={}",
-                    stats.hit_ratio(),
-                    stats.hits,
-                    stats.misses,
-                    stats.evictions
-                );
-            }
+            // Criterion invokes this closure per warmup/sample cycle; the
+            // counters are cumulative, so report once (see `ZIPF_REPORTED`).
+            ZIPF_REPORTED.call_once(|| {
+                if let Some(stats) = s.sst_cache_stats() {
+                    eprintln!(
+                        "[zipf_get] hit_ratio={:.3} hits={} misses={} evictions={}",
+                        stats.hit_ratio(),
+                        stats.hits,
+                        stats.misses,
+                        stats.evictions
+                    );
+                }
+            });
         });
         group.finish();
     }
