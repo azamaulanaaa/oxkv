@@ -70,7 +70,7 @@ mockall = "0.15"
 # tokio hard-errors on wasm32 when any of fs/io-std/net/process/
 # rt-multi-thread/signal is enabled. The engine itself stays
 # runtime-agnostic (`futures`/`async-lock` only).
-tokio = { version = "1.53.1", features = ["test-util", "macros"] }
+tokio = { version = "1.53.1", features = ["test-util", "macros", "rt"] }
 
 # Criterion pulls in Rayon, which does not compile for wasm32; benches are a
 # native-only concern. Same for the OpenTelemetry SDK used by the `otel`

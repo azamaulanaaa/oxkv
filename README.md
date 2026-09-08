@@ -398,35 +398,41 @@ oxkv = { version = "0.5", features = ["oxkv"] }           # portable LSM core
 ### Sharing stores across threads
 
 Every store is `Send + Sync` with `&self` operations, so one store can live
-in an `Arc` and serve a multi-threaded runtime — each task starts its own
+in an `Arc` and serve concurrent callers — each task starts its own
 transaction via the shared `begin_tx`, and standalone writes serialize
-behind a fair write gate instead of CAS-retry-storming the manifest:
+behind a fair write gate instead of CAS-retry-storming the manifest. (The
+example uses a current-thread runtime so it runs everywhere including wasm;
+on native servers you would typically use a multi-thread runtime.)
 
 ```rust
 use std::sync::Arc;
 use oxkv::{GetSet, MemStorage, ObjectPath, OxKvStore};
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
-async fn main() {
-    let kv = Arc::new(
-        OxKvStore::builder()
-            .with_store(Arc::new(MemStorage::new()))
-            .with_prefix(ObjectPath::from("concurrent-doc"))
-            .build()
-            .await
-            .unwrap(),
-    );
-    let (a, b) = (Arc::clone(&kv), Arc::clone(&kv));
-    let (r1, r2) = tokio::join!(
-        async move { a.set_bytes("a", b"1").await },
-        async move { b.set_bytes("b", b"2").await },
-    );
-    r1.unwrap();
-    r2.unwrap();
-    assert_eq!(
-        kv.get_bytes("a").await.unwrap().as_deref(),
-        Some(b"1".as_slice())
-    );
+fn main() {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("current-thread runtime")
+        .block_on(async {
+            let kv = Arc::new(
+                OxKvStore::builder()
+                    .with_store(Arc::new(MemStorage::new()))
+                    .with_prefix(ObjectPath::from("concurrent-doc"))
+                    .build()
+                    .await
+                    .unwrap(),
+            );
+            let (a, b) = (Arc::clone(&kv), Arc::clone(&kv));
+            // No `tokio::spawn`: `join!` polls both futures without a
+            // runtime handle, so sharing works on any runtime.
+            tokio::join!(
+                async move { a.set_bytes("a", b"1").await.unwrap() },
+                async move { b.set_bytes("b", b"2").await.unwrap() },
+            );
+            assert_eq!(
+                kv.get_bytes("a").await.unwrap().as_deref(),
+                Some(b"1".as_slice())
+            );
+        });
 }
 ```
 
