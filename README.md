@@ -1,7 +1,7 @@
 
 # oxkv
 
-A transactional key-value store library written in Rust, with optional WebAssembly bindings for JavaScript interop. Features cursor-based pagination, a Lucene-style query engine that matches stored JSON documents, JSON serialization via `serde_json`, streaming snapshot export/import, optional OpenTelemetry instrumentation, and strict linting. All operations are async using `futures::lock::Mutex` to enable concurrent access from WASM call sites.
+A transactional key-value store library written in Rust, with optional WebAssembly bindings for JavaScript interop. Features cursor-based pagination, a Lucene-style query engine that matches stored JSON documents, JSON serialization via `serde_json`, streaming snapshot export/import, optional OpenTelemetry instrumentation, and strict linting. All operations are `async` and take `&self`, and every store is `Send + Sync`, so one store can be shared across threads via `Arc` — the WASM bindings wrap the same backends for JavaScript.
 
 ## Features
 
@@ -272,7 +272,7 @@ let file_stream = tokio_util::io::ReaderStream::new(
     tokio::fs::File::open("snapshot.oxkv").await?,
 )
 .map_err(|e| oxkv::StoreError::Other(e.to_string()));
-let count = load_stream(&mut store, file_stream).await?;
+let count = load_stream(&store, file_stream).await?;
 ```
 
 Every snapshot starts with an 8-byte header — magic `"OXKV"` plus a
@@ -356,15 +356,17 @@ What it does under the hood:
 
 - **Probe** — on `build()` validates `If-None-Match` / `If-Match` conditional writes (`PutMode::Create` / `Update`) at `{prefix}/probe/canary`; use `.skip_probe(true)` only for stores known to be broken (e.g. B2).
 - **Single-writer fencing** — `ownership.json` CAS at `{prefix}/ownership.json` bumps a monotonic `epoch`; every WAL/SST `PUT` is gated and returns `StoreError::Fenced` if superseded.
-- **WAL (RPO=0)** — each `set_bytes`/`delete`/transaction `commit` encodes `[u32 key len][key][u32 value len][value]` (tombstone = `u32::MAX`) and `PUT`s to `e{epoch:06}/wal/{seq:08}.log` with `If-None-Match`, then CAS-appends the id to `manifest.json`. `MemTable` mutates only after WAL durable; replayed on `build()`. Past ~1,000 WAL ids writes force-flush + GC, so the manifest list stays flat (store and tx paths alike).
+- **WAL (RPO=0)** — each `set_bytes`/`delete` stages a length-prefixed record (`[u32 key len][key][u32 value len][value]`, tombstone = `u32::MAX`); concurrent blind writes fuse via group commit into one `e{epoch:06}/wal/{seq:08}.log` file holding many framed records, then one manifest CAS appends the id. `MemTable` mutates only after WAL durable; replayed on `build()` (replay loops over records, so batched files need no format changes). Past ~1,000 WAL ids writes force-flush + GC, so the manifest list stays flat (store and tx paths alike).
 - **`MemTable` → SST** — buffered writes flush to `e{epoch}/sst/L0/{seq}.sst` when >32 MiB (or forced). Large values overflow to `e{epoch}/blob/{sha256}` and the SST stores a pointer `(blob path, len, crc32)` instead. Reads resolve the pointer with length + CRC verification.
-- **Manifest** — `manifest.json` tracks `{epoch, version, wal: [ids], sst: [{id, level, min_key, max_key, size}]}` and is updated via `If-Match` `ETag` CAS with jittered backoff. An in-memory `ManifestCache` (1 s TTL) and `S3-FIFO` SST cache (256 MiB, weigher by file size, `moka` optional) avoid hot-path GETs. Every SST `GET` verifies `verify_file_crc()`. `.assume_single_writer(true)` skips revalidation polls on fresh cache entries (single-writer prefixes only).
+- **Manifest** — `manifest.json` tracks `{epoch, version, wal: [ids], sst: [{id, level, min_key, max_key, size}]}` and is updated via `If-Match` `ETag` CAS with jittered backoff. An in-memory `ManifestCache` (1 s TTL, never held across I/O) and `S3-FIFO` SST cache (256 MiB, weigher by file size, `moka` optional) avoid hot-path GETs. Every SST `GET` verifies `verify_file_crc()`. `.assume_single_writer(true)` skips revalidation polls on fresh cache entries (single-writer prefixes only).
 - **GC & compaction** — `gc_wal()` deletes WAL covered by an SST once no reader pins that version (`register_reader`/`unregister_reader` watermark; with no pins all covered WAL is eligible). `compact()` merges L0→L1 when `L0 files ≥4` or `>128 MiB`, building a new `L1/{seq}.sst` with `BTreeMap` newest-wins dedup, CAS-swapping the manifest, then deleting old objects and invalidating the cache. Past 16 L1 files the smallest adjacent pair folds into the merge, bounding the SST list. Both are idempotent via `If-None-Match` + manifest dedup.
 - **Read path** — `get_bytes` checks `MemTable` then SSTs newest-first within `[min_key, max_key]`; `gets_bytes` heap-merges `MemTable` + SSTs with tombstone suppression. Both deref blob pointers.
 
 ### SST cache
 
 Point lookups go through a 256 MiB scan-resistant `S3-FIFO` cache (`LruCache`, weighed by file size via `SstFile::size`), so hot SSTs are parsed once. Window scans (`gets`) deliberately bypass it: a wide range must never evict hot point-lookup entries, so scans re-read from `Storage` every time.
+
+Hit/miss statistics are tracked with atomics shared across clones: `Cache::stats()` returns hits, misses, inserts, capacity evictions, and `hit_ratio()` (backends that don't track, e.g. `moka`, return `None`). On a store, `OxKvStore::sst_cache_stats()` exposes the same numbers — the `zipf_get` bench prints them alongside timings.
 
 The cache is generic over the `Cache` trait, so native builds needing sharded concurrency can swap in `moka` (admission-filtered `TinyLFU` + segmented LRU) or a custom implementation via `build_with_cache`:
 
@@ -392,6 +394,47 @@ oxkv = { version = "0.5", features = ["oxkv"] }           # portable LSM core
 ```
 
 `cargo test --features oxkv` and `cargo bench --features oxkv` exercise it against `MemStorage` (bench uses `skip_probe(true)` so the numbers are comparable to `btree_mem`/`oxkv_mem`).
+
+### Sharing stores across threads
+
+Every store is `Send + Sync` with `&self` operations, so one store can live
+in an `Arc` and serve a multi-threaded runtime — each task starts its own
+transaction via the shared `begin_tx`, and standalone writes serialize
+behind a fair write gate instead of CAS-retry-storming the manifest:
+
+```rust
+use std::sync::Arc;
+use oxkv::{GetSet, MemStorage, ObjectPath, OxKvStore};
+
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
+async fn main() {
+    let kv = Arc::new(
+        OxKvStore::builder()
+            .with_store(Arc::new(MemStorage::new()))
+            .with_prefix(ObjectPath::from("concurrent-doc"))
+            .build()
+            .await
+            .unwrap(),
+    );
+    let (a, b) = (Arc::clone(&kv), Arc::clone(&kv));
+    let (r1, r2) = tokio::join!(
+        async move { a.set_bytes("a", b"1").await },
+        async move { b.set_bytes("b", b"2").await },
+    );
+    r1.unwrap();
+    r2.unwrap();
+    assert_eq!(
+        kv.get_bytes("a").await.unwrap().as_deref(),
+        Some(b"1".as_slice())
+    );
+}
+```
+
+Concurrent blind writes batch further via group commit: whoever takes the
+gate persists everything staged (up to 256 records) in one WAL file plus
+one manifest CAS, and every entry in the batch shares one fate — all
+succeed or all fail together. `delete` and transaction commits take the
+gate without staging and ride it exclusively.
 
 ## WASM Bindings
 
@@ -536,7 +579,10 @@ generated corpus of 1,000 or 100,000 JSON documents.
 
 The filter is a plain substring match on benchmark names. Results land in
 `target/criterion/` as HTML reports; re-running a filter compares against the
-previous run and flags regressions/improvements automatically.
+previous run and flags regressions/improvements automatically. For A/B work
+across commits, save a named baseline on the base (`-- --save-baseline base`)
+and compare the contender against it (`-- --baseline base`); baselines live
+in gitignored `target/`, so they never leave your machine.
 
 ### Workloads
 
@@ -548,6 +594,9 @@ previous run and flags regressions/improvements automatically.
 | `page_fetch_100/{backend}/{n}` | 1K, 1M | one paginated range fetch of 100 entries from rotating start cursors |
 | `point_update/{backend}/{n}items_{m}changes` | 1K×{1,10}, 1M×{1,100,1000} | in-place updates of a few keys inside a large store |
 | `tx_commit_batch_1000/{backend}` | 1K | committing a pre-staged 1,000-write transaction (staging is untimed, so this isolates durability cost) |
+| `concurrent_write/oxkv_mem/1024` | 1K writes, 8 threads | blind writes from spawned tasks sharing one store (multi-thread runtime): write-gate + group-commit throughput |
+| `zipf_get/oxkv_mem/10000` | 10K keys, 50 SSTs, 2K reads | skewed reads over many small SSTs with a 320 KiB cache: admission policy decides the hit ratio (printed to stderr) |
+| `mt_random_get/oxkv_mem/100000` | 100K keys, 10K reads, 8 threads | shared-store point reads from spawned tasks: read-path scaling while writes serialize |
 
 Scale strategy (see `benches/kv_bench.rs` header): full-scan writes (`seq_insert`, `seq_delete`) scale linearly so they run at 1K+100K only — 1M depth is still exercised via `random_get`/`point_update`/`page_fetch`, whose per-iteration work is bounded (sampled reads / one page / few updates) against a 1M-key store built once and reused. Tree/SST depth and index size are identical to a full 1M scan; only the repeated per-iteration cost is removed.
 
@@ -573,9 +622,9 @@ wasm-pack build --target web   # or nodejs, bundler, etc.
 ## Architecture
 
 - `src/wasm/` — manual wasm-bindgen wrappers (`mod` + `btree` + `oxkv`) for `BTreeStore` + `OxKvStore` (thread-safe JS-facing types; OXKV snapshot portable across all backends)
-- `src/store/mod.rs` — core traits (`GetSet`, `Transaction`, `Store`, `GetSetExt`, `StoreExt`) and error types (`StoreError::Fenced`, `StoreError::NotModified`)
+- `src/store/mod.rs` — core traits (`GetSet`, `Transaction`, `Store`, `GetSetExt`, `StoreExt`), error types (`StoreError::Fenced`, `StoreError::CasConflict`, `StoreError::NotModified`), and the `lock_ignore_poison` policy helper
 - `src/store/btree.rs` — in-memory B-tree backend (`btree`, test/bench + WASM baseline)
-- `src/store/lsm/mod.rs` — LSM backend generic over `Storage`+`Cache` (`oxkv`, native + wasm): `OxKvStore`/`OxKvStoreBuilder`/`OxKvTx`, WAL + `MemTable` + SST + manifest + GC/compaction
+- `src/store/lsm/mod.rs` — LSM backend generic over `Storage`+`Cache` (`oxkv`, native + wasm): `OxKvStore`/`OxKvStoreBuilder`/`OxKvTx`, WAL + `MemTable` + SST + manifest + GC/compaction, write gate + group commit
 - `src/store/lsm/sst.rs` — SST file format (blocks, Bloom filter, CRC32)
 - `src/store/lsm/blob.rs` — blob overflow for large values (`e{epoch}/blob/{hash}` with CRC)
 - `src/store/lsm/manifest.rs` — `manifest.json` with `ETag` CAS and `ManifestCache`
