@@ -30,6 +30,41 @@ where
     async fn contains(&self, key: &K) -> bool {
         self.get(key).await.is_some()
     }
+
+    /// Returns hit/miss statistics, or `None` when the implementation does
+    /// not track them (e.g. the optional `moka` backend).
+    fn stats(&self) -> Option<CacheStats> {
+        None
+    }
+}
+
+/// Hit/miss statistics for a [`Cache`] implementation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CacheStats {
+    /// `get` calls served from the cache.
+    pub hits: u64,
+    /// `get` calls that missed.
+    pub misses: u64,
+    /// `insert` calls, including updates of existing keys.
+    pub inserts: u64,
+    /// Entries dropped to enforce capacity (explicit `remove` excluded).
+    pub evictions: u64,
+}
+
+impl CacheStats {
+    /// Fraction of `get` calls served from the cache, `0.0` when no `get`
+    /// has been recorded yet.
+    #[must_use]
+    // Precision beyond 2^53 counter values is irrelevant for a ratio.
+    #[allow(clippy::cast_precision_loss)]
+    pub fn hit_ratio(&self) -> f64 {
+        let total = self.hits.saturating_add(self.misses);
+        if total == 0 {
+            0.0
+        } else {
+            self.hits as f64 / total as f64
+        }
+    }
 }
 
 #[cfg(all(feature = "moka", not(target_arch = "wasm32")))]
@@ -256,6 +291,47 @@ where
     }
 }
 
+/// Shared hit/miss counters behind [`LruCache`]: every clone observes the
+/// same totals, and atomics keep `get` off the mutex for accounting.
+#[derive(Debug, Default)]
+struct Counters {
+    hits: std::sync::atomic::AtomicU64,
+    misses: std::sync::atomic::AtomicU64,
+    inserts: std::sync::atomic::AtomicU64,
+    evictions: std::sync::atomic::AtomicU64,
+}
+
+impl Counters {
+    fn snapshot(&self) -> CacheStats {
+        use std::sync::atomic::Ordering::Relaxed;
+        CacheStats {
+            hits: self.hits.load(Relaxed),
+            misses: self.misses.load(Relaxed),
+            inserts: self.inserts.load(Relaxed),
+            evictions: self.evictions.load(Relaxed),
+        }
+    }
+
+    fn record_hit(&self) {
+        self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn record_miss(&self) {
+        self.misses
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn record_insert(&self) {
+        self.inserts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn record_evictions(&self, count: u64) {
+        self.evictions
+            .fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Scan-resistant weight-aware cache suitable for `WASM` and single-threaded
 /// targets.
 ///
@@ -276,6 +352,7 @@ pub struct LruCache<K, V> {
     capacity: usize,
     ghost_cap: usize,
     weigher: Weigher<K, V>,
+    counters: Arc<Counters>,
 }
 
 /// Preferred name for the scan-resistant policy; identical to [`LruCache`].
@@ -288,6 +365,7 @@ impl<K, V> Clone for LruCache<K, V> {
             capacity: self.capacity,
             ghost_cap: self.ghost_cap,
             weigher: Arc::clone(&self.weigher),
+            counters: Arc::clone(&self.counters),
         }
     }
 }
@@ -317,6 +395,7 @@ where
             capacity: max_capacity,
             ghost_cap: max_capacity,
             weigher: Arc::new(weigher),
+            counters: Arc::new(Counters::default()),
         }
     }
 }
@@ -328,62 +407,79 @@ where
     V: Clone + Send + Sync + 'static,
 {
     async fn get(&self, key: &K) -> Option<V> {
-        let mut inner = self.inner.lock().await;
-        if let Some(entry) = inner.map.get_mut(key) {
-            entry.freq = entry.freq.saturating_add(1).min(MAX_FREQ);
-            Some(entry.value.clone())
+        let hit = {
+            let mut inner = self.inner.lock().await;
+            if let Some(entry) = inner.map.get_mut(key) {
+                entry.freq = entry.freq.saturating_add(1).min(MAX_FREQ);
+                Some(entry.value.clone())
+            } else {
+                None
+            }
+        };
+        // Account outside the mutex: atomics need no guard.
+        if hit.is_some() {
+            self.counters.record_hit();
         } else {
-            None
+            self.counters.record_miss();
         }
+        hit
     }
 
     async fn insert(&self, key: K, value: V) {
         let weight = (self.weigher)(&key, &value) as usize;
-        let mut inner = self.inner.lock().await;
+        let evicted = {
+            let mut inner = self.inner.lock().await;
 
-        if let Some(entry) = inner.map.get_mut(&key) {
-            let old_weight = entry.weight;
-            entry.value = value;
-            entry.weight = weight;
-            entry.freq = entry.freq.saturating_add(1).min(MAX_FREQ);
-            inner.weight = inner
-                .weight
-                .saturating_sub(old_weight)
-                .saturating_add(weight);
-        } else {
-            // Entries heavier than the whole cache are not retained, matching
-            // the previous eviction behavior without pointless bookkeeping.
-            if weight > self.capacity {
-                return;
-            }
-            let promoted = match inner.ghost_map.remove(&key) {
-                Some(weight) => {
-                    inner.ghost_weight = inner.ghost_weight.saturating_sub(weight);
-                    true
-                }
-                None => false,
-            };
-            let (queue, freq) = if promoted {
-                (Queue::Medium, 1)
+            if let Some(entry) = inner.map.get_mut(&key) {
+                let old_weight = entry.weight;
+                entry.value = value;
+                entry.weight = weight;
+                entry.freq = entry.freq.saturating_add(1).min(MAX_FREQ);
+                inner.weight = inner
+                    .weight
+                    .saturating_sub(old_weight)
+                    .saturating_add(weight);
             } else {
-                (Queue::Small, 0)
-            };
-            let seq = inner.bump();
-            inner.map.insert(
-                key.clone(),
-                Entry {
-                    value,
-                    weight,
-                    freq,
-                    queue,
-                    seq,
-                },
-            );
-            inner.push_slot(queue, seq, key);
-            inner.weight = inner.weight.saturating_add(weight);
-        }
+                // Entries heavier than the whole cache are not retained,
+                // matching the previous eviction behavior without pointless
+                // bookkeeping.
+                if weight > self.capacity {
+                    return;
+                }
+                let promoted = match inner.ghost_map.remove(&key) {
+                    Some(weight) => {
+                        inner.ghost_weight = inner.ghost_weight.saturating_sub(weight);
+                        true
+                    }
+                    None => false,
+                };
+                let (queue, freq) = if promoted {
+                    (Queue::Medium, 1)
+                } else {
+                    (Queue::Small, 0)
+                };
+                let seq = inner.bump();
+                inner.map.insert(
+                    key.clone(),
+                    Entry {
+                        value,
+                        weight,
+                        freq,
+                        queue,
+                        seq,
+                    },
+                );
+                inner.push_slot(queue, seq, key);
+                inner.weight = inner.weight.saturating_add(weight);
+            }
 
-        inner.evict_while_over(self.capacity, self.ghost_cap);
+            let before = inner.map.len();
+            inner.evict_while_over(self.capacity, self.ghost_cap);
+            before.saturating_sub(inner.map.len())
+        };
+        // Account outside the mutex: atomics need no guard.
+        self.counters.record_insert();
+        self.counters.record_evictions(evicted as u64);
     }
 
     async fn remove(&self, key: &K) {
@@ -401,6 +497,10 @@ where
         // Presence check only: unlike the default `get`-based implementation,
         // probing must not bump frequency and shelter cold entries.
         self.inner.lock().await.map.contains_key(key)
+    }
+
+    fn stats(&self) -> Option<CacheStats> {
+        Some(self.counters.snapshot())
     }
 }
 
@@ -506,6 +606,33 @@ mod tests {
         cache.insert("a".to_string(), 6).await;
         assert_eq!(cache.get(&"a".to_string()).await, Some(6));
         assert!(cache.get(&"b".to_string()).await.is_none());
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn stats_counts_hits_misses_and_evictions() {
+        let cache = LruCache::new(10, |_: &String, v: &usize| {
+            u32::try_from(*v).expect("test weight fits u32")
+        });
+        assert_eq!(
+            Cache::stats(&cache),
+            Some(CacheStats {
+                hits: 0,
+                misses: 0,
+                inserts: 0,
+                evictions: 0,
+            })
+        );
+        cache.insert("a".to_string(), 6).await;
+        cache.insert("b".to_string(), 6).await;
+        assert!(cache.get(&"a".to_string()).await.is_none());
+        assert_eq!(cache.get(&"b".to_string()).await, Some(6));
+        let stats = Cache::stats(&cache).expect("tracked");
+        assert_eq!(stats.hits, 1);
+        assert_eq!(stats.misses, 1);
+        assert_eq!(stats.inserts, 2);
+        assert_eq!(stats.evictions, 1);
+        assert!((stats.hit_ratio() - 0.5).abs() < f64::EPSILON);
     }
 
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]

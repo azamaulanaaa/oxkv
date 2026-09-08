@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::store::cache::{Cache, LruCache};
+use crate::store::cache::{Cache, CacheStats, LruCache};
 use crate::store::sleep;
 use crate::store::storage::{ObjectPath, PutMode, Storage};
 
@@ -156,6 +156,13 @@ where
     #[must_use]
     pub fn session(&self) -> &str {
         &self.session
+    }
+
+    /// Returns SST-cache hit/miss statistics, or `None` for cache backends
+    /// that do not track them (e.g. `moka`).
+    #[must_use]
+    pub fn sst_cache_stats(&self) -> Option<CacheStats> {
+        self.sst_cache.stats()
     }
 
     /// Stages `set` into `MemTable` + WAL buffer (commit = mem).

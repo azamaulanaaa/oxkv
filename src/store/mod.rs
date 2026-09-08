@@ -40,7 +40,7 @@ mod otel;
 #[cfg(feature = "oxkv")]
 mod storage;
 #[cfg(feature = "oxkv")]
-pub use cache::{Cache, LruCache, S3FifoCache};
+pub use cache::{Cache, CacheStats, LruCache, S3FifoCache};
 #[cfg(feature = "oxkv")]
 pub use lsm::{OxKvStore, OxKvStoreBuilder, OxKvTx, SstFile};
 #[cfg(all(feature = "oxkv", target_arch = "wasm32"))]
