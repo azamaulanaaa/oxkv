@@ -35,12 +35,20 @@ pub use otel::{OtelStore, OtelTx};
 mod otel;
 #[cfg(all(feature = "redb", not(target_arch = "wasm32")))]
 pub use redb::{RedbStore, RedbTx};
+#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
+mod cache;
 #[cfg(all(feature = "redb", not(target_arch = "wasm32")))]
 mod redb;
 #[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
-pub use s3::{S3Store, S3StoreBuilder};
+mod storage;
 #[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
-mod s3;
+pub use cache::{Cache, LruCache};
+#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
+pub use lsm::{S3Store, S3StoreBuilder};
+#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
+pub use storage::{GetOutput, PutOutcome, Storage};
+#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
+mod lsm;
 
 /// A specialized `Result` type for store operations.
 pub type Result<T> = std::result::Result<T, StoreError>;
