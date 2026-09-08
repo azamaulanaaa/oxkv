@@ -355,12 +355,15 @@ mod oxkv_bench {
         let mut group = c.benchmark_group(format!("seq_insert/oxkv_mem/{n}"));
         configure(&mut group, n, n);
         let keys: Vec<String> = (0..n).map(key).collect();
+        // Blind writes: seq_insert measures durable-ingest throughput, and
+        // set_bytes would add a prev-read per key (covered by random_get).
         group.bench_function("store", |b| {
             b.iter(|| {
                 rt.block_on(async {
                     let mut store = new_oxkv_store().await;
                     for k in &keys {
-                        black_box(store.set_bytes(k, &PAYLOAD).await.expect("set"));
+                        store.put_bytes(k, &PAYLOAD).await.expect("put");
+                        black_box(());
                     }
                 });
             });
