@@ -23,8 +23,11 @@
 //! - `point_update` — in-place updates of a few keys inside a large store
 //! - `concurrent_write` — 8 threads x 128 blind writes against one shared
 //!   store on a multi-thread runtime (oxkv only): exercises the write gate
-//! - `zipf_get` — skewed reads over 50 forced SSTs with a 320 KiB cache
-//!   (oxkv only): exercises admission policy; hit ratio prints to stderr
+//! - `zipf_get` — end-to-end skewed reads over 50 forced SSTs with a 320 KiB cache
+//!   (oxkv only): file-level caching with real SST parse costs and compaction
+//!   interplay; hit ratio prints to stderr. Guards the `fetch_sst` wiring the
+//!   `cache_zipf` micro-benchmark cannot see; for isolated policy A/B see
+//!   `cache_bench`.
 //! - `concurrent_random_get` — shared-store point reads from 8 threads (oxkv only)
 //!
 //! A/B comparisons against a base commit (baselines live in gitignored
