@@ -686,7 +686,7 @@ mod tests {
     }
 
     async fn begin_test_tx(js_store: &JsBTreeStore) -> JsBTreeTx {
-        let mut guard = js_store.inner.lock().await;
+        let guard = js_store.inner.lock().await;
         let tx = guard.begin_tx().expect("begin_tx failed");
         JsBTreeTx {
             inner: std::sync::Arc::new(futures::lock::Mutex::new(Some(tx))),

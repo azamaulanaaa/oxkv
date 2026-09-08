@@ -749,7 +749,7 @@ mod tests {
     }
 
     async fn begin_oxkv_tx(js_store: &JsOxKvStore) -> JsOxKvTx {
-        let mut guard = js_store.inner.lock().await;
+        let guard = js_store.inner.lock().await;
         let tx = guard.begin_tx().expect("begin_tx failed");
         JsOxKvTx {
             inner: std::sync::Arc::new(futures::lock::Mutex::new(Some(tx))),
