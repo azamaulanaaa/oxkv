@@ -42,7 +42,7 @@ mod storage;
 #[cfg(all(feature = "oxkv", not(target_arch = "wasm32")))]
 pub use cache::{Cache, LruCache};
 #[cfg(all(feature = "oxkv", not(target_arch = "wasm32")))]
-pub use lsm::{OxKvStore, OxKvStoreBuilder};
+pub use lsm::{OxKvStore, OxKvStoreBuilder, OxKvTx};
 #[cfg(all(feature = "oxkv", not(target_arch = "wasm32")))]
 pub use storage::{GetOutput, PutOutcome, Storage};
 
@@ -52,7 +52,7 @@ pub type Result<T> = std::result::Result<T, StoreError>;
 /// Errors that can occur during store operations.
 #[derive(Debug, Error)]
 pub enum StoreError {
-    /// An error originating from the underlying storage engine (e.g., redb).
+    /// An error originating from the underlying storage engine.
     #[error("storage error: {0}")]
     Storage(String),
 
@@ -254,7 +254,7 @@ pub trait Store: GetSet {
     /// The transaction type produced by [`begin_tx`][Self::begin_tx].
     ///
     /// Each concrete backend declares its own `Transaction` type here via the
-    /// associated-type pattern — e.g., `type Transaction = RedbTx;`. This
+    /// associated-type pattern — e.g., `type Transaction = OxKvTx;`. This
     /// allows zero-cost monomorphization: no heap allocation, no vtable dispatch.
     type Transaction: Transaction + Send;
 

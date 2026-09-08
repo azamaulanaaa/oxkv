@@ -9,7 +9,7 @@
 //! decorators:
 //!
 //! ```text
-//! OtelStore::new(HookStore::new(RedbStore::new()?))
+//! OtelStore::new(HookStore::new(BTreeStore::new()))
 //! ```
 //!
 //! # Plug-in architecture

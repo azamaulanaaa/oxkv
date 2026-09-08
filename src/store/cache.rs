@@ -1,9 +1,9 @@
 //! Cache abstraction for SST files.
 //!
 //! Provides a minimal async trait so the LSM engine does not depend directly
-//! on `moka`. The current production implementation delegates to `moka`, while
-//! `WASM` and future targets can supply a single-threaded `LruCache` without
-//! `Send`/`Sync` or `tokio`.
+//! on any single cache. The production implementation is the built-in
+//! `LruCache`, while `moka` remains an optional alternative and `WASM` and
+//! future targets can supply their own `Cache` without `tokio`.
 
 use std::hash::Hash;
 use std::sync::Arc;
@@ -55,6 +55,9 @@ mod moka_impl {
     }
 }
 
+/// Weight function for [`LruCache`]: maps an entry to its weight units.
+type Weigher<K, V> = Arc<dyn Fn(&K, &V) -> u32 + Send + Sync>;
+
 /// Simple weight-aware LRU cache suitable for `WASM` and single-threaded targets.
 ///
 /// Backed by `futures::lock::Mutex` + `HashMap` so it needs no `tokio` and
@@ -63,7 +66,7 @@ mod moka_impl {
 pub struct LruCache<K, V> {
     inner: Arc<futures::lock::Mutex<LruInner<K, V>>>,
     capacity: usize,
-    weigher: Arc<dyn Fn(&K, &V) -> u32 + Send + Sync>,
+    weigher: Weigher<K, V>,
 }
 
 #[derive(Debug)]
@@ -141,11 +144,11 @@ where
         inner.weight += weight;
 
         while inner.weight > self.capacity && !inner.order.is_empty() {
-            if let Some(oldest) = inner.order.pop_front() {
-                if let Some(v) = inner.map.remove(&oldest) {
-                    let w = (self.weigher)(&oldest, &v) as usize;
-                    inner.weight = inner.weight.saturating_sub(w);
-                }
+            if let Some(oldest) = inner.order.pop_front()
+                && let Some(v) = inner.map.remove(&oldest)
+            {
+                let w = (self.weigher)(&oldest, &v) as usize;
+                inner.weight = inner.weight.saturating_sub(w);
             }
         }
     }
@@ -168,7 +171,9 @@ mod tests {
 
     #[tokio::test]
     async fn weight_eviction_removes_oldest() {
-        let cache = LruCache::new(10, |_: &String, v: &usize| *v as u32);
+        let cache = LruCache::new(10, |_: &String, v: &usize| {
+            u32::try_from(*v).expect("test weight fits u32")
+        });
         cache.insert("a".to_string(), 6).await;
         cache.insert("b".to_string(), 6).await;
         assert!(cache.get(&"a".to_string()).await.is_none());
@@ -177,7 +182,9 @@ mod tests {
 
     #[tokio::test]
     async fn touch_moves_to_back() {
-        let cache = LruCache::new(10, |_: &String, v: &usize| *v as u32);
+        let cache = LruCache::new(10, |_: &String, v: &usize| {
+            u32::try_from(*v).expect("test weight fits u32")
+        });
         cache.insert("a".to_string(), 5).await;
         cache.insert("b".to_string(), 5).await;
         let _ = cache.get(&"a".to_string()).await;
@@ -189,7 +196,9 @@ mod tests {
 
     #[tokio::test]
     async fn remove_clears_weight() {
-        let cache = LruCache::new(10, |_: &String, v: &usize| *v as u32);
+        let cache = LruCache::new(10, |_: &String, v: &usize| {
+            u32::try_from(*v).expect("test weight fits u32")
+        });
         cache.insert("a".to_string(), 6).await;
         cache.remove(&"a".to_string()).await;
         assert!(cache.get(&"a".to_string()).await.is_none());

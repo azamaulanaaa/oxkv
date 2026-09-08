@@ -1,12 +1,10 @@
 //! WASM bindings — currently `BTreeStore` (bench baseline).
 //!
 //! The OXKV snapshot wire format (`snapshot.rs` magic `OXKV` + version 1) is
-//! identical across `BTreeStore` (wasm), `S3Store`/`LsmStore` (native) and
-//! future `single_writer` OPFS/memory stores, so `save`/`save_stream` bytes
-//! restore everywhere via `load`/`load_stream`. `JsLsmStore` (wasm LSM via
-//! `Storage` + `LruCache` + `single_writer`) will be exposed here once the
-//! `lsm` engine is decoupled from `tokio`/`object_store` for `wasm32`
-//! (see `store::lsm` single_writer mode).
+//! identical across `BTreeStore` (wasm) and `OxKvStore` (native), so
+//! `save`/`save_stream` bytes restore everywhere via `load`/`load_stream`.
+//! `JsLsmStore` (wasm LSM via `Storage` + `LruCache`) will be exposed here
+//! once the `lsm` engine is decoupled from `object_store` for `wasm32`.
 
 use serde::Serialize;
 use wasm_bindgen::prelude::*;

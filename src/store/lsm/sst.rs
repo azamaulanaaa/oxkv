@@ -1,4 +1,4 @@
-//! SST (Sorted String Table) builder and reader for `S3Store` — L0.
+//! SST (Sorted String Table) builder and reader for `OxKvStore` — L0.
 #![allow(unreachable_pub, missing_docs)]
 #![allow(clippy::pedantic, clippy::all)]
 #![allow(dead_code)]

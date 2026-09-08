@@ -35,7 +35,7 @@
 //!   windows (see `configure`).
 //!
 //! `OxKv` backend (feature `oxkv`) uses `object_store::memory::InMemory` with
-//! `skip_probe(true)` so the numbers are comparable to `btree_mem`/`redb_mem`
+//! `skip_probe(true)` so the numbers are comparable to `btree_mem`/`oxkv_mem`
 //! without network I/O. Prefix is unique per store instance to avoid
 //! ownership fencing within the same `InMemory` bucket.
 
