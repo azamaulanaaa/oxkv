@@ -103,3 +103,9 @@ unreachable_pub = "deny"
 all = "deny"
 cargo = "deny"
 pedantic = "deny"
+
+# Criterion must measure optimized code: the default bench profile is
+# unoptimized, which once hid a real O(n^2) behind debug-mode serde costs
+# and made every number meaningless for production.
+[profile.bench]
+inherits = "release"
