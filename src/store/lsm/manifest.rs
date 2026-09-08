@@ -118,6 +118,13 @@ pub(crate) async fn cas_manifest(
 #[derive(Debug)]
 pub(crate) struct ManifestCache {
     entry: Option<CachedEntry>,
+    /// Skip revalidation polls on `TTL`-fresh entries.
+    ///
+    /// Only set when no other writer touches the prefix (see builder
+    /// `assume_single_writer`): the cache is then authoritative between our
+    /// own mutations, and every poll is a wasted roundtrip. Takeover is
+    /// still detected via ownership checks and manifest CAS conflicts.
+    skip_revalidation: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -131,7 +138,15 @@ impl ManifestCache {
     /// Creates an empty cache.
     #[must_use]
     pub fn new() -> Self {
-        Self { entry: None }
+        Self {
+            entry: None,
+            skip_revalidation: false,
+        }
+    }
+
+    /// Sets single-writer mode: `TTL`-fresh entries return without polling.
+    pub fn set_skip_revalidation(&mut self, skip: bool) {
+        self.skip_revalidation = skip;
     }
 
     /// Returns cached manifest if `TTL` not expired.
@@ -171,6 +186,12 @@ impl ManifestCache {
         epoch: u64,
         ttl: Duration,
     ) -> Result<(Arc<Manifest>, String)> {
+        // Single-writer fast path: a TTL-fresh entry is authoritative.
+        if self.skip_revalidation
+            && let Some(cached) = self.get_cached(ttl)
+        {
+            return Ok(cached);
+        }
         if let Some((manifest, etag)) = self.get_cached(ttl) {
             let path = manifest_path(prefix);
             let opts = GetOptions {

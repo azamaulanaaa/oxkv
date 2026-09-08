@@ -97,6 +97,7 @@ impl OxKvStore {
             prefix: ObjectPath::default(),
             skip_probe: false,
             session: None,
+            assume_single_writer: false,
         }
     }
 
@@ -1625,6 +1626,7 @@ pub struct OxKvStoreBuilder {
     prefix: ObjectPath,
     skip_probe: bool,
     session: Option<String>,
+    assume_single_writer: bool,
 }
 
 impl std::fmt::Debug for OxKvStoreBuilder {
@@ -1632,6 +1634,7 @@ impl std::fmt::Debug for OxKvStoreBuilder {
         f.debug_struct("OxKvStoreBuilder")
             .field("prefix", &self.prefix)
             .field("skip_probe", &self.skip_probe)
+            .field("assume_single_writer", &self.assume_single_writer)
             .field("has_store", &self.inner.is_some())
             .finish_non_exhaustive()
     }
@@ -1681,6 +1684,18 @@ impl OxKvStoreBuilder {
     #[must_use]
     pub fn is_skip_probe(&self) -> bool {
         self.skip_probe
+    }
+
+    /// Asserts no other writer touches the prefix: `TTL`-fresh manifests
+    /// return from cache without a revalidation poll (one roundtrip saved
+    /// per operation).
+    ///
+    /// Only enable when a single writer owns the prefix. Takeover is still
+    /// detected via ownership checks and manifest CAS conflicts.
+    #[must_use]
+    pub fn assume_single_writer(mut self, assume: bool) -> Self {
+        self.assume_single_writer = assume;
+        self
     }
 
     /// Builds the store with the default SST cache (256 MB weighted LRU),
@@ -1742,6 +1757,10 @@ impl OxKvStoreBuilder {
         });
         let rec = acquire_ownership(Arc::clone(&store), &self.prefix, &session).await?;
 
+        let mut manifest_cache = ManifestCache::new();
+        manifest_cache.set_skip_revalidation(self.assume_single_writer);
+        let manifest_cache = Arc::new(async_lock::Mutex::new(manifest_cache));
+
         let s3store = OxKvStore {
             inner: Arc::clone(&store),
             prefix: self.prefix.clone(),
@@ -1751,7 +1770,7 @@ impl OxKvStoreBuilder {
             wal_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             wal_buffer: Arc::new(async_lock::Mutex::new(Vec::new())),
             sst_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            manifest_cache: Arc::new(async_lock::Mutex::new(ManifestCache::new())),
+            manifest_cache,
             readers: Arc::new(async_lock::Mutex::new(std::collections::BTreeMap::new())),
             sst_cache: cache,
         };
@@ -2305,6 +2324,88 @@ mod tests {
             s3.get_bytes("tk").await.unwrap().as_deref(),
             Some(b"tv".as_slice())
         );
+    }
+
+    /// Counts `get_opts` calls (manifest polls) while delegating everything.
+    #[derive(Clone)]
+    struct CountingStore {
+        inner: MemStorage,
+        get_opts_calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl Storage for CountingStore {
+        async fn get(&self, path: &ObjectPath) -> Result<GetOutput> {
+            self.inner.get(path).await
+        }
+
+        async fn get_opts(&self, path: &ObjectPath, options: GetOptions) -> Result<GetOutput> {
+            self.get_opts_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.get_opts(path, options).await
+        }
+
+        async fn put_opts(
+            &self,
+            path: &ObjectPath,
+            payload: Vec<u8>,
+            mode: PutMode,
+        ) -> Result<PutOutcome> {
+            self.inner.put_opts(path, payload, mode).await
+        }
+
+        async fn delete(&self, path: &ObjectPath) -> Result<()> {
+            self.inner.delete(path).await
+        }
+    }
+
+    async fn poll_count_fixture(
+        single_writer: bool,
+    ) -> (OxKvStore, Arc<std::sync::atomic::AtomicUsize>) {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counting = CountingStore {
+            inner: MemStorage::new(),
+            get_opts_calls: Arc::clone(&calls),
+        };
+        let mut builder = OxKvStore::builder()
+            .with_store(Arc::new(counting))
+            .with_prefix(ObjectPath::from(format!("oxkv-poll-{single_writer}")))
+            .with_session(format!("sess-poll-{single_writer}"))
+            .skip_probe(true);
+        if single_writer {
+            builder = builder.assume_single_writer(true);
+        }
+        let mut s3 = builder.build().await.unwrap();
+        s3.put_bytes("k1", b"v1").await.unwrap();
+        assert_eq!(
+            s3.get_bytes("k1").await.unwrap().as_deref(),
+            Some(b"v1".as_slice())
+        );
+        (s3, calls)
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn single_writer_skips_manifest_polls() {
+        let (s3, calls) = poll_count_fixture(true).await;
+        let baseline = calls.load(std::sync::atomic::Ordering::SeqCst);
+        // Miss MemTable so every read reaches the manifest load.
+        for _ in 0..10 {
+            assert_eq!(s3.get_bytes("missing").await.unwrap(), None);
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), baseline);
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn default_mode_still_polls_manifest() {
+        let (s3, calls) = poll_count_fixture(false).await;
+        let baseline = calls.load(std::sync::atomic::Ordering::SeqCst);
+        // Miss MemTable so every read reaches the manifest load.
+        for _ in 0..10 {
+            assert_eq!(s3.get_bytes("missing").await.unwrap(), None);
+        }
+        assert!(calls.load(std::sync::atomic::Ordering::SeqCst) > baseline);
     }
 
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
