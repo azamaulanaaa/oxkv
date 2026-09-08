@@ -9,9 +9,9 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 - **Cursor-based pagination** — bidirectional traversal (`Next` / `Prev`) with inclusive range cursors and limit control
 - **Lucene-style query engine** — filter stored JSON documents with a query language supporting field paths, ranges, wildcards, regex, fuzzy matching, and boolean operators
 - **JSON serialization** — extension methods for inserting and retrieving `serde_json::Value` types via JSON, stored as raw bytes
-- **WASM bindings** — thread-safe wrappers in `src/wasm.rs` expose `BTreeStore` and `OxKvStore` to JavaScript as async promises (`otel` native-only, OXKV snapshot portable across all)
+- **WASM bindings** — thread-safe wrappers in `src/wasm/` expose `BTreeStore` and `OxKvStore` to JavaScript as async promises (`otel` native-only, OXKV snapshot portable across all)
 - **Extensible backends** — the crate defines three traits (`GetSet`, `Transaction`, `Store`) that any backend can implement; ships with an in-memory B-tree backend (`btree`, test and bench baseline + WASM baseline) and an LSM backend (`oxkv`, native + wasm) generic over `Storage` + `Cache` (S3/GCS/Azure via `oxkv-s3`)
-- **LSM backend** — portable LSM over pluggable `Storage` (in-memory `MemStorage` everywhere including browsers; S3/GCS/Azure/local via [`object_store`](https://docs.rs/object_store) with `oxkv-s3`, OPFS later): epoch-fenced single writer, WAL with RPO=0, `MemTable` + SST (L0/L1) with Bloom + CRC, blob overflow for large values, `LruCache` SST cache (trait, `moka` optional), WAL replay, GC and L0→L1 compaction
+- **LSM backend** — portable LSM over pluggable `Storage` (in-memory `MemStorage` everywhere including browsers; S3/GCS/Azure/local via [`object_store`](https://docs.rs/object_store) with `oxkv-s3`, OPFS origin-private storage in browsers): epoch-fenced single writer, WAL with RPO=0, `MemTable` + SST (L0/L1) with Bloom + CRC, blob overflow for large values, `LruCache` SST cache (trait, `moka` optional), WAL replay, GC and L0→L1 compaction
 - **Validation hooks** — reject invalid writes before they reach storage, scoped to a single key, a key prefix, or the whole store
 - **Reactivity** — watch keys or prefixes and observe every committed change via channels or observer traits; rolled-back transactions never notify
 - **Save/Load** — serialize the entire store contents into a single contiguous `Uint8Array` and reconstruct it from binary data
@@ -23,11 +23,11 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 
 | Trait | Purpose |
 | ------- | --------- |
-| [`store::GetSet`] | Basic key-value operations: `get_bytes`, `set_bytes`, `delete`, `has` (paginated via `gets_bytes`) |
+| [`store::GetSet`] | Basic key-value operations: `get_bytes`, `set_bytes`, `put_bytes` (blind write, no previous-value read), `delete`, `has` (paginated via `gets_bytes`) |
 | [`store::Transaction`] | Extends `GetSet` with `commit` and `rollback` for atomic batches |
 | [`store::Store`] | Extends `GetSet` with `begin_tx` — starts a write transaction |
 | [`store::GetSetExt`] | Convenience methods: `set`, `get` (JSON-serialized) and `gets` (paginated JSON retrieval with optional query filtering) |
-| [`store::StoreExt`] | Save/Load the entire store contents as binary; `save_stream` streams it as byte chunks |
+| [`store::StoreExt`] | Save/Load the entire store contents as binary; `save_stream`/`load_stream` stream it as byte chunks |
 | [`store::Validator`] | Validates writes before they are stored (attach per key, prefix, or globally) |
 | [`store::Observer`] | Receives change notifications after they become durable |
 | [`store::HookStore`] | Decorator adding validators and change watching to any store |
@@ -334,7 +334,7 @@ use oxkv::{GetSet, MemStorage, ObjectPath, OxKvStore, Storage, Store, Transactio
 
 let store: Arc<dyn Storage> = Arc::new(MemStorage::new());
 // In prod replace MemStorage with an object_store backend (feature `oxkv-s3`):
-// `OxKvStore::builder().with_object_store(s3).with_prefix(...)`
+// `OxKvStore::builder().with_store(s3).with_prefix(...)`
 let mut kv = OxKvStore::builder()
     .with_store(store)
     .with_prefix(ObjectPath::from("my-app/oxkv"))
@@ -356,10 +356,10 @@ What it does under the hood:
 
 - **Probe** — on `build()` validates `If-None-Match` / `If-Match` conditional writes (`PutMode::Create` / `Update`) at `{prefix}/probe/canary`; use `.skip_probe(true)` only for stores known to be broken (e.g. B2).
 - **Single-writer fencing** — `ownership.json` CAS at `{prefix}/ownership.json` bumps a monotonic `epoch`; every WAL/SST `PUT` is gated and returns `StoreError::Fenced` if superseded.
-- **WAL (RPO=0)** — each `set_bytes`/`delete`/transaction `commit` encodes `[u32 key len][key][u32 value len][value]` (tombstone = `u32::MAX`) and `PUT`s to `e{epoch:06}/wal/{seq:08}.log` with `If-None-Match`, then CAS-appends the id to `manifest.json`. `MemTable` mutates only after WAL durable; replayed on `build()`.
+- **WAL (RPO=0)** — each `set_bytes`/`delete`/transaction `commit` encodes `[u32 key len][key][u32 value len][value]` (tombstone = `u32::MAX`) and `PUT`s to `e{epoch:06}/wal/{seq:08}.log` with `If-None-Match`, then CAS-appends the id to `manifest.json`. `MemTable` mutates only after WAL durable; replayed on `build()`. Past ~1,000 WAL ids writes force-flush + GC, so the manifest list stays flat (store and tx paths alike).
 - **`MemTable` → SST** — buffered writes flush to `e{epoch}/sst/L0/{seq}.sst` when >32 MiB (or forced). Large values overflow to `e{epoch}/blob/{sha256}` and the SST stores a pointer `(blob path, len, crc32)` instead. Reads resolve the pointer with length + CRC verification.
-- **Manifest** — `manifest.json` tracks `{epoch, version, wal: [ids], sst: [{id, level, min_key, max_key, size}]}` and is updated via `If-Match` `ETag` CAS with jittered backoff. An in-memory `ManifestCache` (1 s TTL) and `LruCache` SST cache (256 MiB, weigher by file size, `moka` optional) avoid hot-path GETs. Every SST `GET` verifies `verify_file_crc()`.
-- **GC & compaction** — `gc_wal()` deletes WAL covered by an SST once no reader pins that version (`register_reader`/`unregister_reader` watermark; with no pins all covered WAL is eligible). `compact()` merges L0→L1 when `L0 files ≥4` or `>128 MiB`, building a new `L1/{seq}.sst` with `BTreeMap` newest-wins dedup, CAS-swapping the manifest, then deleting old objects and invalidating the cache. Both are idempotent via `If-None-Match` + manifest dedup.
+- **Manifest** — `manifest.json` tracks `{epoch, version, wal: [ids], sst: [{id, level, min_key, max_key, size}]}` and is updated via `If-Match` `ETag` CAS with jittered backoff. An in-memory `ManifestCache` (1 s TTL) and `LruCache` SST cache (256 MiB, weigher by file size, `moka` optional) avoid hot-path GETs. Every SST `GET` verifies `verify_file_crc()`. `.assume_single_writer(true)` skips revalidation polls on fresh cache entries (single-writer prefixes only).
+- **GC & compaction** — `gc_wal()` deletes WAL covered by an SST once no reader pins that version (`register_reader`/`unregister_reader` watermark; with no pins all covered WAL is eligible). `compact()` merges L0→L1 when `L0 files ≥4` or `>128 MiB`, building a new `L1/{seq}.sst` with `BTreeMap` newest-wins dedup, CAS-swapping the manifest, then deleting old objects and invalidating the cache. Past 16 L1 files the smallest adjacent pair folds into the merge, bounding the SST list. Both are idempotent via `If-None-Match` + manifest dedup.
 - **Read path** — `get_bytes` checks `MemTable` then SSTs newest-first within `[min_key, max_key]`; `gets_bytes` heap-merges `MemTable` + SSTs with tombstone suppression. Both deref blob pointers.
 
 ### SST cache
@@ -395,7 +395,7 @@ oxkv = { version = "0.4", features = ["oxkv"] }           # portable LSM core
 
 ## WASM Bindings
 
-The WASM module in `src/wasm.rs` provides thread-safe wrappers for `BTreeStore` and `OxKvStore` (in-memory LSM), exposing every store method to JavaScript as async promises. Snapshots are byte-identical across backends, so bytes saved anywhere restore anywhere.
+The WASM module in `src/wasm/` provides thread-safe wrappers for `BTreeStore` and `OxKvStore` (in-memory LSM), exposing every store method to JavaScript as async promises. Snapshots are byte-identical across backends, so bytes saved anywhere restore anywhere.
 
 ### Persistent browser storage (OPFS)
 
@@ -542,7 +542,7 @@ previous run and flags regressions/improvements automatically.
 
 | Group | Scale | Measures |
 | --------- | ------- | ----------- |
-| `seq_insert/{backend}/{n}` | 1K, 100K | building a store from scratch — every key inserted sequentially |
+| `seq_insert/{backend}/{n}` | 1K, 100K | building a store from scratch — every key inserted sequentially (`oxkv` via blind `put_bytes` writes) |
 | `seq_delete/{backend}/{n}` | 1K, 100K (cap 100K) | deleting every key from a freshly built store (cap keeps per-iteration rebuilds sane) |
 | `random_get/{backend}/{n}` | 1K, 100K, 1M | scattered reads (prime-stride order); at 1M each iteration samples 10K gets out of a 1M-key store so depth is preserved without 1M GETs per iteration |
 | `page_fetch_100/{backend}/{n}` | 1K, 1M | one paginated range fetch of 100 entries from rotating start cursors |
@@ -557,7 +557,7 @@ count only the operation under test.
 
 ### Runtime notes
 
-- 1K groups complete in ~tens of seconds; 100K full-scan groups use 15 samples with 2 s warmup / 10 s measurement; 1M sampled groups use 10 samples with the same short window — the full suite stays in minutes.
+- 1K groups complete in ~tens of seconds; 100K full-scan groups use 10 samples with 2 s warmup / 5 s measurement; 1M sampled groups use 10 samples with 2 s warmup / 10 s measurement — the full suite stays in minutes.
 - Throughput is reported as `Elements` = ops per iteration (so `random_get/oxkv_mem/1000000` reports 10K, not 1M).
 
   ```bash
@@ -572,7 +572,7 @@ wasm-pack build --target web   # or nodejs, bundler, etc.
 
 ## Architecture
 
-- `src/wasm.rs` — manual wasm-bindgen wrappers for `BTreeStore` + `OxKvStore` (thread-safe JS-facing types; OXKV snapshot portable across all backends)
+- `src/wasm/` — manual wasm-bindgen wrappers (`mod` + `btree` + `oxkv`) for `BTreeStore` + `OxKvStore` (thread-safe JS-facing types; OXKV snapshot portable across all backends)
 - `src/store/mod.rs` — core traits (`GetSet`, `Transaction`, `Store`, `GetSetExt`, `StoreExt`) and error types (`StoreError::Fenced`, `StoreError::NotModified`)
 - `src/store/btree.rs` — in-memory B-tree backend (`btree`, test/bench + WASM baseline)
 - `src/store/lsm/mod.rs` — LSM backend generic over `Storage`+`Cache` (`oxkv`, native + wasm): `OxKvStore`/`OxKvStoreBuilder`/`OxKvTx`, WAL + `MemTable` + SST + manifest + GC/compaction
@@ -581,7 +581,7 @@ wasm-pack build --target web   # or nodejs, bundler, etc.
 - `src/store/lsm/manifest.rs` — `manifest.json` with `ETag` CAS and `ManifestCache`
 - `src/store/lsm/ownership.rs` — `ownership.json` epoch fencing
 - `src/store/lsm/probe.rs` — conditional-write probe (`If-None-Match` / `If-Match`)
-- `src/store/storage.rs` — `Storage` trait + `MemStorage` (in-memory, every target) + `object_store` impl (S3/memory/local, native `oxkv-s3`; OPFS future)
+- `src/store/storage.rs` — `Storage` trait + `MemStorage` (in-memory, every target) + `object_store` impl (S3/memory/local, native `oxkv-s3`) + `OpfsStorage` (browser origin-private storage, wasm)
 - `src/store/cache.rs` — `Cache` trait + `LruCache` (weight-aware, `moka` optional)
 - `src/store/hooks.rs` — `HookStore` decorator providing validation hooks and change notifications
 - `src/store/otel.rs` — `OtelStore` decorator emitting OpenTelemetry spans and metrics (feature `otel`)
