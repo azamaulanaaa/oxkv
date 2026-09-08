@@ -556,7 +556,7 @@ mod tests {
     use opentelemetry_sdk::trace::{SdkTracerProvider, SpanData, SpanExporter};
 
     use super::*;
-    use crate::store::{BTreeStore, StoreError};
+    use crate::store::{BTreeStore, StoreError, lock_ignore_poison};
 
     /// In-memory span sink implementing the SDK exporter trait; spans land in
     /// it synchronously because we register it behind a simple processor.
@@ -645,9 +645,7 @@ mod tests {
     /// intra-module parallelism is irrelevant.
     fn telemetry_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        lock_ignore_poison(LOCK.get_or_init(|| Mutex::new(())))
     }
 
     fn attr<'a>(attrs: impl IntoIterator<Item = &'a OtelKv>, key: &str) -> Option<String> {
@@ -673,7 +671,7 @@ mod tests {
     async fn test_crud_round_trip_matches_inner_semantics() {
         let _guard = telemetry_lock();
         fixture();
-        let mut s = store();
+        let s = store();
 
         // Insert returns None, update returns previous.
         assert_eq!(s.set_bytes("k", b"v1").await.unwrap(), None);
@@ -691,7 +689,7 @@ mod tests {
     async fn test_gets_bytes_paginates_like_inner_store() {
         let _guard = telemetry_lock();
         fixture();
-        let mut s = store();
+        let s = store();
         for i in 0..5 {
             s.set_bytes(&format!("key{i}"), b"v").await.unwrap();
         }
@@ -715,9 +713,9 @@ mod tests {
     async fn test_transaction_commit_makes_writes_visible() {
         let _guard = telemetry_lock();
         fixture();
-        let mut s = store();
+        let s = store();
 
-        let mut tx = s.begin_tx().unwrap();
+        let tx = s.begin_tx().unwrap();
         tx.set_bytes("committed", b"yes").await.unwrap();
         // Not visible until commit.
         assert_eq!(s.get_bytes("committed").await.unwrap(), None);
@@ -733,9 +731,9 @@ mod tests {
     async fn test_transaction_rollback_discards_writes() {
         let _guard = telemetry_lock();
         fixture();
-        let mut s = store();
+        let s = store();
 
-        let mut tx = s.begin_tx().unwrap();
+        let tx = s.begin_tx().unwrap();
         tx.set_bytes("rolled-back", b"nope").await.unwrap();
         tx.rollback().await.unwrap();
 
@@ -799,7 +797,7 @@ mod tests {
         const KEY: &str = "otel-emission-success";
         let _guard = telemetry_lock();
         fixture();
-        let mut s = store();
+        let s = store();
 
         s.set_bytes(KEY, b"v").await.unwrap();
         s.get_bytes(KEY).await.unwrap();
@@ -817,7 +815,7 @@ mod tests {
         // everything appended after `before` must contain our begin_tx/commit
         // pair, linked by parent span id.
         let before = exported_len();
-        let mut tx = s.begin_tx().unwrap();
+        let tx = s.begin_tx().unwrap();
         tx.set_bytes(KEY, b"v2").await.unwrap();
         tx.commit().await.unwrap();
         let tx_spans: Vec<String> = exported_since(before).iter().map(name_of).collect();
@@ -845,7 +843,7 @@ mod tests {
         const KEY: &str = "otel-emission-failure";
         let _guard = telemetry_lock();
         fixture();
-        let mut s = OtelStore::new(FailingWrites::new());
+        let s = OtelStore::new(FailingWrites::new());
 
         assert!(s.set_bytes(KEY, b"v").await.is_err());
 
@@ -867,7 +865,7 @@ mod tests {
         const KEY: &str = "otel-metrics-check";
         let _guard = telemetry_lock();
         fixture();
-        let mut s = store();
+        let s = store();
 
         s.set_bytes(KEY, b"v").await.unwrap();
         s.get_bytes(KEY).await.unwrap();
@@ -924,7 +922,7 @@ mod tests {
         // `gets` spans carry no key, so isolate via a start-of-test snapshot:
         // under the telemetry lock, everything appended below is ours.
         let before = exported_len();
-        let mut s = store();
+        let s = store();
         for i in 0..3 {
             s.set_bytes(&format!("count{i}"), b"v").await.unwrap();
         }

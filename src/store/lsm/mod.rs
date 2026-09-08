@@ -11,7 +11,9 @@ use crate::store::storage::{ObjectPath, PutMode, Storage};
 #[cfg(test)]
 use crate::store::storage::MemStorage;
 
-use crate::store::{Direction, GetSet, KeyValue, Result, Store, StoreError, Transaction};
+use crate::store::{
+    Direction, GetSet, KeyValue, Result, Store, StoreError, Transaction, lock_ignore_poison,
+};
 
 mod blob;
 mod manifest;
@@ -1376,12 +1378,7 @@ where
     C: Cache<String, Arc<SstFile>>,
 {
     async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        let staged = self
-            .overlay
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(key)
-            .cloned();
+        let staged = lock_ignore_poison(&self.overlay).get(key).cloned();
         if let Some(v) = staged {
             return match v {
                 Some(raw) => Ok(Some(self.resolve_value(raw).await?)),
@@ -1431,28 +1428,19 @@ where
     async fn delete(&self, key: &str) -> Result<bool> {
         let existed = self.get_bytes(key).await?.is_some();
         if existed {
-            self.overlay
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(key.to_string(), None);
+            lock_ignore_poison(&self.overlay).insert(key.to_string(), None);
         }
         Ok(existed)
     }
 
     async fn set_bytes(&self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
         let prev = self.get_bytes(key).await?;
-        self.overlay
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(key.to_string(), Some(value.to_vec()));
+        lock_ignore_poison(&self.overlay).insert(key.to_string(), Some(value.to_vec()));
         Ok(prev)
     }
 
     async fn put_bytes(&self, key: &str, value: &[u8]) -> Result<()> {
-        self.overlay
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(key.to_string(), Some(value.to_vec()));
+        lock_ignore_poison(&self.overlay).insert(key.to_string(), Some(value.to_vec()));
         Ok(())
     }
 
@@ -1474,10 +1462,7 @@ where
         // when only a page is needed.
         // Scoped so the guard is dropped before the awaits below (`std` guards are not `Send`).
         let overlay_vec: Vec<(String, Option<Vec<u8>>)> = {
-            let overlay_guard = self
-                .overlay
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let overlay_guard = lock_ignore_poison(&self.overlay);
             if scan_start.is_none() && scan_end.is_none() {
                 overlay_guard
                     .iter()
@@ -1583,12 +1568,7 @@ where
         let _gate = self.write_gate.lock().await;
         // Drain under the lock: `commit` consumes the transaction, so taking
         // ownership up front is equivalent and keeps no guard across awaits.
-        let overlay = std::mem::take(
-            &mut *self
-                .overlay
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
+        let overlay = std::mem::take(&mut *lock_ignore_poison(&self.overlay));
         if overlay.is_empty() {
             return Ok(());
         }

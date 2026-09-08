@@ -100,7 +100,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use futures::channel::mpsc;
 
-use super::{Direction, GetSet, KeyValue, Result, Store, Transaction};
+use super::{Direction, GetSet, KeyValue, Result, Store, Transaction, lock_ignore_poison};
 
 /// Selects which keys a validator or observer applies to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -262,9 +262,7 @@ impl Subscribers {
 /// arbitrarily long relative to each other.
 async fn notify(subscribers: &Mutex<Subscribers>, view: &dyn StoreView, event: ChangeEvent) {
     let observers = {
-        let mut subs = subscribers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut subs = lock_ignore_poison(subscribers);
 
         let mut i = 0;
         while i < subs.senders.len() {
@@ -394,9 +392,7 @@ impl<S> HookStore<S> {
         O: Observer + 'static,
     {
         let scope = observer.scope();
-        self.subscribers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        lock_ignore_poison(&self.subscribers)
             .observers
             .push((scope, Arc::new(observer)));
     }
@@ -427,10 +423,7 @@ impl<S> HookStore<S> {
     }
 
     fn watch_scope(&self, scope: Scope) -> mpsc::Receiver<ChangeEvent> {
-        self.subscribers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push_sender(scope)
+        lock_ignore_poison(&self.subscribers).push_sender(scope)
     }
 }
 
@@ -534,10 +527,7 @@ impl<T, V> HookTx<T, V> {
     fn stage(&self, mut event: ChangeEvent) {
         // Single guard for the whole check-and-insert: re-locking `staged`
         // inside the match would deadlock against the scrutinee's guard.
-        let mut staged = self
-            .staged
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut staged = lock_ignore_poison(&self.staged);
         match staged.iter_mut().find(|e| e.key == event.key) {
             Some(existing) => {
                 event.old_value = existing.old_value.take();
@@ -606,11 +596,7 @@ impl<T: Transaction + Send + Sync, V: StoreView> Transaction for HookTx<T, V> {
         //
         // Snapshot under the lock: the guard must not be held across the
         // awaits below (`std` guards are not `Send`).
-        let staged = self
-            .staged
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+        let staged = lock_ignore_poison(&self.staged).clone();
         for event in &staged {
             if let (ChangeKind::Set, Some(value)) = (event.kind, event.new_value.as_deref()) {
                 let view = RevalidateView {
@@ -680,10 +666,7 @@ mod tests {
         }
 
         async fn on_change(&self, _ctx: &dyn StoreView, event: &ChangeEvent) {
-            self.0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(event.clone());
+            lock_ignore_poison(&self.0).push(event.clone());
         }
     }
 

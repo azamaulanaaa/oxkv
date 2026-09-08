@@ -157,6 +157,19 @@ impl From<&str> for StoreError {
     }
 }
 
+/// Locks a `std` mutex, continuing through poisoning.
+///
+/// Policy: a poisoned lock means a previous holder panicked mid-mutation.
+/// The mutexes below guard reconstructible or best-effort state (caches,
+/// staged overlays, subscriber lists), so availability wins over fail-fast:
+/// take the guard and continue rather than failing every subsequent
+/// operation. Durable state never relies on this — it goes through CAS.
+pub(crate) fn lock_ignore_poison<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 impl From<std::string::String> for StoreError {
     fn from(msg: String) -> Self {
         StoreError::Other(msg)
