@@ -238,7 +238,7 @@ pub(crate) fn build_sst_from_values(
 
 /// Parsed SST file (zero-copy view over bytes).
 #[derive(Debug)]
-pub(crate) struct SstFile {
+pub struct SstFile {
     /// Raw file bytes.
     data: Vec<u8>,
     /// Footer.
@@ -297,7 +297,8 @@ impl SstFile {
 
     /// Weighted cache size in bytes (for `moka` weigher).
     #[must_use]
-    pub(crate) fn size(&self) -> usize {
+    /// File size in bytes, used as the cache weight.
+    pub fn size(&self) -> usize {
         self.data.len()
     }
 

@@ -32,7 +32,7 @@ where
 
 #[cfg(all(feature = "moka", not(target_arch = "wasm32")))]
 mod moka_impl {
-    use super::*;
+    use super::{Cache, Hash};
     use moka::future::Cache as MokaCache;
 
     #[async_trait::async_trait]

@@ -42,7 +42,7 @@ mod storage;
 #[cfg(feature = "oxkv")]
 pub use cache::{Cache, LruCache};
 #[cfg(feature = "oxkv")]
-pub use lsm::{OxKvStore, OxKvStoreBuilder, OxKvTx};
+pub use lsm::{OxKvStore, OxKvStoreBuilder, OxKvTx, SstFile};
 #[cfg(all(feature = "oxkv", target_arch = "wasm32"))]
 pub use storage::OpfsStorage;
 #[cfg(feature = "oxkv")]

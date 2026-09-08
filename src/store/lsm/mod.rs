@@ -25,7 +25,9 @@ pub(crate) use blob::{
 pub(crate) use manifest::{Manifest, ManifestCache, SstMeta, cas_manifest};
 pub(crate) use ownership::{acquire_ownership, cas_backoff, read_ownership, sst_path, wal_path};
 pub(crate) use probe::probe_store;
-pub(crate) use sst::{DEFAULT_BLOCK_SIZE, SstFile, TOMBSTONE_VLEN, build_sst};
+/// Parsed SST file; name it to weigh a custom [`Cache`] (see [`SstFile::size`]).
+pub use sst::SstFile;
+pub(crate) use sst::{DEFAULT_BLOCK_SIZE, TOMBSTONE_VLEN, build_sst};
 
 // Path helpers referenced only by unit tests in this module.
 #[cfg(test)]
@@ -47,8 +49,8 @@ type WalBuffer = Arc<async_lock::Mutex<Vec<(String, Option<Vec<u8>>)>>>;
 /// fencing safety comes from the monotonic epoch, not session uniqueness.
 static SESSION_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// S3-backed store (incremental — probe + fencing + WAL gate + SST).
-pub struct OxKvStore {
+/// Storage-backed LSM store (probe + fencing + WAL gate + SST).
+pub struct OxKvStore<C = LruCache<String, Arc<SstFile>>> {
     inner: Arc<dyn Storage>,
     prefix: ObjectPath,
     epoch: u64,
@@ -62,10 +64,10 @@ pub struct OxKvStore {
     /// `BTreeMap<version, count>` — `min_key` is the watermark.
     readers: Arc<async_lock::Mutex<std::collections::BTreeMap<u64, usize>>>,
     /// SST file cache — weight-aware LRU (~256 MB with 32KB blocks).
-    sst_cache: LruCache<String, Arc<SstFile>>,
+    sst_cache: C,
 }
 
-impl std::fmt::Debug for OxKvStore {
+impl<C> std::fmt::Debug for OxKvStore<C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OxKvStore")
             .field("prefix", &self.prefix)
@@ -75,6 +77,8 @@ impl std::fmt::Debug for OxKvStore {
     }
 }
 
+/// Cache-independent entry points (`builder`, `probe`) live on the default
+/// `LruCache` instantiation so `OxKvStore::builder()` needs no turbofish.
 impl OxKvStore {
     /// Creates a new store builder.
     #[must_use]
@@ -99,7 +103,12 @@ impl OxKvStore {
     pub async fn probe(store: Arc<dyn Storage>, prefix: &ObjectPath) -> Result<()> {
         probe_store(store, prefix).await
     }
+}
 
+impl<C> OxKvStore<C>
+where
+    C: Cache<String, Arc<SstFile>>,
+{
     /// Returns the underlying object store (for tests).
     #[cfg(test)]
     #[must_use]
@@ -982,7 +991,7 @@ impl OxKvStore {
 /// `MemTable`/`WalBuffer` and `flush`es the WAL to S3 (RPO=0).
 /// `get`/`has`/`gets` see `overlay` first (read-your-writes) then the
 /// parent's `MemTable` + `SST`s via the same heap-merge.
-pub struct OxKvTx {
+pub struct OxKvTx<C = LruCache<String, Arc<SstFile>>> {
     inner: Arc<dyn Storage>,
     prefix: ObjectPath,
     epoch: u64,
@@ -990,11 +999,14 @@ pub struct OxKvTx {
     mem: MemTable,
     wal_seq: Arc<std::sync::atomic::AtomicU64>,
     manifest_cache: Arc<async_lock::Mutex<ManifestCache>>,
-    sst_cache: LruCache<String, Arc<SstFile>>,
+    sst_cache: C,
     overlay: std::collections::BTreeMap<String, Option<Vec<u8>>>,
 }
 
-impl OxKvTx {
+impl<C> OxKvTx<C>
+where
+    C: Cache<String, Arc<SstFile>>,
+{
     async fn resolve_value(&self, raw: Vec<u8>) -> Result<Vec<u8>> {
         if let Some(ptr) = try_decode_blob_pointer(&raw) {
             let blob_path = ObjectPath::from(ptr.blob.as_str());
@@ -1050,7 +1062,10 @@ impl OxKvTx {
 }
 
 #[async_trait]
-impl GetSet for OxKvStore {
+impl<C> GetSet for OxKvStore<C>
+where
+    C: Cache<String, Arc<SstFile>>,
+{
     async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
         OxKvStore::get_bytes(self, key).await
     }
@@ -1243,7 +1258,10 @@ impl GetSet for OxKvStore {
 }
 
 #[async_trait]
-impl GetSet for OxKvTx {
+impl<C> GetSet for OxKvTx<C>
+where
+    C: Cache<String, Arc<SstFile>>,
+{
     async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
         if let Some(v) = self.overlay.get(key) {
             return match v {
@@ -1416,7 +1434,10 @@ impl GetSet for OxKvTx {
 }
 
 #[async_trait]
-impl Transaction for OxKvTx {
+impl<C> Transaction for OxKvTx<C>
+where
+    C: Cache<String, Arc<SstFile>>,
+{
     async fn commit(self) -> Result<()> {
         if self.overlay.is_empty() {
             return Ok(());
@@ -1522,8 +1543,11 @@ impl Transaction for OxKvTx {
 }
 
 #[async_trait]
-impl Store for OxKvStore {
-    type Transaction = OxKvTx;
+impl<C> Store for OxKvStore<C>
+where
+    C: Cache<String, Arc<SstFile>>,
+{
+    type Transaction = OxKvTx<C>;
 
     fn begin_tx(&mut self) -> Result<Self::Transaction> {
         Ok(OxKvTx {
@@ -1605,15 +1629,51 @@ impl OxKvStoreBuilder {
         self.skip_probe
     }
 
-    /// Builds the store, running the probe unless skipped, then CAS-acquires
-    /// `ownership.json` epoch. The returned store is fenced to that epoch.
+    /// Builds the store with the default SST cache (256 MB weighted LRU),
+    /// running the probe unless skipped, then CAS-acquires `ownership.json`
+    /// epoch. The returned store is fenced to that epoch.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Storage` if the probe fails or `StoreError::Fenced`
+    /// if `ownership.json` CAS loses the race.
+    pub async fn build(self) -> Result<OxKvStore> {
+        self.build_with_cache(LruCache::new(
+            256 * 1024 * 1024,
+            |_: &String, v: &Arc<SstFile>| u32::try_from(v.size()).unwrap_or(u32::MAX),
+        ))
+        .await
+    }
+
+    /// Builds the store with a caller-supplied SST cache, running the probe
+    /// unless skipped, then CAS-acquires `ownership.json` epoch.
+    ///
+    /// Pass the default [`LruCache`] (see [`Self::build`]), a
+    /// `moka::future::Cache` (native-only, `moka` feature), or any custom
+    /// [`Cache`] implementation.
+    ///
+    /// ```rust,ignore
+    /// let cache = moka::future::Cache::builder()
+    ///     .max_capacity(256 * 1024 * 1024)
+    ///     .weigher(|_: &String, v: &Arc<SstFile>| {
+    ///         u32::try_from(v.size()).unwrap_or(u32::MAX)
+    ///     })
+    ///     .build();
+    /// let store = OxKvStoreBuilder::new()
+    ///     .with_store(Arc::new(MemStorage::new()))
+    ///     .build_with_cache(cache)
+    ///     .await?;
+    /// ```
     ///
     /// # Errors
     ///
     /// Returns `StoreError::Storage` if the probe fails or `StoreError::Fenced`
     /// if `ownership.json` CAS loses the race.
     #[allow(clippy::too_many_lines)]
-    pub async fn build(self) -> Result<OxKvStore> {
+    pub async fn build_with_cache<C>(self, cache: C) -> Result<OxKvStore<C>>
+    where
+        C: Cache<String, Arc<SstFile>>,
+    {
         let store = self.inner.ok_or_else(|| {
             StoreError::Storage("OxKvStore requires a Storage via with_store()".to_string())
         })?;
@@ -1639,9 +1699,7 @@ impl OxKvStoreBuilder {
             sst_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             manifest_cache: Arc::new(async_lock::Mutex::new(ManifestCache::new())),
             readers: Arc::new(async_lock::Mutex::new(std::collections::BTreeMap::new())),
-            sst_cache: LruCache::new(256 * 1024 * 1024, |_: &String, v: &Arc<SstFile>| {
-                u32::try_from(v.size()).unwrap_or(u32::MAX)
-            }),
+            sst_cache: cache,
         };
         // WAL replay for restart/f fencing — make not-yet-SSTed WAL visible
         {
@@ -2087,6 +2145,45 @@ mod tests {
         assert_eq!(got, large);
         let got2 = s3.get_bytes("k1").await.unwrap().expect("k1");
         assert_eq!(got2, b"v1");
+    }
+
+    #[cfg(all(feature = "moka", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn build_with_cache_accepts_moka() {
+        let cache = moka::future::Cache::builder()
+            .max_capacity(64 * 1024 * 1024)
+            .weigher(|_: &String, v: &Arc<SstFile>| u32::try_from(v.size()).unwrap_or(u32::MAX))
+            .build();
+        let s3 = OxKvStore::builder()
+            .with_store(new_in_memory())
+            .with_prefix(ObjectPath::from("oxkv-moka"))
+            .with_session("sess-moka")
+            .build_with_cache(cache.clone())
+            .await
+            .unwrap();
+
+        s3.stage_set("k1", b"v1").await;
+        s3.flush_mem_to_sst_force()
+            .await
+            .expect("sst flush")
+            .expect("some sst");
+
+        // Point path is cache-through: miss inserts, hit serves.
+        let got = s3.get_bytes("k1").await.unwrap().expect("k1");
+        assert_eq!(got, b"v1");
+        cache.run_pending_tasks().await;
+        assert_eq!(cache.entry_count(), 1);
+        let got = s3.get_bytes("k1").await.unwrap().expect("k1 again");
+        assert_eq!(got, b"v1");
+
+        // Scan path bypasses the cache but stays correct.
+        let rows = s3
+            .gets_bytes(None, Direction::Next, (None, None))
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        cache.run_pending_tasks().await;
+        assert_eq!(cache.entry_count(), 1);
     }
 
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
