@@ -76,7 +76,7 @@ pub struct OxKvStore<C = LruCache<String, Arc<SstFile>>> {
     /// Pinned reader versions for WAL GC watermark.
     /// `BTreeMap<version, count>` — `min_key` is the watermark.
     readers: Arc<async_lock::Mutex<std::collections::BTreeMap<u64, usize>>>,
-    /// SST file cache — weight-aware LRU (~256 MB with 32KB blocks).
+    /// SST file cache — scan-resistant `S3-FIFO` (~256 MB with 32KB blocks).
     sst_cache: C,
 }
 
@@ -1769,7 +1769,8 @@ impl OxKvStoreBuilder {
         self
     }
 
-    /// Builds the store with the default SST cache (256 MB weighted LRU),
+    /// Builds the store with the default SST cache (256 MB scan-resistant
+    /// `S3-FIFO`, see [`LruCache`]),
     /// running the probe unless skipped, then CAS-acquires `ownership.json`
     /// epoch. The returned store is fenced to that epoch.
     ///
@@ -1788,7 +1789,7 @@ impl OxKvStoreBuilder {
     /// Builds the store with a caller-supplied SST cache, running the probe
     /// unless skipped, then CAS-acquires `ownership.json` epoch.
     ///
-    /// Pass the default [`LruCache`] (see [`Self::build`]), a
+    /// Pass the default [`LruCache`] (`S3-FIFO`, see [`Self::build`]), a
     /// `moka::future::Cache` (native-only, `moka` feature), or any custom
     /// [`Cache`] implementation.
     ///

@@ -11,7 +11,7 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 - **JSON serialization** — extension methods for inserting and retrieving `serde_json::Value` types via JSON, stored as raw bytes
 - **WASM bindings** — thread-safe wrappers in `src/wasm/` expose `BTreeStore` and `OxKvStore` to JavaScript as async promises (`otel` native-only, OXKV snapshot portable across all)
 - **Extensible backends** — the crate defines three traits (`GetSet`, `Transaction`, `Store`) that any backend can implement; ships with an in-memory B-tree backend (`btree`, test and bench baseline + WASM baseline) and an LSM backend (`oxkv`, native + wasm) generic over `Storage` + `Cache` (S3/GCS/Azure via `oxkv-s3`)
-- **LSM backend** — portable LSM over pluggable `Storage` (in-memory `MemStorage` everywhere including browsers; S3/GCS/Azure/local via [`object_store`](https://docs.rs/object_store) with `oxkv-s3`, OPFS origin-private storage in browsers): epoch-fenced single writer, WAL with RPO=0, `MemTable` + SST (L0/L1) with Bloom + CRC, blob overflow for large values, `LruCache` SST cache (trait, `moka` optional), WAL replay, GC and L0→L1 compaction
+- **LSM backend** — portable LSM over pluggable `Storage` (in-memory `MemStorage` everywhere including browsers; S3/GCS/Azure/local via [`object_store`](https://docs.rs/object_store) with `oxkv-s3`, OPFS origin-private storage in browsers): epoch-fenced single writer, WAL with RPO=0, `MemTable` + SST (L0/L1) with Bloom + CRC, blob overflow for large values, scan-resistant `S3-FIFO` SST cache (trait, `moka` optional), WAL replay, GC and L0→L1 compaction
 - **Validation hooks** — reject invalid writes before they reach storage, scoped to a single key, a key prefix, or the whole store
 - **Reactivity** — watch keys or prefixes and observe every committed change via channels or observer traits; rolled-back transactions never notify
 - **Save/Load** — serialize the entire store contents into a single contiguous `Uint8Array` and reconstruct it from binary data
@@ -358,15 +358,15 @@ What it does under the hood:
 - **Single-writer fencing** — `ownership.json` CAS at `{prefix}/ownership.json` bumps a monotonic `epoch`; every WAL/SST `PUT` is gated and returns `StoreError::Fenced` if superseded.
 - **WAL (RPO=0)** — each `set_bytes`/`delete`/transaction `commit` encodes `[u32 key len][key][u32 value len][value]` (tombstone = `u32::MAX`) and `PUT`s to `e{epoch:06}/wal/{seq:08}.log` with `If-None-Match`, then CAS-appends the id to `manifest.json`. `MemTable` mutates only after WAL durable; replayed on `build()`. Past ~1,000 WAL ids writes force-flush + GC, so the manifest list stays flat (store and tx paths alike).
 - **`MemTable` → SST** — buffered writes flush to `e{epoch}/sst/L0/{seq}.sst` when >32 MiB (or forced). Large values overflow to `e{epoch}/blob/{sha256}` and the SST stores a pointer `(blob path, len, crc32)` instead. Reads resolve the pointer with length + CRC verification.
-- **Manifest** — `manifest.json` tracks `{epoch, version, wal: [ids], sst: [{id, level, min_key, max_key, size}]}` and is updated via `If-Match` `ETag` CAS with jittered backoff. An in-memory `ManifestCache` (1 s TTL) and `LruCache` SST cache (256 MiB, weigher by file size, `moka` optional) avoid hot-path GETs. Every SST `GET` verifies `verify_file_crc()`. `.assume_single_writer(true)` skips revalidation polls on fresh cache entries (single-writer prefixes only).
+- **Manifest** — `manifest.json` tracks `{epoch, version, wal: [ids], sst: [{id, level, min_key, max_key, size}]}` and is updated via `If-Match` `ETag` CAS with jittered backoff. An in-memory `ManifestCache` (1 s TTL) and `S3-FIFO` SST cache (256 MiB, weigher by file size, `moka` optional) avoid hot-path GETs. Every SST `GET` verifies `verify_file_crc()`. `.assume_single_writer(true)` skips revalidation polls on fresh cache entries (single-writer prefixes only).
 - **GC & compaction** — `gc_wal()` deletes WAL covered by an SST once no reader pins that version (`register_reader`/`unregister_reader` watermark; with no pins all covered WAL is eligible). `compact()` merges L0→L1 when `L0 files ≥4` or `>128 MiB`, building a new `L1/{seq}.sst` with `BTreeMap` newest-wins dedup, CAS-swapping the manifest, then deleting old objects and invalidating the cache. Past 16 L1 files the smallest adjacent pair folds into the merge, bounding the SST list. Both are idempotent via `If-None-Match` + manifest dedup.
 - **Read path** — `get_bytes` checks `MemTable` then SSTs newest-first within `[min_key, max_key]`; `gets_bytes` heap-merges `MemTable` + SSTs with tombstone suppression. Both deref blob pointers.
 
 ### SST cache
 
-Point lookups go through a 256 MiB weight-aware `LruCache` (weighed by file size via `SstFile::size`), so hot SSTs are parsed once. Window scans (`gets`) deliberately bypass it: a wide range must never evict hot point-lookup entries, so scans re-read from `Storage` every time.
+Point lookups go through a 256 MiB scan-resistant `S3-FIFO` cache (`LruCache`, weighed by file size via `SstFile::size`), so hot SSTs are parsed once. Window scans (`gets`) deliberately bypass it: a wide range must never evict hot point-lookup entries, so scans re-read from `Storage` every time.
 
-The cache is generic over the `Cache` trait, so native builds can swap in `moka` (admission-filtered `TinyLFU` + segmented LRU — scan-resistant by design) or a custom implementation via `build_with_cache`:
+The cache is generic over the `Cache` trait, so native builds needing sharded concurrency can swap in `moka` (admission-filtered `TinyLFU` + segmented LRU) or a custom implementation via `build_with_cache`:
 
 ```rust,ignore
 use std::sync::Arc;
@@ -582,7 +582,7 @@ wasm-pack build --target web   # or nodejs, bundler, etc.
 - `src/store/lsm/ownership.rs` — `ownership.json` epoch fencing
 - `src/store/lsm/probe.rs` — conditional-write probe (`If-None-Match` / `If-Match`)
 - `src/store/storage.rs` — `Storage` trait + `MemStorage` (in-memory, every target) + `object_store` impl (S3/memory/local, native `oxkv-s3`) + `OpfsStorage` (browser origin-private storage, wasm)
-- `src/store/cache.rs` — `Cache` trait + `LruCache` (weight-aware, `moka` optional)
+- `src/store/cache.rs` — `Cache` trait + `LruCache`/`S3FifoCache` (scan-resistant `S3-FIFO`, `moka` optional)
 - `src/store/hooks.rs` — `HookStore` decorator providing validation hooks and change notifications
 - `src/store/otel.rs` — `OtelStore` decorator emitting OpenTelemetry spans and metrics (feature `otel`)
 - `src/query/mod.rs` — query AST types and the pest-based parser (`query/query.pest` grammar)
