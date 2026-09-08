@@ -90,7 +90,7 @@ fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .expect("tokio multi-threaded runtime")
+        .expect("tokio current-thread runtime")
 }
 
 async fn populate<S: GetSet>(store: &mut S, keys: &[String]) {
