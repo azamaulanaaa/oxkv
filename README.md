@@ -362,6 +362,27 @@ What it does under the hood:
 - **GC & compaction** — `gc_wal()` deletes WAL covered by an SST once no reader pins that version (`register_reader`/`unregister_reader` watermark; with no pins all covered WAL is eligible). `compact()` merges L0→L1 when `L0 files ≥4` or `>128 MiB`, building a new `L1/{seq}.sst` with `BTreeMap` newest-wins dedup, CAS-swapping the manifest, then deleting old objects and invalidating the cache. Both are idempotent via `If-None-Match` + manifest dedup.
 - **Read path** — `get_bytes` checks `MemTable` then SSTs newest-first within `[min_key, max_key]`; `gets_bytes` heap-merges `MemTable` + SSTs with tombstone suppression. Both deref blob pointers.
 
+### SST cache
+
+Point lookups go through a 256 MiB weight-aware `LruCache` (weighed by file size via `SstFile::size`), so hot SSTs are parsed once. Window scans (`gets`) deliberately bypass it: a wide range must never evict hot point-lookup entries, so scans re-read from `Storage` every time.
+
+The cache is generic over the `Cache` trait, so native builds can swap in `moka` (admission-filtered `TinyLFU` + segmented LRU — scan-resistant by design) or a custom implementation via `build_with_cache`:
+
+```rust,ignore
+use std::sync::Arc;
+use oxkv::{MemStorage, OxKvStore, SstFile};
+
+// Requires oxkv with the `moka` feature (native-only).
+let cache = moka::future::Cache::builder()
+    .max_capacity(256 * 1024 * 1024)
+    .weigher(|_: &String, v: &Arc<SstFile>| u32::try_from(v.size()).unwrap_or(u32::MAX))
+    .build();
+let kv = OxKvStore::builder()
+    .with_store(Arc::new(MemStorage::new()))
+    .build_with_cache(cache)
+    .await?;
+```
+
 Enable it:
 
 ```toml
