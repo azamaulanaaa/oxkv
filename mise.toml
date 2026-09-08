@@ -7,7 +7,6 @@ zig = "latest"
 node = "latest"
 
 [tasks]
-cov = { run = "cargo-zigbuild llvm-cov --all-targets --all-features" }
-test = { run = "cargo-zigbuild test --all-targets --all-features" }
-wasm = { run = "rm -rf pkg && wasm-pack build --target web --release --out-dir pkg" }
-publish-npm = { run = "npm publish ./pkg", depends = ["wasm"] }
+cov = { run = "cargo-zigbuild llvm-cov" }
+test = { run = "cargo-zigbuild test" }
+bench = { run = "cargo-zigbuild bench" }
