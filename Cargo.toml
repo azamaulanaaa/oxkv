@@ -86,7 +86,7 @@ console_error_panic_hook = "0.1"
 js-sys = "0.3"
 serde-wasm-bindgen = "0.6"
 wasm-streams = "0.6"
-web-sys = { version = "0.3", features = ["ReadableStream"] }
+web-sys = { version = "0.3", features = ["ReadableStream", "Window", "Navigator", "StorageManager", "File", "Blob", "DomException", "FileSystemDirectoryHandle", "FileSystemFileHandle", "FileSystemWritableFileStream", "WritableStream", "FileSystemGetDirectoryOptions", "FileSystemGetFileOptions", "FileSystemRemoveOptions"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"

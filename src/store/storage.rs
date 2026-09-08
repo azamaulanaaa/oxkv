@@ -554,3 +554,284 @@ mod tests {
         assert!(err.to_string().contains("not found"), "{err}");
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+use sha2::{Digest, Sha256};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast as _;
+
+/// Origin-private-file-system [`Storage`] for browsers (`wasm32` only).
+///
+/// Persists objects as real OPFS files under one `oxkv` root directory, so
+/// contents survive page reloads. Main-thread only: async file handles work
+/// on the main thread, while sync access handles are worker-only.
+///
+/// Cross-tab races resolve last-writer-wins — OPFS offers no
+/// conditional-write primitive on the main thread, so `Create`/`Update`
+/// preconditions are checked read-then-write. Single-tab behavior (probe,
+/// fencing, CAS) is exact.
+///
+/// `ETag`s and versions are hex `SHA-256` content hashes: stable across
+/// reloads, unique per byte content, no sidecar files.
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone)]
+pub struct OpfsStorage {
+    root: web_sys::FileSystemDirectoryHandle,
+}
+
+/// Hex `SHA-256` of `bytes` — stable etag/version across reloads.
+#[cfg(target_arch = "wasm32")]
+fn content_etag(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut buf = String::with_capacity(64);
+    for byte in digest {
+        use std::fmt::Write as writer;
+        let _ = writer::write_fmt(&mut buf, format_args!("{byte:02x}"));
+    }
+    buf
+}
+
+/// Reports whether a JS rejection is a `NotFoundError` DOM exception.
+#[cfg(target_arch = "wasm32")]
+fn is_not_found(err: &wasm_bindgen::JsValue) -> bool {
+    err.clone()
+        .dyn_into::<web_sys::DomException>()
+        .is_ok_and(|d| d.name() == "NotFoundError")
+}
+
+/// Wraps a JS rejection as [`StoreError::Storage`] with context.
+#[cfg(target_arch = "wasm32")]
+fn js_err(context: &str, err: wasm_bindgen::JsValue) -> StoreError {
+    let detail = err
+        .dyn_into::<web_sys::DomException>()
+        .map(|d| format!("{}: {}", d.name(), d.message()))
+        .unwrap_or_else(|e| format!("{e:?}"));
+    StoreError::Storage(format!("{context}: {detail}"))
+}
+
+/// Drives a JS promise on the local task queue, bridging `!Send` JS futures
+/// into the `Send`-required [`Storage`] methods.
+///
+/// `wasm_bindgen_futures::JsFuture` is `!Send` on single-threaded wasm, so it
+/// can never be awaited directly here. Instead the promise runs in a
+/// `spawn_local` task and the result crosses back through a `Send` oneshot.
+#[cfg(target_arch = "wasm32")]
+async fn js_await(
+    promise: js_sys::Promise,
+) -> std::result::Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue> {
+    let (tx, rx) = futures::channel::oneshot::channel();
+    wasm_bindgen_futures::spawn_local(async move {
+        let _ = tx.send(wasm_bindgen_futures::JsFuture::from(promise).await);
+    });
+    rx.await
+        .map_err(|_| wasm_bindgen::JsValue::from_str("JS task cancelled"))?
+}
+
+#[cfg(target_arch = "wasm32")]
+impl OpfsStorage {
+    /// Opens (creating) the `oxkv` root directory in origin private storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Storage`] when OPFS is unavailable or denied.
+    pub async fn open() -> Result<Self> {
+        let window = web_sys::window()
+            .ok_or_else(|| StoreError::Storage("OPFS requires a window context".to_string()))?;
+        let origin_js = js_await(window.navigator().storage().get_directory())
+            .await
+            .map_err(|e| js_err("OPFS getDirectory failed", e))?;
+        let origin: web_sys::FileSystemDirectoryHandle = origin_js
+            .dyn_into()
+            .map_err(|e| js_err("OPFS root is not a directory", e))?;
+        let opts = web_sys::FileSystemGetDirectoryOptions::new();
+        opts.set_create(true);
+        let root_js = js_await(origin.get_directory_handle_with_options("oxkv", &opts))
+            .await
+            .map_err(|e| js_err("OPFS create oxkv root failed", e))?;
+        let root = root_js
+            .dyn_into()
+            .map_err(|e| js_err("OPFS oxkv root is not a directory", e))?;
+        Ok(Self { root })
+    }
+
+    /// Splits `path` into parent segments and the file name.
+    fn split(path: &ObjectPath) -> Result<(Vec<&str>, &str)> {
+        if path.is_empty() {
+            return Err(StoreError::Storage("empty object path".to_string()));
+        }
+        let mut segments: Vec<&str> = path.as_str().split('/').collect();
+        let name = segments.pop().unwrap_or_default();
+        if name.is_empty() {
+            return Err(StoreError::Storage(format!("invalid object path: {path}")));
+        }
+        Ok((segments, name))
+    }
+
+    /// Resolves parent directories, creating them when `create` is set.
+    /// Returns `None` when a directory is missing and `create` is unset.
+    async fn parent(
+        &self,
+        segments: &[&str],
+        create: bool,
+    ) -> Result<Option<web_sys::FileSystemDirectoryHandle>> {
+        let mut dir = self.root.clone();
+        for segment in segments {
+            let next = if create {
+                let opts = web_sys::FileSystemGetDirectoryOptions::new();
+                opts.set_create(true);
+                js_await(dir.get_directory_handle_with_options(segment, &opts))
+                    .await
+                    .map_err(|e| js_err("OPFS create directory failed", e))?
+            } else {
+                match js_await(dir.get_directory_handle(segment)).await {
+                    Ok(handle) => handle,
+                    Err(e) if is_not_found(&e) => return Ok(None),
+                    Err(e) => return Err(js_err("OPFS open directory failed", e)),
+                }
+            };
+            dir = next
+                .dyn_into()
+                .map_err(|e| js_err("OPFS entry is not a directory", e))?;
+        }
+        Ok(Some(dir))
+    }
+
+    /// Reads bytes + etag, or `None` when the object (or its directory) is missing.
+    async fn read_existing(&self, path: &ObjectPath) -> Result<Option<(Vec<u8>, String)>> {
+        let (segments, name) = Self::split(path)?;
+        let Some(dir) = self.parent(&segments, false).await? else {
+            return Ok(None);
+        };
+        let handle = match js_await(dir.get_file_handle(name)).await {
+            Ok(handle) => handle,
+            Err(e) if is_not_found(&e) => return Ok(None),
+            Err(e) => return Err(js_err("OPFS open file failed", e)),
+        };
+        let handle: web_sys::FileSystemFileHandle = handle
+            .dyn_into()
+            .map_err(|e| js_err("OPFS entry is not a file", e))?;
+        let file: web_sys::File = js_await(handle.get_file())
+            .await
+            .map_err(|e| js_err("OPFS read file failed", e))?
+            .dyn_into()
+            .map_err(|e| js_err("OPFS entry is not a file", e))?;
+        let buffer = js_await(file.array_buffer())
+            .await
+            .map_err(|e| js_err("OPFS read bytes failed", e))?;
+        let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
+        let etag = content_etag(&bytes);
+        Ok(Some((bytes, etag)))
+    }
+
+    /// Writes `payload`, creating parent directories. Callers enforce preconditions.
+    async fn write_new(&self, path: &ObjectPath, payload: &[u8]) -> Result<String> {
+        let (segments, name) = Self::split(path)?;
+        let dir = self
+            .parent(&segments, true)
+            .await?
+            .ok_or_else(|| StoreError::Storage(format!("OPFS missing parent for {path}")))?;
+        let file_opts = web_sys::FileSystemGetFileOptions::new();
+        file_opts.set_create(true);
+        let handle_js = js_await(dir.get_file_handle_with_options(name, &file_opts))
+            .await
+            .map_err(|e| js_err("OPFS create file failed", e))?;
+        let handle: web_sys::FileSystemFileHandle = handle_js
+            .dyn_into()
+            .map_err(|e| js_err("OPFS entry is not a file", e))?;
+        let stream_js = js_await(handle.create_writable())
+            .await
+            .map_err(|e| js_err("OPFS open writer failed", e))?;
+        let stream: web_sys::FileSystemWritableFileStream = stream_js
+            .dyn_into()
+            .map_err(|e| js_err("OPFS writer is not writable", e))?;
+        let write = stream
+            .write_with_u8_array(payload)
+            .map_err(|e| js_err("OPFS write failed", e))?;
+        js_await(write)
+            .await
+            .map_err(|e| js_err("OPFS write failed", e))?;
+        let writable: &web_sys::WritableStream = stream.unchecked_ref();
+        js_await(writable.close())
+            .await
+            .map_err(|e| js_err("OPFS close failed", e))?;
+        Ok(content_etag(payload))
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[async_trait::async_trait]
+impl Storage for OpfsStorage {
+    async fn get(&self, path: &ObjectPath) -> Result<GetOutput> {
+        match self.read_existing(path).await? {
+            Some((bytes, etag)) => Ok(GetOutput {
+                bytes,
+                e_tag: Some(etag.clone()),
+                version: Some(etag),
+            }),
+            None => Err(StoreError::Storage(format!("not found: {path}"))),
+        }
+    }
+
+    async fn get_opts(&self, path: &ObjectPath, options: GetOptions) -> Result<GetOutput> {
+        let out = self.get(path).await?;
+        if options.if_none_match.as_deref() == out.e_tag.as_deref() && out.e_tag.is_some() {
+            return Err(StoreError::NotModified);
+        }
+        Ok(out)
+    }
+
+    async fn put_opts(
+        &self,
+        path: &ObjectPath,
+        payload: Vec<u8>,
+        mode: PutMode,
+    ) -> Result<PutOutcome> {
+        match mode {
+            PutMode::Create => {
+                if self.read_existing(path).await?.is_some() {
+                    return Err(StoreError::Storage(format!(
+                        "CAS conflict: {path}: already exists"
+                    )));
+                }
+            }
+            PutMode::Update(expected) => {
+                let Some((_, etag)) = self.read_existing(path).await? else {
+                    return Err(StoreError::Storage(format!(
+                        "CAS conflict: {path}: missing for update"
+                    )));
+                };
+                if expected.e_tag.as_deref() != Some(etag.as_str()) {
+                    return Err(StoreError::Storage(format!(
+                        "CAS conflict: {path}: etag mismatch"
+                    )));
+                }
+                if let Some(version) = expected.version.as_deref()
+                    && version != etag
+                {
+                    return Err(StoreError::Storage(format!(
+                        "CAS conflict: {path}: version mismatch"
+                    )));
+                }
+            }
+        }
+        let etag = self.write_new(path, &payload).await?;
+        Ok(PutOutcome {
+            e_tag: Some(etag.clone()),
+            version: Some(etag),
+        })
+    }
+
+    async fn delete(&self, path: &ObjectPath) -> Result<()> {
+        let (segments, name) = Self::split(path)?;
+        let Some(dir) = self.parent(&segments, false).await? else {
+            return Ok(());
+        };
+        match js_await(dir.remove_entry(name)).await {
+            Ok(_) => Ok(()),
+            Err(e) if is_not_found(&e) => Ok(()),
+            Err(e) => Err(js_err("OPFS delete failed", e)),
+        }
+    }
+}
