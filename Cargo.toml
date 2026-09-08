@@ -2,7 +2,7 @@
 name = "oxkv"
 version = "0.4.0"
 edition = "2024"
-description = "A transactional key-value store with WASM bindings (btree-only), cursor pagination, streaming snapshots, optional OpenTelemetry, and an LSM-on-S3 backend (native-only)."
+description = "A transactional key-value store with WASM bindings (BTreeStore + LsmStore), cursor pagination, streaming snapshots, optional OpenTelemetry, and a portable LSM backend (native + wasm)."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/azamaulanaaa/oxkv"
 keywords = ["wasm", "keyvalue", "kv-store", "transaction", "opentelemetry"]
@@ -22,19 +22,26 @@ btree = []
 ## The crate depends only on the OpenTelemetry *API*; applications plug in
 ## their own SDK providers globally, so exporters stay out of this crate.
 otel = ["dep:opentelemetry"]
-## Enables [`OxKvStore`] — LSM via `Storage` (native-only, `#[cfg(not(target_arch = "wasm32"))]`).
+## Enables [`OxKvStore`] — portable LSM over `Storage` (native + `wasm32`).
 ## Each `dep:` below is justified inline where the dependency is declared.
-oxkv = ["dep:object_store", "dep:tokio", "dep:crc32fast", "dep:sha2"]
+oxkv = ["dep:crc32fast", "dep:sha2", "dep:async-lock", "dep:futures-timer"]
+## Native S3/GCS/Azure backing via `object_store` (native-only).
+## The engine itself never touches it directly — see `Storage`.
+oxkv-s3 = ["dep:object_store"]
 ## Optional moka-backed cache (native-only) — alternative to built-in LruCache.
 moka = ["dep:moka"]
 
 [dependencies]
 async-trait = "0.1"
+async-lock = { version = "3", optional = true }
+futures-timer = { version = "3", optional = true }
+crc32fast = { version = "1", optional = true }
+sha2 = { version = "0.10", optional = true }
 futures = { version = "0.3", default-features = false, features = ["std"] }
 pest = "2.9.0"
 pest_derive = "2.9.0"
 regex = "1"
-serde = "1"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 strsim = "0.11"
 thiserror = "2"
@@ -48,9 +55,6 @@ opentelemetry = { version = "0.32", default-features = false, features = [
 ], optional = true }
 object_store = { version = "0.12", optional = true, features = ["aws", "gcp", "azure"] }
 moka = { version = "0.12", optional = true, features = ["future"] }
-tokio = { version = "1.53.1", optional = true, features = ["sync"] }
-crc32fast = { version = "1", optional = true }
-sha2 = { version = "0.10", optional = true }
 
 [[bench]]
 name = "kv_bench"

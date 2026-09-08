@@ -31,23 +31,34 @@ pub use hooks::{
 mod hooks;
 #[cfg(all(feature = "otel", not(target_arch = "wasm32")))]
 pub use otel::{OtelStore, OtelTx};
-#[cfg(all(feature = "oxkv", not(target_arch = "wasm32")))]
+#[cfg(feature = "oxkv")]
 mod cache;
-#[cfg(all(feature = "oxkv", not(target_arch = "wasm32")))]
+#[cfg(feature = "oxkv")]
 mod lsm;
 #[cfg(all(feature = "otel", not(target_arch = "wasm32")))]
 mod otel;
-#[cfg(all(feature = "oxkv", not(target_arch = "wasm32")))]
+#[cfg(feature = "oxkv")]
 mod storage;
-#[cfg(all(feature = "oxkv", not(target_arch = "wasm32")))]
+#[cfg(feature = "oxkv")]
 pub use cache::{Cache, LruCache};
-#[cfg(all(feature = "oxkv", not(target_arch = "wasm32")))]
+#[cfg(feature = "oxkv")]
 pub use lsm::{OxKvStore, OxKvStoreBuilder, OxKvTx};
-#[cfg(all(feature = "oxkv", not(target_arch = "wasm32")))]
-pub use storage::{GetOutput, PutOutcome, Storage};
+#[cfg(feature = "oxkv")]
+pub use storage::{
+    GetOptions, GetOutput, MemStorage, ObjectPath, ObjectVersion, PutMode, PutOutcome, Storage,
+};
 
 /// A specialized `Result` type for store operations.
 pub type Result<T> = std::result::Result<T, StoreError>;
+
+/// Portable async sleep for retry backoff.
+///
+/// Uses `futures-timer` so it resolves on every target, including `wasm32`
+/// where `tokio::time` is unavailable.
+#[cfg(feature = "oxkv")]
+pub(crate) async fn sleep(duration: std::time::Duration) {
+    futures_timer::Delay::new(duration).await;
+}
 
 /// Errors that can occur during store operations.
 #[derive(Debug, Error)]
