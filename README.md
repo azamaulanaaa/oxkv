@@ -609,6 +609,19 @@ leave your machine:
 | `zipf_get/oxkv_mem/10000` | 10K keys, 2K reads/iter | skewed reads (Zipf 1.07, fixed seed) over the SSTs from 50 forced flushes — background compaction folds those into roughly a dozen larger files, so the 320 KiB cache holds a mid-range fraction and admission policy decides the hit ratio (printed to stderr) |
 | `concurrent_random_get/oxkv_mem/100000` | 100K keys, 10K reads split over 8 tasks | shared-store point reads from spawned tasks (multi-thread runtime, store populated once and reused): read-path scaling while writes serialize |
 
+Cache micro-benchmarks live in [`benches/cache_bench.rs`](benches/cache_bench.rs)
+and isolate the [`Cache`](src/store/cache.rs) trait itself (the end-to-end
+benches above mostly measure miss paths). Fixed 64-byte values, capacity for
+4,096 entries; every group runs against built-in `S3-FIFO` (`lru`) and, with
+`--features moka`, the optional backend (`moka`) for A/B comparison:
+
+| Group | Scale | Measures |
+| --------- | ------- | ----------- |
+| `cache_insert/{impl}/4096` | 4K inserts | insert + eviction-churn throughput |
+| `cache_get_hit/{impl}/10000` | 10K gets | pure hit-path reads over resident keys |
+| `cache_get_miss/{impl}/10000` | 10K gets | pure miss-path reads over absent keys |
+| `cache_zipf/{impl}/16384` | 16K keys (4x capacity), 4K reads/iter | read-through skewed reads (Zipf 1.07, fixed seed): admission policy decides the hit ratio (printed once to stderr) |
+
 Scale strategy (see `benches/kv_bench.rs` header): full-scan writes (`seq_insert`, `seq_delete`) scale linearly so they run at 1K+100K only — 1M depth is still exercised via `random_get`/`point_update`/`page_fetch`, whose per-iteration work is bounded (sampled reads / one page / few updates) against a 1M-key store built once and reused. Tree/SST depth and index size are identical to a full 1M scan; only the repeated per-iteration cost is removed. The oxkv-only groups (`concurrent_write`, `zipf_get`, `concurrent_random_get`) are fixed-scale by design: they measure threading and cache behavior, not scaling.
 
 Setup work (populating stores for read/update benchmarks, staging

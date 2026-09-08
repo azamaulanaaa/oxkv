@@ -61,6 +61,10 @@ name = "kv_bench"
 harness = false
 
 [[bench]]
+name = "cache_bench"
+harness = false
+
+[[bench]]
 name = "query_bench"
 harness = false
 
