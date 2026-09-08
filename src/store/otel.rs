@@ -344,7 +344,7 @@ impl<S: GetSet + Send + Sync> GetSet for OtelStore<S> {
         .await
     }
 
-    async fn delete(&mut self, key: &str) -> Result<bool> {
+    async fn delete(&self, key: &str) -> Result<bool> {
         instrumented(
             ops::DELETE,
             Some(key),
@@ -357,7 +357,7 @@ impl<S: GetSet + Send + Sync> GetSet for OtelStore<S> {
         .await
     }
 
-    async fn set_bytes(&mut self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
+    async fn set_bytes(&self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
         instrumented(
             ops::SET,
             Some(key),
@@ -398,7 +398,7 @@ where
 {
     type Transaction = OtelTx<S::Transaction>;
 
-    fn begin_tx(&mut self) -> Result<Self::Transaction> {
+    fn begin_tx(&self) -> Result<Self::Transaction> {
         let mut span = start_span(ops::BEGIN_TX, None);
         let started = Instant::now();
         let outcome = self.inner.begin_tx();
@@ -457,7 +457,7 @@ impl<T: GetSet + Send + Sync> GetSet for OtelTx<T> {
         .await
     }
 
-    async fn delete(&mut self, key: &str) -> Result<bool> {
+    async fn delete(&self, key: &str) -> Result<bool> {
         instrumented(
             ops::DELETE,
             Some(key),
@@ -470,7 +470,7 @@ impl<T: GetSet + Send + Sync> GetSet for OtelTx<T> {
         .await
     }
 
-    async fn set_bytes(&mut self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
+    async fn set_bytes(&self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
         instrumented(
             ops::SET,
             Some(key),
@@ -776,11 +776,11 @@ mod tests {
             Ok(self.reads.lock().unwrap().contains_key(key))
         }
 
-        async fn delete(&mut self, _key: &str) -> Result<bool> {
+        async fn delete(&self, _key: &str) -> Result<bool> {
             Err(StoreError::Other("delete refused".into()))
         }
 
-        async fn set_bytes(&mut self, _key: &str, _value: &[u8]) -> Result<Option<Vec<u8>>> {
+        async fn set_bytes(&self, _key: &str, _value: &[u8]) -> Result<Option<Vec<u8>>> {
             Err(StoreError::Other("write refused".into()))
         }
 

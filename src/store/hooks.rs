@@ -444,7 +444,7 @@ impl<S: GetSet + Send + Sync> GetSet for HookStore<S> {
         self.inner.has(key).await
     }
 
-    async fn delete(&mut self, key: &str) -> Result<bool> {
+    async fn delete(&self, key: &str) -> Result<bool> {
         let old_value = self.inner.get_bytes(key).await?;
         if self.inner.delete(key).await? {
             notify(
@@ -464,7 +464,7 @@ impl<S: GetSet + Send + Sync> GetSet for HookStore<S> {
         }
     }
 
-    async fn set_bytes(&mut self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
+    async fn set_bytes(&self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
         validate_key(&self.validators, &self.inner, key, value).await?;
         let prev = self.inner.set_bytes(key, value).await?;
         notify(
@@ -499,11 +499,11 @@ where
 {
     type Transaction = HookTx<S::Transaction, S>;
 
-    fn begin_tx(&mut self) -> Result<Self::Transaction> {
+    fn begin_tx(&self) -> Result<Self::Transaction> {
         Ok(HookTx {
             inner: self.inner.begin_tx()?,
             validators: self.validators.clone(),
-            staged: Vec::new(),
+            staged: Mutex::new(Vec::new()),
             subscribers: Arc::clone(&self.subscribers),
             post_commit_view: self.inner.clone(),
         })
@@ -520,7 +520,7 @@ where
 pub struct HookTx<T, V> {
     inner: T,
     validators: Vec<Arc<dyn Validator>>,
-    staged: Vec<ChangeEvent>,
+    staged: Mutex<Vec<ChangeEvent>>,
     subscribers: Arc<Mutex<Subscribers>>,
     /// Committed-state view handed to observers after a successful commit.
     post_commit_view: V,
@@ -531,13 +531,19 @@ impl<T, V> HookTx<T, V> {
     /// so that each key appears at most once per commit. The original
     /// pre-transaction value is preserved across replacements so observers
     /// always see the net effect.
-    fn stage(&mut self, mut event: ChangeEvent) {
-        match self.staged.iter_mut().find(|e| e.key == event.key) {
+    fn stage(&self, mut event: ChangeEvent) {
+        // Single guard for the whole check-and-insert: re-locking `staged`
+        // inside the match would deadlock against the scrutinee's guard.
+        let mut staged = self
+            .staged
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match staged.iter_mut().find(|e| e.key == event.key) {
             Some(existing) => {
                 event.old_value = existing.old_value.take();
                 *existing = event;
             }
-            None => self.staged.push(event),
+            None => staged.push(event),
         }
     }
 }
@@ -552,7 +558,7 @@ impl<T: GetSet + Send + Sync, V: Send + Sync> GetSet for HookTx<T, V> {
         self.inner.has(key).await
     }
 
-    async fn delete(&mut self, key: &str) -> Result<bool> {
+    async fn delete(&self, key: &str) -> Result<bool> {
         let old_value = self.inner.get_bytes(key).await?;
         if self.inner.delete(key).await? {
             self.stage(ChangeEvent {
@@ -567,7 +573,7 @@ impl<T: GetSet + Send + Sync, V: Send + Sync> GetSet for HookTx<T, V> {
         }
     }
 
-    async fn set_bytes(&mut self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
+    async fn set_bytes(&self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
         validate_key(&self.validators, &self.inner, key, value).await?;
         let prev = self.inner.set_bytes(key, value).await?;
         self.stage(ChangeEvent {
@@ -591,13 +597,21 @@ impl<T: GetSet + Send + Sync, V: Send + Sync> GetSet for HookTx<T, V> {
 
 #[async_trait]
 impl<T: Transaction + Send + Sync, V: StoreView> Transaction for HookTx<T, V> {
-    async fn commit(mut self) -> Result<()> {
+    async fn commit(self) -> Result<()> {
         // Authoritative pass: re-validate every staged write against the
         // transaction's final state while it is still the exclusive writer,
         // so later writes within the same transaction (or concurrent ones
         // racing for the same write path) cannot invalidate a decision made
         // at staging time.
-        for event in &self.staged {
+        //
+        // Snapshot under the lock: the guard must not be held across the
+        // awaits below (`std` guards are not `Send`).
+        let staged = self
+            .staged
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        for event in &staged {
             if let (ChangeKind::Set, Some(value)) = (event.kind, event.new_value.as_deref()) {
                 let view = RevalidateView {
                     inner: &self.inner,
@@ -610,7 +624,7 @@ impl<T: Transaction + Send + Sync, V: StoreView> Transaction for HookTx<T, V> {
 
         self.inner.commit().await?;
 
-        for event in self.staged {
+        for event in staged {
             notify(&self.subscribers, &self.post_commit_view, event).await;
         }
         Ok(())
@@ -681,7 +695,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_validator_rejects_write_without_touching_store() {
-        let mut s = store().with_validator(Rejecting(Scope::All));
+        let s = store().with_validator(Rejecting(Scope::All));
 
         assert!(s.set_bytes("k", b"v").await.is_err());
         assert_eq!(s.get_bytes("k").await.unwrap(), None);
@@ -689,7 +703,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_validator_scope_limits_application() {
-        let mut s = store().with_validator(Rejecting(Scope::Exact(String::from("locked"))));
+        let s = store().with_validator(Rejecting(Scope::Exact(String::from("locked"))));
 
         assert!(s.set_bytes("locked", b"v").await.is_err());
         assert!(s.set_bytes("free", b"v").await.unwrap().is_none());
@@ -697,7 +711,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_json_validator_accepts_only_json_values() {
-        let mut s = store().with_validator(RequireJson(Scope::All));
+        let s = store().with_validator(RequireJson(Scope::All));
 
         assert!(s.set_bytes("doc", br#"{"ok":true}"#).await.is_ok());
         assert!(s.set_bytes("raw", b"\x00\xff").await.is_err());
@@ -705,7 +719,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_watch_receives_set_and_delete_events() {
-        let mut s = store();
+        let s = store();
         let mut rx = s.watch("k");
 
         s.set_bytes("k", b"v").await.unwrap();
@@ -720,7 +734,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_events_carry_old_and_new_values() {
-        let mut s = store();
+        let s = store();
         let mut rx = s.watch_all();
 
         s.set_bytes("k", b"one").await.unwrap();
@@ -741,11 +755,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_transaction_event_reports_net_change() {
-        let mut s = store();
+        let s = store();
         s.set_bytes("a", b"original").await.unwrap();
         let mut rx = s.watch("a");
 
-        let mut tx = s.begin_tx().unwrap();
+        let tx = s.begin_tx().unwrap();
         tx.set_bytes("a", b"first").await.unwrap();
         tx.set_bytes("a", b"second").await.unwrap();
         tx.commit().await.unwrap();
@@ -757,7 +771,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_slow_watcher_misses_events_but_does_not_block_writes() {
-        let mut s = store();
+        let s = store();
         let mut rx = s.watch_all();
 
         for i in 0..(WATCH_CAPACITY * 2) {
@@ -775,7 +789,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_missing_key_notifies_nothing() {
-        let mut s = store();
+        let s = store();
         let mut rx = s.watch_all();
 
         assert!(!s.delete("missing").await.unwrap());
@@ -784,7 +798,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_watch_prefix_ignores_unrelated_keys() {
-        let mut s = store();
+        let s = store();
         let mut rx = s.watch_prefix("user:");
 
         s.set_bytes("other", b"v").await.unwrap();
@@ -796,7 +810,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dropped_receiver_does_not_break_writes() {
-        let mut s = store();
+        let s = store();
         drop(s.watch_all());
 
         assert!(s.set_bytes("k", b"v").await.is_ok());
@@ -834,10 +848,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_transaction_commit_notifies_once_per_key() {
-        let mut s = store();
+        let s = store();
         let mut rx = s.watch_all();
 
-        let mut tx = s.begin_tx().unwrap();
+        let tx = s.begin_tx().unwrap();
         tx.set_bytes("a", b"1").await.unwrap();
         tx.set_bytes("a", b"2").await.unwrap();
         tx.set_bytes("b", b"2").await.unwrap();
@@ -858,10 +872,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_transaction_rollback_notifies_nothing() {
-        let mut s = store();
+        let s = store();
         let mut rx = s.watch_all();
 
-        let mut tx = s.begin_tx().unwrap();
+        let tx = s.begin_tx().unwrap();
         tx.set_bytes("a", b"1").await.unwrap();
         tx.rollback().await.unwrap();
 
@@ -871,8 +885,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_transaction_validates_at_stage_time() {
-        let mut s = store().with_validator(Rejecting(Scope::Exact(String::from("bad"))));
-        let mut tx = s.begin_tx().unwrap();
+        let s = store().with_validator(Rejecting(Scope::Exact(String::from("bad"))));
+        let tx = s.begin_tx().unwrap();
 
         assert!(tx.set_bytes("bad", b"v").await.is_err());
 
@@ -901,10 +915,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_stateful_validator_reads_transaction_state() {
-        let mut s = store().with_validator(NoOverwrite(Scope::All));
+        let s = store().with_validator(NoOverwrite(Scope::All));
 
         // Stage-time validation observes the transaction's own staged writes.
-        let mut tx = s.begin_tx().unwrap();
+        let tx = s.begin_tx().unwrap();
         tx.set_bytes("k", b"v1").await.unwrap();
         assert!(tx.set_bytes("k", b"v2").await.is_err());
         tx.rollback().await.unwrap();
@@ -935,9 +949,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_commit_revalidates_against_final_transaction_state() {
-        let mut s = store().with_validator(OnlyWhileAbsent(String::from("flag")));
+        let s = store().with_validator(OnlyWhileAbsent(String::from("flag")));
 
-        let mut tx = s.begin_tx().unwrap();
+        let tx = s.begin_tx().unwrap();
         // Passes at staging time: "flag" does not exist yet.
         tx.set_bytes("target", b"v").await.unwrap();
         // Creating "flag" inside the same tx invalidates "target" by commit.
@@ -954,9 +968,9 @@ mod tests {
     async fn test_commit_revalidation_hides_pending_write_of_validated_key() {
         // Absence-based rules must not see the staged write being validated,
         // or every legitimate insert would be rejected at commit time.
-        let mut s = store().with_validator(NoOverwrite(Scope::All));
+        let s = store().with_validator(NoOverwrite(Scope::All));
 
-        let mut tx = s.begin_tx().unwrap();
+        let tx = s.begin_tx().unwrap();
         tx.set_bytes("fresh", b"v").await.unwrap();
         tx.commit().await.unwrap();
 
@@ -965,11 +979,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_transaction_delete_stages_single_event() {
-        let mut s = store();
+        let s = store();
         s.set_bytes("a", b"1").await.unwrap();
         let mut rx = s.watch("a");
 
-        let mut tx = s.begin_tx().unwrap();
+        let tx = s.begin_tx().unwrap();
         tx.set_bytes("a", b"2").await.unwrap();
         tx.delete("a").await.unwrap();
         tx.commit().await.unwrap();
@@ -983,7 +997,7 @@ mod tests {
     async fn test_hook_store_composes_with_get_set_ext_and_query() {
         use crate::store::{Direction, GetSetExt};
 
-        let mut s = store().with_validator(RequireJson(Scope::Prefix(String::from("doc:"))));
+        let s = store().with_validator(RequireJson(Scope::Prefix(String::from("doc:"))));
 
         s.set("doc:a", &serde_json::json!({ "lang": "rust", "stars": 10 }))
             .await

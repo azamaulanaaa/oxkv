@@ -205,7 +205,7 @@ pub trait GetSet {
     /// # Errors
     ///
     /// Returns a [`StoreError`] if the underlying storage fails.
-    async fn delete(&mut self, key: &str) -> Result<bool>;
+    async fn delete(&self, key: &str) -> Result<bool>;
 
     /// Sets a key-value pair, inserting if absent or updating if present.
     ///
@@ -215,7 +215,7 @@ pub trait GetSet {
     /// # Errors
     ///
     /// Returns a [`StoreError`] if the underlying storage fails.
-    async fn set_bytes(&mut self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>>;
+    async fn set_bytes(&self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>>;
 
     /// Sets a key-value pair without reading the previous value.
     ///
@@ -230,7 +230,7 @@ pub trait GetSet {
     /// # Errors
     ///
     /// Returns a [`StoreError`] if the underlying storage fails.
-    async fn put_bytes(&mut self, key: &str, value: &[u8]) -> Result<()> {
+    async fn put_bytes(&self, key: &str, value: &[u8]) -> Result<()> {
         self.set_bytes(key, value).await?;
         Ok(())
     }
@@ -320,7 +320,7 @@ pub trait Store: GetSet {
     /// # Errors
     ///
     /// Returns a [`StoreError`] if the transaction cannot be started.
-    fn begin_tx(&mut self) -> Result<Self::Transaction>;
+    fn begin_tx(&self) -> Result<Self::Transaction>;
 }
 
 /// Extension methods for binary serialization and bulk loading on [`Store`].
@@ -372,7 +372,7 @@ pub trait StoreExt: Store {
     /// # Errors
     ///
     /// Returns a [`StoreError`] if the payload is malformed or writing fails.
-    async fn load(&mut self, data: &[u8]) -> Result<usize>
+    async fn load(&self, data: &[u8]) -> Result<usize>
     where
         Self: Sized,
     {
@@ -425,14 +425,14 @@ fn write_snapshot_header(buffer: &mut Vec<u8>) {
 /// Note that the returned future is only `Send` when the chunk stream is: this
 /// is inferred per call site rather than imposed by a trait, so non-`Send`
 /// sources (such as `wasm-streams` adapters on `wasm32`) are accepted there.
-pub async fn load_stream<T, C, E, S>(store: &mut T, chunks: S) -> Result<usize>
+pub async fn load_stream<T, C, E, S>(store: &T, chunks: S) -> Result<usize>
 where
     T: Store + ?Sized,
     C: AsRef<[u8]>,
     E: Into<StoreError>,
     S: Stream<Item = std::result::Result<C, E>> + Unpin,
 {
-    let mut tx = store.begin_tx()?;
+    let tx = store.begin_tx()?;
     let mut count = 0usize;
     let mut decoder = RecordDecoder::new();
     let mut chunks = chunks;
@@ -725,7 +725,7 @@ pub trait GetSetExt: GetSet {
     /// # Errors
     ///
     /// Returns a [`StoreError`] if serialization or storage fails.
-    async fn set<T: serde::Serialize + Sync>(&mut self, key: &str, value: &T) -> Result<Option<T>>
+    async fn set<T: serde::Serialize + Sync>(&self, key: &str, value: &T) -> Result<Option<T>>
     where
         T: serde::de::DeserializeOwned,
     {
@@ -745,7 +745,7 @@ pub trait GetSetExt: GetSet {
     /// # Errors
     ///
     /// Returns a [`StoreError`] if serialization or storage fails.
-    async fn put<T: serde::Serialize + Sync>(&mut self, key: &str, value: &T) -> Result<()> {
+    async fn put<T: serde::Serialize + Sync>(&self, key: &str, value: &T) -> Result<()> {
         let json = serde_json::to_vec(value)?;
         self.put_bytes(key, &json).await
     }
@@ -859,8 +859,8 @@ mod tests {
         impl GetSet for Transaction {
             async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>>;
             async fn has(&self, key: &str) -> Result<bool>;
-            async fn delete(&mut self, key: &str) -> Result<bool>;
-            async fn set_bytes(&mut self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>>;
+            async fn delete(&self, key: &str) -> Result<bool>;
+            async fn set_bytes(&self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>>;
             async fn gets_bytes(
                 &self,
                 limit: Option<u32>,
@@ -883,8 +883,8 @@ mod tests {
         impl GetSet for Store {
             async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>>;
             async fn has(&self, key: &str) -> Result<bool>;
-            async fn delete(&mut self, key: &str) -> Result<bool>;
-            async fn set_bytes(&mut self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>>;
+            async fn delete(&self, key: &str) -> Result<bool>;
+            async fn set_bytes(&self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>>;
             async fn gets_bytes(
                 &self,
                 limit: Option<u32>,
@@ -896,7 +896,7 @@ mod tests {
         #[async_trait]
         impl Store for Store {
             type Transaction = MockTransaction;
-            fn begin_tx(&mut self) -> Result<MockTransaction>;
+            fn begin_tx(&self) -> Result<MockTransaction>;
         }
     }
 
@@ -1429,7 +1429,7 @@ mod tests {
                 .chunks(chunk_size)
                 .map(<[u8]>::to_vec)
                 .map(Ok::<_, StoreError>);
-            let loaded = load_stream(&mut mock_store, stream::iter(chunks))
+            let loaded = load_stream(&mock_store, stream::iter(chunks))
                 .await
                 .unwrap();
             assert_eq!(loaded, pairs.len(), "chunk_size {chunk_size}");
@@ -1468,7 +1468,7 @@ mod tests {
             let first = payload[..split].to_vec();
             let rest = payload[split..].to_vec();
             let loaded = load_stream(
-                &mut mock_store,
+                &mock_store,
                 stream::iter([Ok::<Vec<u8>, StoreError>(first), Ok(rest)]),
             )
             .await
@@ -1499,7 +1499,7 @@ mod tests {
         payload.extend_from_slice(&99u32.to_le_bytes());
 
         let err = load_stream(
-            &mut mock_store,
+            &mock_store,
             stream::iter([Ok::<Vec<u8>, StoreError>(payload)]),
         )
         .await
@@ -1523,7 +1523,7 @@ mod tests {
         payload.extend(encode_snapshot(&[("k", b"v")])[SNAPSHOT_HEADER_LEN..].to_vec());
 
         let err = load_stream(
-            &mut mock_store,
+            &mock_store,
             stream::iter([Ok::<Vec<u8>, StoreError>(payload)]),
         )
         .await
@@ -1548,7 +1548,7 @@ mod tests {
         payload.extend(encode_snapshot(&[("k", b"v")])[SNAPSHOT_HEADER_LEN..].to_vec());
 
         let err = load_stream(
-            &mut mock_store,
+            &mock_store,
             stream::iter([Ok::<Vec<u8>, StoreError>(payload)]),
         )
         .await
@@ -1572,7 +1572,7 @@ mod tests {
 
         // Only three of the eight header bytes ever arrive.
         let err = load_stream(
-            &mut mock_store,
+            &mock_store,
             stream::iter([Ok::<Vec<u8>, StoreError>(b"OXK".to_vec())]),
         )
         .await
@@ -1592,18 +1592,15 @@ mod tests {
             Ok(tx)
         });
 
-        let result: Result<usize> = load_stream(
-            &mut mock_store,
-            stream::iter([Err::<std::vec::Vec<u8>, _>("")]),
-        )
-        .await;
+        let result: Result<usize> =
+            load_stream(&mock_store, stream::iter([Err::<std::vec::Vec<u8>, _>("")])).await;
         assert!(result.is_err());
     }
 
     #[cfg(feature = "btree")]
     #[tokio::test]
     async fn test_save_load_stream_round_trip_through_btree_store() {
-        let mut source = BTreeStore::default();
+        let source = BTreeStore::default();
         for i in 0..600u32 {
             source
                 .set_bytes(&format!("key{i:04}"), format!("value-{i}").as_bytes())
@@ -1612,7 +1609,7 @@ mod tests {
         }
 
         // Stream the save into a fresh store, chunk by chunk.
-        let mut restored = BTreeStore::default();
+        let restored = BTreeStore::default();
         {
             let mut chunks = source.save_stream();
             let mut pending: Vec<Vec<u8>> = Vec::new();
@@ -1621,7 +1618,7 @@ mod tests {
             }
 
             let count = load_stream(
-                &mut restored,
+                &restored,
                 stream::iter(pending.into_iter().map(Ok::<_, StoreError>)),
             )
             .await
@@ -1647,7 +1644,7 @@ mod tests {
     #[cfg(feature = "btree")]
     #[tokio::test]
     async fn test_save_stream_flushes_multiple_chunks_and_preserves_large_records() {
-        let mut store = BTreeStore::default();
+        let store = BTreeStore::default();
         // Many mid-size records force several flushes at the 16 KiB target...
         for i in 0..2000u32 {
             store

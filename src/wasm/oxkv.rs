@@ -133,7 +133,7 @@ impl JsOxKvStore {
         #[wasm_bindgen(param_description = "Byte array of the value to store under the given key")]
         value: &[u8],
     ) -> Result<JsValue, JsValue> {
-        let mut store = self.inner.lock().await;
+        let store = self.inner.lock().await;
         match store.set_bytes(key, value).await {
             Ok(Some(prev)) => {
                 let arr = js_sys::Uint8Array::from(&prev[..]);
@@ -156,7 +156,7 @@ impl JsOxKvStore {
     ) -> Result<JsValue, JsValue> {
         let json_value: serde_json::Value = serde_wasm_bindgen::from_value(value)
             .map_err(|e| store::StoreError::Serialization(e.to_string()))?;
-        let mut store = self.inner.lock().await;
+        let store = self.inner.lock().await;
         match store.set(key, &json_value).await {
             Ok(Some(prev)) => {
                 let js_value = json_compatible(&prev)?;
@@ -196,7 +196,7 @@ impl JsOxKvStore {
         &self,
         #[wasm_bindgen(param_description = "The key to remove from storage")] key: &str,
     ) -> Result<JsValue, JsValue> {
-        let mut store = self.inner.lock().await;
+        let store = self.inner.lock().await;
         match store.delete(key).await {
             Ok(deleted) => Ok(JsValue::from(deleted)),
             Err(e) => Err(e.into()),
@@ -305,7 +305,7 @@ impl JsOxKvStore {
     /// * `StoreError` - if an I/O error occurs while acquiring the lock
     #[wasm_bindgen(return_description = "A new transaction handle")]
     pub async fn begin_tx(&self) -> Result<JsValue, JsValue> {
-        let mut store = self.inner.lock().await;
+        let store = self.inner.lock().await;
         match store.begin_tx() {
             Ok(tx) => {
                 let js_tx = JsOxKvTx {
@@ -346,7 +346,7 @@ impl JsOxKvStore {
         #[wasm_bindgen(param_description = "The binary data to load key-value pairs from")]
         data: &[u8],
     ) -> Result<JsValue, JsValue> {
-        let mut store = self.inner.lock().await;
+        let store = self.inner.lock().await;
         match store.load(data).await {
             Ok(count) => {
                 let count_u32 = u32::try_from(count)
@@ -433,8 +433,8 @@ impl JsOxKvStore {
                 })
         });
 
-        let mut store = self.inner.lock().await;
-        let count = load_stream(&mut *store, chunks).await?;
+        let store = self.inner.lock().await;
+        let count = load_stream(&*store, chunks).await?;
         let count_u32 =
             u32::try_from(count).map_err(|e| store::StoreError::Serialization(e.to_string()))?;
         Ok(JsValue::from(count_u32))

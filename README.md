@@ -42,7 +42,7 @@ use oxkv::{BTreeStore, Direction, GetSet, GetSetExt, Store, Transaction};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let mut store = BTreeStore::default();
+    let store = BTreeStore::default();
 
     // Insert a raw byte value (returns None for a new key)
     let inserted = store.set_bytes("greeting", b"hello").await.unwrap();
@@ -59,7 +59,7 @@ async fn main() {
     }
 
     // Transactional batch
-    let mut tx = store.begin_tx().unwrap();
+    let tx = store.begin_tx().unwrap();
     tx.set_bytes("a", b"1").await.unwrap();
     tx.set_bytes("b", b"2").await.unwrap();
     tx.commit().await.unwrap();
@@ -335,7 +335,7 @@ use oxkv::{GetSet, MemStorage, ObjectPath, OxKvStore, Storage, Store, Transactio
 let store: Arc<dyn Storage> = Arc::new(MemStorage::new());
 // In prod replace MemStorage with an object_store backend (feature `oxkv-s3`):
 // `OxKvStore::builder().with_store(s3).with_prefix(...)`
-let mut kv = OxKvStore::builder()
+let kv = OxKvStore::builder()
     .with_store(store)
     .with_prefix(ObjectPath::from("my-app/oxkv"))
     .build()
@@ -346,7 +346,7 @@ kv.set_bytes("hello", b"world").await.unwrap();
 assert_eq!(kv.get_bytes("hello").await.unwrap().as_deref(), Some(b"world".as_slice()));
 
 // Transactions stage in an overlay and become durable only on commit (WAL RPO=0)
-let mut tx = kv.begin_tx().unwrap();
+let tx = kv.begin_tx().unwrap();
 tx.set_bytes("a", b"1").await.unwrap();
 tx.commit().await.unwrap();
 # }

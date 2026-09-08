@@ -121,7 +121,7 @@ where
     group.bench_function("store", |b| {
         b.iter(|| {
             rt.block_on(async {
-                let mut store = S::default();
+                let store = S::default();
                 for k in &keys {
                     black_box(store.set_bytes(k, &PAYLOAD).await.expect("set"));
                 }
@@ -225,8 +225,8 @@ where
         b.iter_batched(
             || {
                 rt.block_on(async {
-                    let mut store = S::default();
-                    let mut tx = store.begin_tx().expect("begin_tx");
+                    let store = S::default();
+                    let tx = store.begin_tx().expect("begin_tx");
                     for k in &keys {
                         tx.set_bytes(k, &PAYLOAD).await.expect("stage set");
                     }
@@ -261,7 +261,7 @@ where
                 rt.block_on(populate(&mut store, &keys));
                 store
             },
-            |mut store| {
+            |store| {
                 rt.block_on(async {
                     for k in &keys {
                         black_box(store.delete(k).await.expect("delete"));
@@ -360,7 +360,7 @@ mod oxkv_bench {
         group.bench_function("store", |b| {
             b.iter(|| {
                 rt.block_on(async {
-                    let mut store = new_oxkv_store().await;
+                    let store = new_oxkv_store().await;
                     for k in &keys {
                         store.put_bytes(k, &PAYLOAD).await.expect("put");
                         black_box(());
@@ -439,8 +439,8 @@ mod oxkv_bench {
             b.iter_batched(
                 || {
                     rt.block_on(async {
-                        let mut store = new_oxkv_store().await;
-                        let mut tx = store.begin_tx().expect("begin_tx");
+                        let store = new_oxkv_store().await;
+                        let tx = store.begin_tx().expect("begin_tx");
                         for k in &keys {
                             tx.set_bytes(k, &PAYLOAD).await.expect("stage");
                         }
@@ -472,7 +472,7 @@ mod oxkv_bench {
                         s
                     })
                 },
-                |mut store| {
+                |store| {
                     rt.block_on(async {
                         for k in &keys {
                             black_box(store.delete(k).await.expect("delete"));

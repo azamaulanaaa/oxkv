@@ -1069,7 +1069,7 @@ pub struct OxKvTx<C = LruCache<String, Arc<SstFile>>> {
     manifest_cache: Arc<async_lock::Mutex<ManifestCache>>,
     readers: Arc<async_lock::Mutex<std::collections::BTreeMap<u64, usize>>>,
     sst_cache: C,
-    overlay: std::collections::BTreeMap<String, Option<Vec<u8>>>,
+    overlay: std::sync::Mutex<std::collections::BTreeMap<String, Option<Vec<u8>>>>,
 }
 
 impl<C> OxKvTx<C>
@@ -1165,7 +1165,7 @@ where
         OxKvStore::has(self, key).await
     }
 
-    async fn delete(&mut self, key: &str) -> Result<bool> {
+    async fn delete(&self, key: &str) -> Result<bool> {
         let prev = OxKvStore::get_bytes(self, key).await?;
         let existed = prev.is_some();
         if !existed {
@@ -1255,13 +1255,13 @@ where
         Ok(true)
     }
 
-    async fn set_bytes(&mut self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
+    async fn set_bytes(&self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
         let prev = OxKvStore::get_bytes(self, key).await?;
         self.put_bytes(key, value).await?;
         Ok(prev)
     }
 
-    async fn put_bytes(&mut self, key: &str, value: &[u8]) -> Result<()> {
+    async fn put_bytes(&self, key: &str, value: &[u8]) -> Result<()> {
         // Atomic: encode and flush before mutating MemTable
         let mut payload_buf = Vec::new();
         crate::store::encode_record(&mut payload_buf, key, value)
@@ -1362,14 +1362,21 @@ where
 }
 
 #[async_trait]
+#[allow(clippy::too_many_lines)]
 impl<C> GetSet for OxKvTx<C>
 where
     C: Cache<String, Arc<SstFile>>,
 {
     async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        if let Some(v) = self.overlay.get(key) {
+        let staged = self
+            .overlay
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(key)
+            .cloned();
+        if let Some(v) = staged {
             return match v {
-                Some(raw) => Ok(Some(self.resolve_value(raw.clone()).await?)),
+                Some(raw) => Ok(Some(self.resolve_value(raw).await?)),
                 None => Ok(None),
             };
         }
@@ -1413,22 +1420,31 @@ where
         Ok(self.get_bytes(key).await?.is_some())
     }
 
-    async fn delete(&mut self, key: &str) -> Result<bool> {
+    async fn delete(&self, key: &str) -> Result<bool> {
         let existed = self.get_bytes(key).await?.is_some();
         if existed {
-            self.overlay.insert(key.to_string(), None);
+            self.overlay
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(key.to_string(), None);
         }
         Ok(existed)
     }
 
-    async fn set_bytes(&mut self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
+    async fn set_bytes(&self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
         let prev = self.get_bytes(key).await?;
-        self.overlay.insert(key.to_string(), Some(value.to_vec()));
+        self.overlay
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key.to_string(), Some(value.to_vec()));
         Ok(prev)
     }
 
-    async fn put_bytes(&mut self, key: &str, value: &[u8]) -> Result<()> {
-        self.overlay.insert(key.to_string(), Some(value.to_vec()));
+    async fn put_bytes(&self, key: &str, value: &[u8]) -> Result<()> {
+        self.overlay
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key.to_string(), Some(value.to_vec()));
         Ok(())
     }
 
@@ -1448,14 +1464,19 @@ where
         let mut sources: Vec<Vec<(String, Option<Vec<u8>>)>> = Vec::new();
         // Overlay newest — filter by range to avoid cloning entire overlay
         // when only a page is needed.
-        let overlay_vec: Vec<(String, Option<Vec<u8>>)> =
+        // Scoped so the guard is dropped before the awaits below (`std` guards are not `Send`).
+        let overlay_vec: Vec<(String, Option<Vec<u8>>)> = {
+            let overlay_guard = self
+                .overlay
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if scan_start.is_none() && scan_end.is_none() {
-                self.overlay
+                overlay_guard
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect()
             } else {
-                self.overlay
+                overlay_guard
                     .iter()
                     .filter(|(k, _)| {
                         if let Some(lo) = scan_start
@@ -1472,7 +1493,8 @@ where
                     })
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect()
-            };
+            }
+        };
         sources.push(overlay_vec);
         // Shared MemTable
         {
@@ -1548,13 +1570,21 @@ where
     C: Cache<String, Arc<SstFile>>,
 {
     #[allow(clippy::too_many_lines)]
-    async fn commit(mut self) -> Result<()> {
-        if self.overlay.is_empty() {
+    async fn commit(self) -> Result<()> {
+        // Drain under the lock: `commit` consumes the transaction, so taking
+        // ownership up front is equivalent and keeps no guard across awaits.
+        let overlay = std::mem::take(
+            &mut *self
+                .overlay
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        if overlay.is_empty() {
             return Ok(());
         }
         // Encode directly from overlay — don't mutate shared mem until WAL is durable (atomic)
         let mut payload_buf = Vec::new();
-        for (key, value) in &self.overlay {
+        for (key, value) in &overlay {
             if let Some(val) = value {
                 crate::store::encode_record(&mut payload_buf, key, val)
                     .map_err(|e| StoreError::Storage(format!("encode wal: {e}")))?;
@@ -1611,7 +1641,7 @@ where
                 // Idempotent retry — WAL already durable, apply overlay to MemTable
                 {
                     let mut mem = self.mem.write().await;
-                    for (k, v) in self.overlay.clone() {
+                    for (k, v) in overlay.clone() {
                         mem.insert(k, v);
                     }
                 }
@@ -1625,8 +1655,7 @@ where
                     let wal_len = manifest.wal.len();
                     cache.update(manifest, new_etag);
                     drop(cache);
-                    // Now durable — apply overlay to MemTable.
-                    let overlay = std::mem::take(&mut self.overlay);
+                    // Now durable — apply the drained overlay to MemTable.
                     {
                         let mut mem = self.mem.write().await;
                         for (k, v) in overlay {
@@ -1673,7 +1702,7 @@ where
 {
     type Transaction = OxKvTx<C>;
 
-    fn begin_tx(&mut self) -> Result<Self::Transaction> {
+    fn begin_tx(&self) -> Result<Self::Transaction> {
         Ok(OxKvTx {
             inner: Arc::clone(&self.inner),
             prefix: self.prefix.clone(),
@@ -1685,7 +1714,7 @@ where
             manifest_cache: Arc::clone(&self.manifest_cache),
             readers: Arc::clone(&self.readers),
             sst_cache: self.sst_cache.clone(),
-            overlay: std::collections::BTreeMap::new(),
+            overlay: std::sync::Mutex::new(std::collections::BTreeMap::new()),
         })
     }
 }
@@ -2335,7 +2364,7 @@ mod tests {
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn manifest_wal_list_stays_bounded() {
         let inner = new_in_memory();
-        let mut s3 = OxKvStore::builder()
+        let s3 = OxKvStore::builder()
             .with_store(Arc::clone(&inner))
             .with_prefix(ObjectPath::from("oxkv-wal-bound"))
             .with_session("sess-wal-bound")
@@ -2364,7 +2393,7 @@ mod tests {
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn compact_bounds_l1_file_count() {
         let inner = new_in_memory();
-        let mut s3 = OxKvStore::builder()
+        let s3 = OxKvStore::builder()
             .with_store(Arc::clone(&inner))
             .with_prefix(ObjectPath::from("oxkv-l1-bound"))
             .with_session("sess-l1-bound")
@@ -2400,7 +2429,7 @@ mod tests {
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn tx_only_workload_stays_bounded() {
         let inner = new_in_memory();
-        let mut s3 = OxKvStore::builder()
+        let s3 = OxKvStore::builder()
             .with_store(Arc::clone(&inner))
             .with_prefix(ObjectPath::from("oxkv-tx-bound"))
             .with_session("sess-tx-bound")
@@ -2413,7 +2442,7 @@ mod tests {
         // tx-side maintenance the WAL list would hold every commit's id and
         // mem would never reach an SST.
         for i in 0..2_500 {
-            let mut tx = s3.begin_tx().unwrap();
+            let tx = s3.begin_tx().unwrap();
             tx.set_bytes(&format!("t{i:05}"), b"v").await.unwrap();
             tx.commit().await.unwrap();
         }
@@ -2437,7 +2466,7 @@ mod tests {
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn put_bytes_matches_set_bytes() {
-        let mut s3 = OxKvStore::builder()
+        let s3 = OxKvStore::builder()
             .with_store(new_in_memory())
             .with_prefix(ObjectPath::from("oxkv-put"))
             .with_session("sess-put")
@@ -2462,7 +2491,7 @@ mod tests {
         assert_eq!(prev.as_deref(), Some(b"v2".as_slice()));
 
         // Tx staging stays invisible until commit, like set_bytes.
-        let mut tx = s3.begin_tx().unwrap();
+        let tx = s3.begin_tx().unwrap();
         tx.put_bytes("tk", b"tv").await.unwrap();
         assert_eq!(s3.get_bytes("tk").await.unwrap(), None);
         tx.commit().await.unwrap();
@@ -2521,7 +2550,7 @@ mod tests {
         if single_writer {
             builder = builder.assume_single_writer(true);
         }
-        let mut s3 = builder.build().await.unwrap();
+        let s3 = builder.build().await.unwrap();
         s3.put_bytes("k1", b"v1").await.unwrap();
         assert_eq!(
             s3.get_bytes("k1").await.unwrap().as_deref(),
@@ -2818,7 +2847,7 @@ mod tests {
     async fn s3store_store_trait_harness() {
         use crate::store::{GetSet, Store, Transaction};
         let store = new_in_memory();
-        let mut s3 = OxKvStore::builder()
+        let s3 = OxKvStore::builder()
             .with_store(Arc::clone(&store))
             .with_prefix(ObjectPath::from("store-harness"))
             .with_session("harness-sess")
@@ -2844,7 +2873,7 @@ mod tests {
         assert!(!s3.has("k1").await.unwrap());
         assert!(!s3.delete("k1").await.unwrap());
         // Transaction is staged until commit
-        let mut tx = s3.begin_tx().unwrap();
+        let tx = s3.begin_tx().unwrap();
         tx.set_bytes("tx-k", b"tx-v").await.unwrap();
         assert_eq!(
             tx.get_bytes("tx-k").await.unwrap().as_deref(),

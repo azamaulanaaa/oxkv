@@ -23,13 +23,13 @@ impl GetSet for BTreeStore {
         Ok(guard.contains_key(key))
     }
 
-    async fn delete(&mut self, key: &str) -> Result<bool> {
+    async fn delete(&self, key: &str) -> Result<bool> {
         let mut guard = self.map.write().unwrap();
         let removed = guard.remove(key).is_some();
         Ok(removed)
     }
 
-    async fn set_bytes(&mut self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
+    async fn set_bytes(&self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
         let mut guard = self.map.write().unwrap();
         let prev = guard.insert(key.to_string(), value.to_vec());
         Ok(prev)
@@ -53,10 +53,10 @@ impl GetSet for BTreeStore {
 impl Store for BTreeStore {
     type Transaction = BTreeTx;
 
-    fn begin_tx(&mut self) -> Result<Self::Transaction> {
+    fn begin_tx(&self) -> Result<Self::Transaction> {
         Ok(BTreeTx {
             store: Arc::clone(&self.map),
-            overlay: BTreeMap::new(),
+            overlay: std::sync::Mutex::new(BTreeMap::new()),
         })
     }
 }
@@ -64,13 +64,13 @@ impl Store for BTreeStore {
 /// A transaction for the B-tree store.
 pub struct BTreeTx {
     store: Arc<RwLock<BTreeMap<String, Vec<u8>>>>,
-    overlay: BTreeMap<String, Option<Vec<u8>>>,
+    overlay: std::sync::Mutex<BTreeMap<String, Option<Vec<u8>>>>,
 }
 
 #[async_trait]
 impl GetSet for BTreeTx {
     async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        if let Some(staged) = self.overlay.get(key) {
+        if let Some(staged) = self.overlay.lock().unwrap().get(key) {
             return Ok(staged.clone());
         }
         let guard = self.store.read().unwrap();
@@ -78,28 +78,31 @@ impl GetSet for BTreeTx {
     }
 
     async fn has(&self, key: &str) -> Result<bool> {
-        if let Some(staged) = self.overlay.get(key) {
+        if let Some(staged) = self.overlay.lock().unwrap().get(key) {
             return Ok(staged.is_some());
         }
         let guard = self.store.read().unwrap();
         Ok(guard.contains_key(key))
     }
 
-    async fn delete(&mut self, key: &str) -> Result<bool> {
+    async fn delete(&self, key: &str) -> Result<bool> {
         // Single lookup: consult the staged overlay first, then the store.
-        let existed = match self.overlay.get(key) {
+        let existed = match self.overlay.lock().unwrap().get(key) {
             Some(staged) => staged.is_some(),
             None => self.store.read().unwrap().contains_key(key),
         };
         if existed {
-            self.overlay.insert(key.to_string(), None);
+            self.overlay.lock().unwrap().insert(key.to_string(), None);
         }
         Ok(existed)
     }
 
-    async fn set_bytes(&mut self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
+    async fn set_bytes(&self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
         let prev = self.get_bytes(key).await?;
-        self.overlay.insert(key.to_string(), Some(value.to_vec()));
+        self.overlay
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), Some(value.to_vec()));
         Ok(prev)
     }
 
@@ -110,9 +113,10 @@ impl GetSet for BTreeTx {
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
         let guard = self.store.read().unwrap();
+        let overlay = self.overlay.lock().unwrap();
         match direction {
-            Direction::Next => Ok(build_next_overlay(&guard, &self.overlay, &cursor, limit)),
-            Direction::Prev => Ok(build_prev_overlay(&guard, &self.overlay, &cursor, limit)),
+            Direction::Next => Ok(build_next_overlay(&guard, &overlay, &cursor, limit)),
+            Direction::Prev => Ok(build_prev_overlay(&guard, &overlay, &cursor, limit)),
         }
     }
 }
@@ -120,8 +124,9 @@ impl GetSet for BTreeTx {
 #[async_trait]
 impl Transaction for BTreeTx {
     async fn commit(self) -> Result<()> {
+        let overlay = self.overlay.into_inner().unwrap();
         let mut guard = self.store.write().unwrap();
-        for (k, v) in self.overlay {
+        for (k, v) in overlay {
             match v {
                 Some(val) => {
                     guard.insert(k, val);
@@ -472,7 +477,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_set() {
-        let mut store = new_store();
+        let store = new_store();
         let inserted = store.set_bytes("key1", b"value1").await.unwrap();
         assert_eq!(inserted, None);
 
@@ -486,7 +491,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_missing_key() {
-        let mut store = new_store();
+        let store = new_store();
 
         // Setting a missing key should return None (it's a new insertion)
         let set_missing = store.set_bytes("missing", b"anything").await.unwrap();
@@ -495,7 +500,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update() {
-        let mut store = new_store();
+        let store = new_store();
         store.set_bytes("key1", b"old").await.unwrap();
 
         // set_bytes on existing key returns the previous value (was an update)
@@ -511,7 +516,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete() {
-        let mut store = new_store();
+        let store = new_store();
         store.set_bytes("key1", b"value").await.unwrap();
 
         let deleted = store.delete("key1").await.unwrap();
@@ -649,7 +654,7 @@ mod tests {
         populate_store(&mut store).await;
 
         // Start a transaction and make changes
-        let mut tx = store.begin_tx().unwrap();
+        let tx = store.begin_tx().unwrap();
         tx.set_bytes("key1", b"updated_in_tx").await.unwrap();
         tx.commit().await.unwrap();
 
@@ -660,10 +665,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_transaction_rollback() {
-        let mut store = new_store();
+        let store = new_store();
 
         // Start a transaction and make changes that don't affect existing keys
-        let mut tx = store.begin_tx().unwrap();
+        let tx = store.begin_tx().unwrap();
         tx.set_bytes("new_key", b"will_be_rolled_back")
             .await
             .unwrap();
@@ -685,10 +690,10 @@ mod tests {
         // Note: redb uses MVCC which provides isolation differently than HashMap snapshot.
         // In redb, changes within a transaction are not visible to concurrent read transactions
         // until the transaction is committed. This test verifies that behavior.
-        let mut store = new_store();
+        let store = new_store();
 
         // Start a write transaction and make changes
-        let mut tx = store.begin_tx().unwrap();
+        let tx = store.begin_tx().unwrap();
         tx.set_bytes("key1", b"isolation_test_value").await.unwrap();
 
         // Try to read in the same transaction — should see the uncommitted change
@@ -718,7 +723,7 @@ mod tests {
     /// Tests that deleting a non-existent key returns false and doesn't error.
     #[tokio::test]
     async fn test_delete_non_existent() {
-        let mut store = new_store();
+        let store = new_store();
         // Deleting from an empty store should return false without panicking
         let deleted = store.delete("does_not_exist").await.unwrap();
         assert!(!deleted);
@@ -727,7 +732,7 @@ mod tests {
     /// Tests that `exists` returns correct values across set/delete operations.
     #[tokio::test]
     async fn test_exists_after_set_and_delete() {
-        let mut store = new_store();
+        let store = new_store();
         // Key does not exist yet
         assert!(!store.has("key1").await.unwrap());
 
@@ -756,7 +761,7 @@ mod tests {
         populate_store(&mut store).await;
 
         // Begin a transaction and use all GetSet methods on BTreeTx directly
-        let mut tx = store.begin_tx().unwrap();
+        let tx = store.begin_tx().unwrap();
 
         // get_bytes in tx should see existing data
         let val = tx.get_bytes("a1").await.unwrap();
@@ -786,7 +791,7 @@ mod tests {
         let mut store = new_store();
         populate_store(&mut store).await;
 
-        let mut tx = store.begin_tx().unwrap();
+        let tx = store.begin_tx().unwrap();
         // Modify an existing key inside the transaction
         let old_val = tx.set_bytes("a1", b"changed").await.unwrap();
         assert_eq!(old_val, Some(b"apple".to_vec()));
@@ -812,7 +817,7 @@ mod tests {
         let mut store = new_store();
         populate_store(&mut store).await;
 
-        let mut tx = store.begin_tx().unwrap();
+        let tx = store.begin_tx().unwrap();
         // Add a brand-new key inside the transaction
         tx.set_bytes("secret", b"top_secret").await.unwrap();
 
@@ -843,7 +848,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut tx = store.begin_tx().unwrap();
+        let tx = store.begin_tx().unwrap();
         assert_eq!(
             tx.get_bytes("to_delete").await.unwrap(),
             Some(b"should_disappear".to_vec())
@@ -879,7 +884,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut tx = store.begin_tx().unwrap();
+        let tx = store.begin_tx().unwrap();
         assert_eq!(
             tx.get_bytes("protected_key").await.unwrap(),
             Some(b"important_data".to_vec())
@@ -913,7 +918,7 @@ mod tests {
         populate_store(&mut store).await;
 
         // Start a write tx and insert a key
-        let mut writer = store.begin_tx().unwrap();
+        let writer = store.begin_tx().unwrap();
         writer
             .set_bytes("isolated_key", b"writer_value")
             .await
@@ -997,7 +1002,7 @@ mod tests {
     /// Tests that getting a value with an empty value string works correctly.
     #[tokio::test]
     async fn test_set_get_empty_value() {
-        let mut store = new_store();
+        let store = new_store();
         store.set_bytes("empty", b"").await.unwrap();
         let val = store.get_bytes("empty").await.unwrap();
         assert_eq!(val, Some(b"".to_vec()));
@@ -1009,7 +1014,7 @@ mod tests {
         let mut store = new_store();
         populate_store(&mut store).await;
 
-        let mut tx = store.begin_tx().unwrap();
+        let tx = store.begin_tx().unwrap();
         let result = tx.delete("nonexistent").await.unwrap();
         assert!(!result);
     }
@@ -1017,7 +1022,7 @@ mod tests {
     /// Tests that `set_bytes` with an existing key updates the value and returns previous.
     #[tokio::test]
     async fn test_update_returns_previous_value() {
-        let mut store = new_store();
+        let store = new_store();
         store.set_bytes("k", b"v1").await.unwrap();
         let prev = store.set_bytes("k", b"v2").await.unwrap();
         assert_eq!(prev, Some(b"v1".to_vec()));
@@ -1056,7 +1061,7 @@ mod tests {
         let mut store = new_store();
         populate_store(&mut store).await;
 
-        let mut tx = store.begin_tx().unwrap(); // previously untested direct path
+        let tx = store.begin_tx().unwrap(); // previously untested direct path
         tx.set_bytes("tx_key", b"tx_value").await.unwrap();
         tx.commit().await.unwrap();
 
@@ -1072,7 +1077,7 @@ mod tests {
         let mut store = new_store();
         populate_store(&mut store).await;
 
-        let mut tx = store.begin_tx().unwrap(); // previously untested direct path
+        let tx = store.begin_tx().unwrap(); // previously untested direct path
         tx.set_bytes("tx_key", b"tx_value").await.unwrap();
         tx.rollback().await.unwrap();
 
