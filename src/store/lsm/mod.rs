@@ -1065,7 +1065,9 @@ pub struct OxKvTx<C = LruCache<String, Arc<SstFile>>> {
     session: String,
     mem: MemTable,
     wal_seq: Arc<std::sync::atomic::AtomicU64>,
+    sst_seq: Arc<std::sync::atomic::AtomicU64>,
     manifest_cache: Arc<async_lock::Mutex<ManifestCache>>,
+    readers: Arc<async_lock::Mutex<std::collections::BTreeMap<u64, usize>>>,
     sst_cache: C,
     overlay: std::collections::BTreeMap<String, Option<Vec<u8>>>,
 }
@@ -1125,6 +1127,28 @@ where
             .insert(id.to_string(), Arc::clone(&sst))
             .await;
         Ok(sst)
+    }
+
+    /// Store view sharing all mutable state, for running maintenance
+    /// (SST flush, GC, compaction) from tx-only workloads.
+    ///
+    /// Its private WAL buffer is never touched by those paths; fencing,
+    /// pinning, and CAS discipline all operate on the shared state, so
+    /// failures behave exactly like store-side maintenance.
+    fn maintenance_view(&self) -> OxKvStore<C> {
+        OxKvStore {
+            inner: Arc::clone(&self.inner),
+            prefix: self.prefix.clone(),
+            epoch: self.epoch,
+            session: self.session.clone(),
+            mem: Arc::clone(&self.mem),
+            wal_seq: Arc::clone(&self.wal_seq),
+            wal_buffer: Arc::new(async_lock::Mutex::new(Vec::new())),
+            sst_seq: Arc::clone(&self.sst_seq),
+            manifest_cache: Arc::clone(&self.manifest_cache),
+            readers: Arc::clone(&self.readers),
+            sst_cache: self.sst_cache.clone(),
+        }
     }
 }
 
@@ -1523,7 +1547,8 @@ impl<C> Transaction for OxKvTx<C>
 where
     C: Cache<String, Arc<SstFile>>,
 {
-    async fn commit(self) -> Result<()> {
+    #[allow(clippy::too_many_lines)]
+    async fn commit(mut self) -> Result<()> {
         if self.overlay.is_empty() {
             return Ok(());
         }
@@ -1597,13 +1622,25 @@ where
             let etag_opt = if etag.is_empty() { None } else { Some(etag) };
             match cas_manifest(Arc::clone(&self.inner), &self.prefix, &manifest, etag_opt).await {
                 Ok(new_etag) => {
+                    let wal_len = manifest.wal.len();
                     cache.update(manifest, new_etag);
-                    // Now durable — apply overlay to MemTable
+                    drop(cache);
+                    // Now durable — apply overlay to MemTable.
+                    let overlay = std::mem::take(&mut self.overlay);
                     {
                         let mut mem = self.mem.write().await;
-                        for (k, v) in self.overlay {
+                        for (k, v) in overlay {
                             mem.insert(k, v);
                         }
+                    }
+                    // Store-side writes maintain on every op; tx-only workloads
+                    // would otherwise grow mem and the WAL list without bound.
+                    let view = self.maintenance_view();
+                    let _ = view.flush_mem_to_sst().await;
+                    let _ = view.compact().await;
+                    if wal_len >= WAL_MAINTENANCE_COUNT {
+                        let _ = view.flush_mem_to_sst_force().await;
+                        let _ = view.gc_wal().await;
                     }
                     return Ok(());
                 }
@@ -1644,7 +1681,9 @@ where
             session: self.session.clone(),
             mem: Arc::clone(&self.mem),
             wal_seq: Arc::clone(&self.wal_seq),
+            sst_seq: Arc::clone(&self.sst_seq),
             manifest_cache: Arc::clone(&self.manifest_cache),
+            readers: Arc::clone(&self.readers),
             sst_cache: self.sst_cache.clone(),
             overlay: std::collections::BTreeMap::new(),
         })
