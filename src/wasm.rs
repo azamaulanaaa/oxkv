@@ -694,6 +694,7 @@ impl JsBTreeTx {
 }
 
 #[cfg(all(test, feature = "btree"))]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use wasm_bindgen_test::*;
 

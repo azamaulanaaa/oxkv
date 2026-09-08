@@ -778,6 +778,7 @@ pub trait GetSetExt: GetSet {
 impl<T: GetSet> GetSetExt for T {}
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use std::sync::{Arc, Mutex};
 

@@ -13,7 +13,7 @@ readme = "README.md"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = ["btree"]
+default = []
 ## In-memory B-tree backend (pure Rust, bench comparison only).
 btree = []
 ## Enables [`OtelStore`], an OpenTelemetry-instrumented decorator that wraps

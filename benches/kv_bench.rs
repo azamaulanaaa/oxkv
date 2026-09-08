@@ -1,4 +1,4 @@
-#![allow(missing_docs)]
+#![allow(missing_docs, clippy::expect_used, clippy::unwrap_used)]
 
 //! Benchmarks for storing and manipulating key-value data at 1,000-item,
 //! 100,000-item, and 1,000,000-item scales across all shipped backends.
