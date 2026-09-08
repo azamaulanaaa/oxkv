@@ -358,6 +358,24 @@ oxkv = { version = "0.4", features = ["oxkv"] }           # portable LSM core
 
 The WASM module in `src/wasm.rs` provides thread-safe wrappers for `BTreeStore` and `OxKvStore` (in-memory LSM), exposing every store method to JavaScript as async promises. Snapshots are byte-identical across backends, so bytes saved anywhere restore anywhere.
 
+### Persistent browser storage (OPFS)
+
+`OxKvStore.create()` is memory-only. For data that survives page reloads, open the same engine on origin private storage instead — same API, real files, content-hash etags so fencing and CAS work across sessions:
+
+```js
+import init, { OxKvStore } from "./pkg/oxkv.js";
+
+await init();
+const durable = await OxKvStore.createPersistent("my-app");
+await durable.set("user1", { name: "Ada" });
+
+// ...reload the page — the data is still there:
+const reopened = await OxKvStore.createPersistent("my-app");
+console.log(await reopened.get("user1")); // { name: "Ada" }
+```
+
+Main-thread only (async OPFS handles); cross-tab races resolve last-writer-wins, since OPFS offers no conditional-write primitive on the main thread.
+
 Build for WebAssembly:
 
 ```bash

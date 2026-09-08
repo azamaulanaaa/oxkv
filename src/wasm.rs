@@ -739,6 +739,39 @@ impl JsOxKvStore {
         }
     }
 
+    /// Create a persistent LSM store backed by origin private storage (OPFS).
+    ///
+    /// Same API as [`create`](Self::create), but contents survive page reloads:
+    /// objects live as real files under one `oxkv` OPFS directory, with
+    /// content-hash etags so fencing and CAS work across sessions. The storage
+    /// probe runs on every open, so a broken backend fails fast instead of
+    /// corrupting data. Main-thread only; cross-tab races resolve
+    /// last-writer-wins.
+    /// # Errors
+    /// * `StoreError` - if OPFS is unavailable/denied or the store fails to initialize
+    #[wasm_bindgen(
+        js_name = "createPersistent",
+        return_description = "A new persistent OxKvStore handle"
+    )]
+    pub async fn create_persistent(
+        #[wasm_bindgen(param_description = "Key prefix inside the store; defaults to js-lsm")]
+        prefix: Option<String>,
+    ) -> Result<JsOxKvStore, JsValue> {
+        let prefix = prefix.unwrap_or_else(|| "js-lsm".to_string());
+        let backend = std::sync::Arc::new(store::OpfsStorage::open().await?);
+        match store::OxKvStore::builder()
+            .with_store(backend)
+            .with_prefix(store::ObjectPath::from(prefix))
+            .build()
+            .await
+        {
+            Ok(store) => Ok(Self {
+                inner: std::sync::Arc::new(futures::lock::Mutex::new(store)),
+            }),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// Retrieve a value by key. Returns the raw bytes as a `Uint8Array`, or `null` if the key does not exist.
     /// # Errors
     /// * `StoreError` - if an I/O error occurs reading from the store
@@ -1957,5 +1990,22 @@ mod oxkv_tests {
             ok_bytes(lsm.get_bytes("shared").await),
             Some(b"payload".to_vec())
         );
+    }
+
+    #[wasm_bindgen_test]
+    async fn persistent_roundtrip_survives_reopen() {
+        let prefix = Some("persist-smoke".to_string());
+        let js_store = JsOxKvStore::create_persistent(prefix.clone())
+            .await
+            .expect("open persistent store");
+        ok(js_store.set_bytes("k", b"v").await);
+        drop(js_store);
+
+        // Reopen on the same prefix: OPFS files (not memory) serve the read.
+        let reopened = JsOxKvStore::create_persistent(prefix)
+            .await
+            .expect("reopen persistent store");
+        assert_eq!(ok_bytes(reopened.get_bytes("k").await), Some(b"v".to_vec()));
+        ok(reopened.delete("k").await);
     }
 }
