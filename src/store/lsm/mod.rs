@@ -2322,6 +2322,42 @@ mod tests {
 
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn compact_bounds_l1_file_count() {
+        let inner = new_in_memory();
+        let mut s3 = OxKvStore::builder()
+            .with_store(Arc::clone(&inner))
+            .with_prefix(ObjectPath::from("oxkv-l1-bound"))
+            .with_session("sess-l1-bound")
+            .skip_probe(true)
+            .build()
+            .await
+            .unwrap();
+
+        // 100 rounds of disjoint ranges: each L0-triggered compact adds one
+        // L1, so without pair-collapse the count would reach 25. With it,
+        // the count oscillates around the threshold once crossed (~64 rounds).
+        for i in 0..100 {
+            for j in 0..4 {
+                s3.put_bytes(&format!("c{i:03}/k{j}"), b"v").await.unwrap();
+            }
+            s3.flush_mem_to_sst_force()
+                .await
+                .expect("sst flush")
+                .expect("some sst");
+            s3.compact().await.unwrap();
+        }
+
+        let path = ObjectPath::from("oxkv-l1-bound").child("manifest.json");
+        let out = inner.get(&path).await.expect("manifest readable");
+        let manifest: Manifest = serde_json::from_slice(&out.bytes).expect("manifest parses");
+        let l1 = manifest.sst.iter().filter(|m| m.level == 1).count();
+        // Lower bound proves compactions actually ran (not a vacuous zero);
+        // upper bound proves pair-collapse engaged (unfixed would be 25).
+        assert!((10..=L1_MERGE_COUNT + 2).contains(&l1), "l1 files {l1}");
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn put_bytes_matches_set_bytes() {
         let mut s3 = OxKvStore::builder()
             .with_store(new_in_memory())
