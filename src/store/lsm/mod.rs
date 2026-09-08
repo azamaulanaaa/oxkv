@@ -24,7 +24,7 @@ mod sst;
 pub(crate) use blob::{
     encode_blob_pointer, get_blob, is_overflow, put_blob, try_decode_blob_pointer,
 };
-pub(crate) use manifest::{Manifest, ManifestCache, SstMeta, cas_manifest};
+pub(crate) use manifest::{Manifest, ManifestCache, SstMeta, cas_manifest, load_manifest};
 pub(crate) use ownership::{acquire_ownership, cas_backoff, read_ownership, sst_path, wal_path};
 pub(crate) use probe::probe_store;
 /// Parsed SST file; name it to weigh a custom [`Cache`] (see [`SstFile::size`]).
@@ -248,15 +248,14 @@ where
 
         let wal_id = path.to_string();
         for attempt in 0..4 {
-            let mut cache = self.manifest_cache.lock().await;
-            let (manifest, etag) = cache
-                .load(
-                    Arc::clone(&self.inner),
-                    &self.prefix,
-                    self.epoch,
-                    std::time::Duration::from_secs(1),
-                )
-                .await?;
+            let (manifest, etag) = load_manifest(
+                Arc::clone(&self.inner),
+                &self.prefix,
+                self.epoch,
+                &self.manifest_cache,
+                std::time::Duration::from_secs(1),
+            )
+            .await?;
             // Owned copy for mutation; readers share the cached `Arc`.
             let mut manifest = (*manifest).clone();
             if manifest.wal.iter().any(|w| w == &wal_id) {
@@ -268,20 +267,18 @@ where
             match cas_manifest(Arc::clone(&self.inner), &self.prefix, &manifest, etag_opt).await {
                 Ok(new_etag) => {
                     let wal_len = manifest.wal.len();
-                    cache.update(manifest, new_etag);
-                    drop(cache);
+                    self.manifest_cache.lock().await.update(manifest, new_etag);
                     self.maintain_wal(wal_len).await;
                     return Ok(());
                 }
                 Err(StoreError::CasConflict(detail)) => {
-                    cache.clear();
+                    self.manifest_cache.lock().await.clear();
                     if attempt == 3 {
                         return Err(StoreError::Storage(format!(
                             "wal manifest CAS conflict after retries: {detail}"
                         )));
                     }
                     let backoff = cas_backoff(attempt);
-                    drop(cache);
                     sleep(backoff).await;
                 }
                 Err(e) => return Err(e),
@@ -401,15 +398,14 @@ where
             }
         }
 
-        let mut cache = self.manifest_cache.lock().await;
-        let (manifest, etag) = cache
-            .load(
-                Arc::clone(&self.inner),
-                &self.prefix,
-                self.epoch,
-                std::time::Duration::from_secs(1),
-            )
-            .await?;
+        let (manifest, etag) = load_manifest(
+            Arc::clone(&self.inner),
+            &self.prefix,
+            self.epoch,
+            &self.manifest_cache,
+            std::time::Duration::from_secs(1),
+        )
+        .await?;
         // Owned copy for mutation; readers share the cached `Arc`.
         let mut manifest = (*manifest).clone();
         if manifest.sst.iter().any(|m| m.id == sst_id) {
@@ -434,7 +430,7 @@ where
         let etag_opt = if etag.is_empty() { None } else { Some(etag) };
         match cas_manifest(Arc::clone(&self.inner), &self.prefix, &manifest, etag_opt).await {
             Ok(new_etag) => {
-                cache.update(manifest, new_etag);
+                self.manifest_cache.lock().await.update(manifest, new_etag);
                 {
                     let mut mem = self.mem.write().await;
                     for key in snapshot.keys() {
@@ -446,15 +442,15 @@ where
             Err(StoreError::CasConflict(detail)) => {
                 let backoff = cas_backoff(0);
                 sleep(backoff).await;
-                cache.clear();
-                let (reloaded, _) = cache
-                    .load(
-                        Arc::clone(&self.inner),
-                        &self.prefix,
-                        self.epoch,
-                        std::time::Duration::from_secs(0),
-                    )
-                    .await?;
+                self.manifest_cache.lock().await.clear();
+                let (reloaded, _) = load_manifest(
+                    Arc::clone(&self.inner),
+                    &self.prefix,
+                    self.epoch,
+                    &self.manifest_cache,
+                    std::time::Duration::from_secs(0),
+                )
+                .await?;
                 if reloaded.sst.iter().any(|m| m.id == sst_id) {
                     let mut mem = self.mem.write().await;
                     for key in snapshot.keys() {
@@ -538,17 +534,14 @@ where
                 }
             }
         }
-        let (manifest, _etag) = {
-            let mut cache = self.manifest_cache.lock().await;
-            cache
-                .load(
-                    Arc::clone(&self.inner),
-                    &self.prefix,
-                    self.epoch,
-                    std::time::Duration::from_secs(1),
-                )
-                .await?
-        };
+        let (manifest, _etag) = load_manifest(
+            Arc::clone(&self.inner),
+            &self.prefix,
+            self.epoch,
+            &self.manifest_cache,
+            std::time::Duration::from_secs(1),
+        )
+        .await?;
         for meta in manifest.sst.iter().rev() {
             if key < meta.min_key.as_str() || key > meta.max_key.as_str() {
                 continue;
@@ -620,17 +613,14 @@ where
                 };
             sources.push(mem_vec);
         }
-        let (manifest, _etag) = {
-            let mut cache = self.manifest_cache.lock().await;
-            cache
-                .load(
-                    Arc::clone(&self.inner),
-                    &self.prefix,
-                    self.epoch,
-                    std::time::Duration::from_secs(1),
-                )
-                .await?
-        };
+        let (manifest, _etag) = load_manifest(
+            Arc::clone(&self.inner),
+            &self.prefix,
+            self.epoch,
+            &self.manifest_cache,
+            std::time::Duration::from_secs(1),
+        )
+        .await?;
         for meta in manifest.sst.iter().rev() {
             let overlaps = {
                 let min = meta.min_key.as_str();
@@ -691,15 +681,14 @@ where
     ///
     /// Returns `StoreError` on I/O.
     pub async fn manifest_version(&self) -> Result<u64> {
-        let mut cache = self.manifest_cache.lock().await;
-        let (manifest, _) = cache
-            .load(
-                Arc::clone(&self.inner),
-                &self.prefix,
-                self.epoch,
-                std::time::Duration::from_secs(1),
-            )
-            .await?;
+        let (manifest, _) = load_manifest(
+            Arc::clone(&self.inner),
+            &self.prefix,
+            self.epoch,
+            &self.manifest_cache,
+            std::time::Duration::from_secs(1),
+        )
+        .await?;
         Ok(manifest.version)
     }
 
@@ -715,15 +704,14 @@ where
     pub async fn gc_wal(&self) -> Result<usize> {
         let min_version = self.min_reader_version().await;
         for _ in 0..4 {
-            let mut cache = self.manifest_cache.lock().await;
-            let (manifest, etag) = cache
-                .load(
-                    Arc::clone(&self.inner),
-                    &self.prefix,
-                    self.epoch,
-                    std::time::Duration::from_secs(1),
-                )
-                .await?;
+            let (manifest, etag) = load_manifest(
+                Arc::clone(&self.inner),
+                &self.prefix,
+                self.epoch,
+                &self.manifest_cache,
+                std::time::Duration::from_secs(1),
+            )
+            .await?;
             // Owned copy for mutation; readers share the cached `Arc`.
             let mut manifest = (*manifest).clone();
             if manifest.wal.is_empty() || manifest.sst.is_empty() {
@@ -741,8 +729,7 @@ where
             let etag_opt = if etag.is_empty() { None } else { Some(etag) };
             match cas_manifest(Arc::clone(&self.inner), &self.prefix, &manifest, etag_opt).await {
                 Ok(new_etag) => {
-                    cache.update(manifest, new_etag);
-                    drop(cache);
+                    self.manifest_cache.lock().await.update(manifest, new_etag);
                     let mut deleted = 0usize;
                     for wal in &to_delete {
                         let path = ObjectPath::from(wal.as_str());
@@ -756,8 +743,7 @@ where
                     return Ok(deleted);
                 }
                 Err(StoreError::CasConflict(_)) => {
-                    cache.clear();
-                    drop(cache);
+                    self.manifest_cache.lock().await.clear();
                     sleep(cas_backoff(0)).await;
                 }
                 Err(e) => return Err(e),
@@ -778,17 +764,14 @@ where
     #[allow(clippy::too_many_lines)]
     pub async fn compact(&self) -> Result<Option<SstMeta>> {
         // Load manifest and check trigger.
-        let (manifest_snapshot, _) = {
-            let mut cache = self.manifest_cache.lock().await;
-            cache
-                .load(
-                    Arc::clone(&self.inner),
-                    &self.prefix,
-                    self.epoch,
-                    std::time::Duration::from_secs(1),
-                )
-                .await?
-        };
+        let (manifest_snapshot, _) = load_manifest(
+            Arc::clone(&self.inner),
+            &self.prefix,
+            self.epoch,
+            &self.manifest_cache,
+            std::time::Duration::from_secs(1),
+        )
+        .await?;
         let l0_count = manifest_snapshot
             .sst
             .iter()
@@ -911,15 +894,14 @@ where
         if final_entries.is_empty() {
             // No live keys — just CAS remove old files.
             for _ in 0..4 {
-                let mut cache = self.manifest_cache.lock().await;
-                let (manifest, etag) = cache
-                    .load(
-                        Arc::clone(&self.inner),
-                        &self.prefix,
-                        self.epoch,
-                        std::time::Duration::from_secs(1),
-                    )
-                    .await?;
+                let (manifest, etag) = load_manifest(
+                    Arc::clone(&self.inner),
+                    &self.prefix,
+                    self.epoch,
+                    &self.manifest_cache,
+                    std::time::Duration::from_secs(1),
+                )
+                .await?;
                 // Owned copy for mutation; readers share the cached `Arc`.
                 let mut manifest = (*manifest).clone();
                 let before_len = manifest.sst.len();
@@ -935,8 +917,10 @@ where
                 match cas_manifest(Arc::clone(&self.inner), &self.prefix, &manifest, etag_opt).await
                 {
                     Ok(new_etag) => {
-                        cache.update(manifest.clone(), new_etag);
-                        drop(cache);
+                        self.manifest_cache
+                            .lock()
+                            .await
+                            .update(manifest.clone(), new_etag);
                         for m in l0_metas.iter().chain(l1_overlapping.iter()) {
                             let p = ObjectPath::from(m.id.as_str());
                             let _ = self.inner.delete(&p).await;
@@ -944,8 +928,7 @@ where
                         return Ok(None);
                     }
                     Err(StoreError::CasConflict(_)) => {
-                        cache.clear();
-                        drop(cache);
+                        self.manifest_cache.lock().await.clear();
                         sleep(cas_backoff(0)).await;
                     }
                     Err(e) => return Err(e),
@@ -985,15 +968,14 @@ where
         }
         // CAS manifest: remove old L0/L1 overlapping, add new L1.
         for _ in 0..4 {
-            let mut cache = self.manifest_cache.lock().await;
-            let (manifest, etag) = cache
-                .load(
-                    Arc::clone(&self.inner),
-                    &self.prefix,
-                    self.epoch,
-                    std::time::Duration::from_secs(1),
-                )
-                .await?;
+            let (manifest, etag) = load_manifest(
+                Arc::clone(&self.inner),
+                &self.prefix,
+                self.epoch,
+                &self.manifest_cache,
+                std::time::Duration::from_secs(1),
+            )
+            .await?;
             // Owned copy for mutation; readers share the cached `Arc`.
             let mut manifest = (*manifest).clone();
             // Idempotency: if new L1 already present, reuse.
@@ -1029,8 +1011,7 @@ where
             let etag_opt = if etag.is_empty() { None } else { Some(etag) };
             match cas_manifest(Arc::clone(&self.inner), &self.prefix, &manifest, etag_opt).await {
                 Ok(new_etag) => {
-                    cache.update(manifest, new_etag);
-                    drop(cache);
+                    self.manifest_cache.lock().await.update(manifest, new_etag);
                     // Invalidate sst_cache for deleted, keep new.
                     for m in l0_metas.iter().chain(l1_overlapping.iter()) {
                         self.sst_cache.remove(&m.id).await;
@@ -1040,8 +1021,7 @@ where
                     return Ok(Some(new_meta));
                 }
                 Err(StoreError::CasConflict(_)) => {
-                    cache.clear();
-                    drop(cache);
+                    self.manifest_cache.lock().await.clear();
                     sleep(cas_backoff(0)).await;
                 }
                 Err(e) => return Err(e),
@@ -1217,15 +1197,14 @@ where
         }
         let wal_id = path.to_string();
         for attempt in 0..4 {
-            let mut cache = self.manifest_cache.lock().await;
-            let (manifest, etag) = cache
-                .load(
-                    Arc::clone(&self.inner),
-                    &self.prefix,
-                    self.epoch,
-                    std::time::Duration::from_secs(1),
-                )
-                .await?;
+            let (manifest, etag) = load_manifest(
+                Arc::clone(&self.inner),
+                &self.prefix,
+                self.epoch,
+                &self.manifest_cache,
+                std::time::Duration::from_secs(1),
+            )
+            .await?;
             // Owned copy for mutation; readers share the cached `Arc`.
             let mut manifest = (*manifest).clone();
             if manifest.wal.iter().any(|w| w == &wal_id) {
@@ -1238,8 +1217,7 @@ where
             match cas_manifest(Arc::clone(&self.inner), &self.prefix, &manifest, etag_opt).await {
                 Ok(new_etag) => {
                     let wal_len = manifest.wal.len();
-                    cache.update(manifest, new_etag);
-                    drop(cache);
+                    self.manifest_cache.lock().await.update(manifest, new_etag);
                     self.mem.write().await.insert(key.to_string(), None);
                     // Best-effort auto maintenance — ignore fencing/conflicts
                     let _ = self.flush_mem_to_sst().await;
@@ -1248,14 +1226,13 @@ where
                     return Ok(true);
                 }
                 Err(StoreError::CasConflict(detail)) => {
-                    cache.clear();
+                    self.manifest_cache.lock().await.clear();
                     if attempt == 3 {
                         return Err(StoreError::Storage(format!(
                             "wal manifest CAS conflict after retries: {detail}"
                         )));
                     }
                     let backoff = cas_backoff(attempt);
-                    drop(cache);
                     sleep(backoff).await;
                 }
                 Err(e) => return Err(e),
@@ -1306,19 +1283,17 @@ where
         }
         let wal_id = path.to_string();
         for attempt in 0..4 {
-            let mut cache = self.manifest_cache.lock().await;
-            let (manifest, etag) = cache
-                .load(
-                    Arc::clone(&self.inner),
-                    &self.prefix,
-                    self.epoch,
-                    std::time::Duration::from_secs(1),
-                )
-                .await?;
+            let (manifest, etag) = load_manifest(
+                Arc::clone(&self.inner),
+                &self.prefix,
+                self.epoch,
+                &self.manifest_cache,
+                std::time::Duration::from_secs(1),
+            )
+            .await?;
             // Owned copy for mutation; readers share the cached `Arc`.
             let mut manifest = (*manifest).clone();
             if manifest.wal.iter().any(|w| w == &wal_id) {
-                drop(cache);
                 self.mem
                     .write()
                     .await
@@ -1333,8 +1308,7 @@ where
             match cas_manifest(Arc::clone(&self.inner), &self.prefix, &manifest, etag_opt).await {
                 Ok(new_etag) => {
                     let wal_len = manifest.wal.len();
-                    cache.update(manifest, new_etag);
-                    drop(cache);
+                    self.manifest_cache.lock().await.update(manifest, new_etag);
                     self.mem
                         .write()
                         .await
@@ -1345,14 +1319,13 @@ where
                     return Ok(());
                 }
                 Err(StoreError::CasConflict(detail)) => {
-                    cache.clear();
+                    self.manifest_cache.lock().await.clear();
                     if attempt == 3 {
                         return Err(StoreError::Storage(format!(
                             "wal manifest CAS conflict after retries: {detail}"
                         )));
                     }
                     let backoff = cas_backoff(attempt);
-                    drop(cache);
                     sleep(backoff).await;
                 }
                 Err(e) => return Err(e),
@@ -1396,17 +1369,14 @@ where
             }
         }
         // Scan SSTs
-        let (manifest, _etag) = {
-            let mut cache = self.manifest_cache.lock().await;
-            cache
-                .load(
-                    Arc::clone(&self.inner),
-                    &self.prefix,
-                    self.epoch,
-                    std::time::Duration::from_secs(1),
-                )
-                .await?
-        };
+        let (manifest, _etag) = load_manifest(
+            Arc::clone(&self.inner),
+            &self.prefix,
+            self.epoch,
+            &self.manifest_cache,
+            std::time::Duration::from_secs(1),
+        )
+        .await?;
         for meta in manifest.sst.iter().rev() {
             if key < meta.min_key.as_str() || key > meta.max_key.as_str() {
                 continue;
@@ -1516,17 +1486,14 @@ where
             sources.push(mem_vec);
         }
         // SSTs
-        let (manifest, _etag) = {
-            let mut cache = self.manifest_cache.lock().await;
-            cache
-                .load(
-                    Arc::clone(&self.inner),
-                    &self.prefix,
-                    self.epoch,
-                    std::time::Duration::from_secs(1),
-                )
-                .await?
-        };
+        let (manifest, _etag) = load_manifest(
+            Arc::clone(&self.inner),
+            &self.prefix,
+            self.epoch,
+            &self.manifest_cache,
+            std::time::Duration::from_secs(1),
+        )
+        .await?;
         for meta in manifest.sst.iter().rev() {
             let overlaps = {
                 let min = meta.min_key.as_str();
@@ -1615,15 +1582,14 @@ where
         }
         let wal_id = path.to_string();
         for attempt in 0..4 {
-            let mut cache = self.manifest_cache.lock().await;
-            let (manifest, etag) = cache
-                .load(
-                    Arc::clone(&self.inner),
-                    &self.prefix,
-                    self.epoch,
-                    std::time::Duration::from_secs(1),
-                )
-                .await?;
+            let (manifest, etag) = load_manifest(
+                Arc::clone(&self.inner),
+                &self.prefix,
+                self.epoch,
+                &self.manifest_cache,
+                std::time::Duration::from_secs(1),
+            )
+            .await?;
             // Owned copy for mutation; readers share the cached `Arc`.
             let mut manifest = (*manifest).clone();
             if manifest.wal.iter().any(|w| w == &wal_id) {
@@ -1642,8 +1608,7 @@ where
             match cas_manifest(Arc::clone(&self.inner), &self.prefix, &manifest, etag_opt).await {
                 Ok(new_etag) => {
                     let wal_len = manifest.wal.len();
-                    cache.update(manifest, new_etag);
-                    drop(cache);
+                    self.manifest_cache.lock().await.update(manifest, new_etag);
                     // Now durable — apply the drained overlay to MemTable.
                     {
                         let mut mem = self.mem.write().await;
@@ -1663,14 +1628,13 @@ where
                     return Ok(());
                 }
                 Err(StoreError::CasConflict(detail)) => {
-                    cache.clear();
+                    self.manifest_cache.lock().await.clear();
                     if attempt == 3 {
                         return Err(StoreError::Storage(format!(
                             "wal manifest CAS conflict after retries: {detail}"
                         )));
                     }
                     let backoff = cas_backoff(attempt);
-                    drop(cache);
                     sleep(backoff).await;
                 }
                 Err(e) => return Err(e),
@@ -1868,15 +1832,14 @@ impl OxKvStoreBuilder {
         };
         // WAL replay for restart/f fencing — make not-yet-SSTed WAL visible
         {
-            let mut cache = s3store.manifest_cache.lock().await;
-            let (manifest, _etag) = match cache
-                .load(
-                    Arc::clone(&s3store.inner),
-                    &s3store.prefix,
-                    s3store.epoch,
-                    std::time::Duration::from_secs(1),
-                )
-                .await
+            let (manifest, _etag) = match load_manifest(
+                Arc::clone(&s3store.inner),
+                &s3store.prefix,
+                s3store.epoch,
+                &s3store.manifest_cache,
+                std::time::Duration::from_secs(1),
+            )
+            .await
             {
                 Ok(v) => v,
                 Err(_) => (Arc::new(Manifest::empty(s3store.epoch)), String::new()),
@@ -2735,18 +2698,15 @@ mod tests {
         s3.register_reader(v1).await;
         let held = s3.gc_wal().await.unwrap();
         assert_eq!(held, 0, "pinned reader must hold WAL");
-        let (manifest_held, _) = {
-            let mut cache = s3.manifest_cache.lock().await;
-            cache
-                .load(
-                    Arc::clone(&store),
-                    &ObjectPath::from("gc-test"),
-                    s3.epoch(),
-                    std::time::Duration::from_secs(0),
-                )
-                .await
-                .unwrap()
-        };
+        let (manifest_held, _) = load_manifest(
+            Arc::clone(&store),
+            &ObjectPath::from("gc-test"),
+            s3.epoch(),
+            &s3.manifest_cache,
+            std::time::Duration::from_secs(0),
+        )
+        .await
+        .unwrap();
         assert!(!manifest_held.wal.is_empty(), "WAL retained while pinned");
         // WAL objects still exist.
         for wal in &manifest_held.wal {
@@ -2773,18 +2733,15 @@ mod tests {
                 "WAL {wal} must be deleted after GC: {err}"
             );
         }
-        let (manifest_gc, _) = {
-            let mut cache = s3.manifest_cache.lock().await;
-            cache
-                .load(
-                    Arc::clone(&store),
-                    &ObjectPath::from("gc-test"),
-                    s3.epoch(),
-                    std::time::Duration::from_secs(0),
-                )
-                .await
-                .unwrap()
-        };
+        let (manifest_gc, _) = load_manifest(
+            Arc::clone(&store),
+            &ObjectPath::from("gc-test"),
+            s3.epoch(),
+            &s3.manifest_cache,
+            std::time::Duration::from_secs(0),
+        )
+        .await
+        .unwrap();
         assert!(
             manifest_gc.wal.is_empty(),
             "manifest.wal must be empty after GC"
@@ -2824,36 +2781,30 @@ mod tests {
             }
             s3.flush_mem_to_sst_force().await.unwrap();
         }
-        let (m_before, _) = {
-            let mut cache = s3.manifest_cache.lock().await;
-            cache
-                .load(
-                    Arc::clone(&store),
-                    &ObjectPath::from("compact-test"),
-                    s3.epoch(),
-                    std::time::Duration::from_secs(0),
-                )
-                .await
-                .unwrap()
-        };
+        let (m_before, _) = load_manifest(
+            Arc::clone(&store),
+            &ObjectPath::from("compact-test"),
+            s3.epoch(),
+            &s3.manifest_cache,
+            std::time::Duration::from_secs(0),
+        )
+        .await
+        .unwrap();
         let l0_before = m_before.sst.iter().filter(|m| m.level == 0).count();
         assert!(l0_before >= 4, "need >=4 L0 for trigger, got {l0_before}");
         // First compaction should produce L1.
         let new_l1 = s3.compact().await.unwrap().expect("should compact");
         assert_eq!(new_l1.level, 1);
         // Verify manifest now has no L0 (or fewer) and one L1.
-        let (m_after, _) = {
-            let mut cache = s3.manifest_cache.lock().await;
-            cache
-                .load(
-                    Arc::clone(&store),
-                    &ObjectPath::from("compact-test"),
-                    s3.epoch(),
-                    std::time::Duration::from_secs(0),
-                )
-                .await
-                .unwrap()
-        };
+        let (m_after, _) = load_manifest(
+            Arc::clone(&store),
+            &ObjectPath::from("compact-test"),
+            s3.epoch(),
+            &s3.manifest_cache,
+            std::time::Duration::from_secs(0),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             m_after.sst.iter().filter(|m| m.level == 0).count(),
             0,

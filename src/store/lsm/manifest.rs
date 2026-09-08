@@ -173,60 +173,70 @@ impl ManifestCache {
     pub fn clear(&mut self) {
         self.entry = None;
     }
+}
 
-    /// Loads manifest with `ETag` poll: if cached `etag` matches remote and
-    /// `TTL` not expired, uses `If-None-Match` to avoid re-fetching.
-    ///
-    /// If remote returns `NotModified`, returns cached.
-    /// If `NotFound`, returns empty manifest for `epoch`.
-    pub async fn load(
-        &mut self,
-        store: Arc<dyn Storage>,
-        prefix: &ObjectPath,
-        epoch: u64,
-        ttl: Duration,
-    ) -> Result<(Arc<Manifest>, String)> {
+/// Loads the current manifest without holding the cache lock across I/O.
+///
+/// Snapshots the cached entry under a brief lock, releases the guard, polls
+/// (`If-None-Match`) or re-reads storage, then publishes under a second
+/// brief lock. Concurrent loads may publish out of order; last-writer-wins
+/// applies, which stays inside the accepted TTL-staleness envelope because
+/// every writer revalidates through manifest CAS.
+pub(crate) async fn load_manifest(
+    store: Arc<dyn Storage>,
+    prefix: &ObjectPath,
+    epoch: u64,
+    cache: &Arc<async_lock::Mutex<ManifestCache>>,
+    ttl: Duration,
+) -> Result<(Arc<Manifest>, String)> {
+    // Phase 1: snapshot under a brief lock — cloned `Arc`s, no I/O.
+    let snapshot = {
+        let guard = cache.lock().await;
         // Single-writer fast path: a TTL-fresh entry is authoritative.
-        if self.skip_revalidation
-            && let Some(cached) = self.get_cached(ttl)
+        if guard.skip_revalidation
+            && let Some(cached) = guard.get_cached(ttl)
         {
             return Ok(cached);
         }
-        if let Some((manifest, etag)) = self.get_cached(ttl) {
-            let path = manifest_path(prefix);
-            let opts = GetOptions {
-                if_none_match: Some(etag.clone()),
-            };
-            match store.get_opts(&path, opts).await {
-                Ok(out) => {
-                    let new_etag = out.e_tag.clone().unwrap_or_default();
-                    let manifest: Manifest = serde_json::from_slice(&out.bytes)
-                        .map_err(|e| StoreError::Storage(format!("parse manifest: {e}")))?;
-                    self.update(manifest.clone(), new_etag.clone());
-                    return Ok((Arc::new(manifest), new_etag));
-                }
-                Err(StoreError::NotModified) => {
-                    return Ok((manifest, etag));
-                }
-                Err(e) if e.to_string().contains("not found") => {
-                    let empty = Manifest::empty(epoch);
-                    self.update(empty.clone(), String::new());
-                    return Ok((Arc::new(empty), String::new()));
-                }
-                Err(e) => return Err(StoreError::Storage(format!("get manifest failed: {e}"))),
+        guard.get_cached(ttl)
+    };
+    // Phase 2: I/O with no guard held.
+    if let Some((manifest, etag)) = snapshot {
+        let path = manifest_path(prefix);
+        let opts = GetOptions {
+            if_none_match: Some(etag.clone()),
+        };
+        match store.get_opts(&path, opts).await {
+            Ok(out) => {
+                let new_etag = out.e_tag.clone().unwrap_or_default();
+                let manifest: Manifest = serde_json::from_slice(&out.bytes)
+                    .map_err(|e| StoreError::Storage(format!("parse manifest: {e}")))?;
+                cache
+                    .lock()
+                    .await
+                    .update(manifest.clone(), new_etag.clone());
+                return Ok((Arc::new(manifest), new_etag));
             }
-        }
-
-        match read_manifest(Arc::clone(&store), prefix).await? {
-            Some((manifest, etag)) => {
-                self.update(manifest.clone(), etag.clone());
-                Ok((Arc::new(manifest), etag))
+            Err(StoreError::NotModified) => {
+                return Ok((manifest, etag));
             }
-            None => {
+            Err(e) if e.to_string().contains("not found") => {
                 let empty = Manifest::empty(epoch);
-                self.update(empty.clone(), String::new());
-                Ok((Arc::new(empty), String::new()))
+                cache.lock().await.update(empty.clone(), String::new());
+                return Ok((Arc::new(empty), String::new()));
             }
+            Err(e) => return Err(StoreError::Storage(format!("get manifest failed: {e}"))),
+        }
+    }
+    match read_manifest(Arc::clone(&store), prefix).await? {
+        Some((manifest, etag)) => {
+            cache.lock().await.update(manifest.clone(), etag.clone());
+            Ok((Arc::new(manifest), etag))
+        }
+        None => {
+            let empty = Manifest::empty(epoch);
+            cache.lock().await.update(empty.clone(), String::new());
+            Ok((Arc::new(empty), String::new()))
         }
     }
 }
@@ -288,11 +298,10 @@ mod tests {
         let store = test_store();
         let prefix = ObjectPath::default();
         let epoch = 7;
-        let mut cache = ManifestCache::new();
+        let cache = Arc::new(async_lock::Mutex::new(ManifestCache::new()));
         let ttl = Duration::from_secs(1);
 
-        let (m1, e1) = cache
-            .load(Arc::clone(&store), &prefix, epoch, ttl)
+        let (m1, e1) = load_manifest(Arc::clone(&store), &prefix, epoch, &cache, ttl)
             .await
             .unwrap();
         assert_eq!(m1.version, 0);
@@ -319,16 +328,14 @@ mod tests {
             .await
             .unwrap();
 
-        cache.clear();
-        let (m2, _e2) = cache
-            .load(Arc::clone(&store), &prefix, epoch, ttl)
+        cache.lock().await.clear();
+        let (m2, _e2) = load_manifest(Arc::clone(&store), &prefix, epoch, &cache, ttl)
             .await
             .unwrap();
         assert_eq!(m2.version, 1);
         assert_eq!(m2.sst.len(), 1);
 
-        let (m3, _e3) = cache
-            .load(Arc::clone(&store), &prefix, epoch, ttl)
+        let (m3, _e3) = load_manifest(Arc::clone(&store), &prefix, epoch, &cache, ttl)
             .await
             .unwrap();
         assert_eq!(m3.version, 1);
@@ -339,7 +346,7 @@ mod tests {
     async fn manifest_cache_ttl_expiry() {
         let store = test_store();
         let prefix = ObjectPath::default();
-        let mut cache = ManifestCache::new();
+        let cache = Arc::new(async_lock::Mutex::new(ManifestCache::new()));
         let ttl = Duration::from_millis(10);
         let epoch = 1;
 
@@ -352,15 +359,13 @@ mod tests {
         cas_manifest(Arc::clone(&store), &prefix, &manifest, None)
             .await
             .unwrap();
-        let (m1, _) = cache
-            .load(Arc::clone(&store), &prefix, epoch, ttl)
+        let (m1, _) = load_manifest(Arc::clone(&store), &prefix, epoch, &cache, ttl)
             .await
             .unwrap();
         assert_eq!(m1.version, 5);
         sleep(Duration::from_millis(20)).await;
-        assert!(cache.get_cached(ttl).is_none());
-        let (m2, _) = cache
-            .load(Arc::clone(&store), &prefix, epoch, ttl)
+        assert!(cache.lock().await.get_cached(ttl).is_none());
+        let (m2, _) = load_manifest(Arc::clone(&store), &prefix, epoch, &cache, ttl)
             .await
             .unwrap();
         assert_eq!(m2.version, 5);
