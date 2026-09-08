@@ -23,6 +23,14 @@
 //! - `point_update` — in-place updates of a few keys inside a large store
 //! - `concurrent_write` — 8 threads x 128 blind writes against one shared
 //!   store on a multi-thread runtime (oxkv only): exercises the write gate
+//! - `zipf_get` — skewed reads over 50 forced SSTs with a 320 KiB cache
+//!   (oxkv only): exercises admission policy; hit ratio prints to stderr
+//! - `mt_random_get` — shared-store point reads from 8 threads (oxkv only)
+//!
+//! A/B comparisons against a base commit (baselines live in gitignored
+//! `target/criterion`, so they never leave your machine):
+//! `mise bench --bench kv_bench -- --save-baseline base` on base, then
+//! `mise bench --bench kv_bench -- --baseline base` on the contender.
 //!
 //! Scale strategy (keeps the full suite in minutes, not hours):
 //! - Full-scan writes (`seq_insert`, `seq_delete`) scale linearly, so they
@@ -335,7 +343,7 @@ fn point_update<S>(
 mod oxkv_bench {
     use std::sync::Arc;
 
-    use oxkv::{MemStorage, ObjectPath};
+    use oxkv::{LruCache, MemStorage, ObjectPath, SstFile};
 
     use super::*;
 
@@ -560,6 +568,150 @@ mod oxkv_bench {
         });
         group.finish();
     }
+
+    /// Deterministic Zipf-distributed read order: reproducible without a
+    /// `rand` dependency (fixed-seed xorshift + precomputed CDF + binary
+    /// search). Same binary, same order; cross-platform float rounding may
+    /// shift exact ranks, which only adds noise, never signal.
+    // Ratios and unit-interval math: precision past 2^53 is irrelevant.
+    #[allow(clippy::cast_precision_loss)]
+    fn zipf_order(keys: usize, samples: usize, skew: f64) -> Vec<usize> {
+        let mut cdf = Vec::with_capacity(keys);
+        let mut acc = 0.0f64;
+        for rank in 1..=keys {
+            acc += 1.0 / (rank as f64).powf(skew);
+            cdf.push(acc);
+        }
+        for p in &mut cdf {
+            *p /= acc;
+        }
+        let mut rng: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut order = Vec::with_capacity(samples);
+        for _ in 0..samples {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            let u = (rng >> 11) as f64 / (1u64 << 53) as f64;
+            order.push(cdf.partition_point(|&p| p < u).min(keys - 1));
+        }
+        order
+    }
+
+    /// Skewed reads over many small SSTs with a cache that fits a few:
+    /// hot SSTs must survive the one-hit tail, which is exactly what
+    /// admission policy decides. Hit ratio prints to stderr (informational;
+    /// criterion still measures wall time).
+    pub(crate) fn zipf_get(rt: &tokio::runtime::Runtime, c: &mut Criterion) {
+        const SST_KEYS: usize = 200;
+        const SSTS: usize = 50;
+        // Sized for the post-compaction layout (background merges fold the
+        // 50 L0s into larger files): holds a mid-range fraction so the
+        // Zipf head stays resident while the tail churns.
+        const CACHE_BYTES: usize = 320 * 1024;
+        const READS: usize = 2_000;
+        const ZIPF_SKEW: f64 = 1.07;
+        let total = SST_KEYS * SSTS;
+        let mut group = c.benchmark_group(format!("zipf_get/oxkv_mem/{total}"));
+        configure(&mut group, total, READS);
+        let keys: Vec<String> = (0..total).map(key).collect();
+        let mut store: Option<OxKvStore> = None;
+        let mut order: Vec<usize> = Vec::new();
+        group.bench_function("get", |b| {
+            let s = store.get_or_insert_with(|| {
+                rt.block_on(async {
+                    let id = OXKV_CTR.fetch_add(1, Ordering::Relaxed);
+                    let s = OxKvStore::builder()
+                        .with_store(Arc::new(MemStorage::new()))
+                        .with_prefix(ObjectPath::from(format!("bench-zipf-{id}")))
+                        .with_session(format!("bench-zipf-sess-{id}"))
+                        .skip_probe(true)
+                        .build_with_cache(LruCache::new(
+                            CACHE_BYTES,
+                            |_: &String, v: &Arc<SstFile>| {
+                                u32::try_from(v.size()).unwrap_or(u32::MAX)
+                            },
+                        ))
+                        .await
+                        .expect("zipf store");
+                    for f in 0..SSTS {
+                        for i in 0..SST_KEYS {
+                            let k = key(f * SST_KEYS + i);
+                            s.put_bytes(&k, &PAYLOAD).await.expect("put");
+                        }
+                        // May yield no SST when WAL maintenance already
+                        // force-flushed this batch (still one more SST
+                        // on disk either way); pressure only needs dozens.
+                        let _ = s.flush_mem_to_sst_force().await.expect("flush");
+                    }
+                    s
+                })
+            });
+            if order.is_empty() {
+                order = zipf_order(total, READS * 8, ZIPF_SKEW);
+            }
+            let mut j = 0usize;
+            b.iter(|| {
+                rt.block_on(async {
+                    for _ in 0..READS {
+                        let idx = order[j % order.len()];
+                        j += 1;
+                        black_box(s.get_bytes(&keys[idx]).await.expect("get"));
+                    }
+                });
+            });
+            if let Some(stats) = s.sst_cache_stats() {
+                eprintln!(
+                    "[zipf_get] hit_ratio={:.3} hits={} misses={} evictions={}",
+                    stats.hit_ratio(),
+                    stats.hits,
+                    stats.misses,
+                    stats.evictions
+                );
+            }
+        });
+        group.finish();
+    }
+
+    /// Shared-store point reads from spawned tasks: proves the read path
+    /// scales while writes serialize behind the gate.
+    pub(crate) fn mt_random_get(rt: &tokio::runtime::Runtime, c: &mut Criterion) {
+        const TASKS: usize = 8;
+        const N: usize = MEDIUM;
+        let take = READ_SAMPLES;
+        let mut group = c.benchmark_group(format!("mt_random_get/oxkv_mem/{N}"));
+        configure(&mut group, N, take);
+        let keys: Arc<Vec<String>> = Arc::new((0..N).map(key).collect());
+        let order = Arc::new(shuffled(N));
+        let mut store: Option<Arc<OxKvStore>> = None;
+        group.bench_function("get", |b| {
+            let s = store.get_or_insert_with(|| {
+                Arc::new(rt.block_on(async {
+                    let mut s = new_oxkv_store().await;
+                    populate(&mut s, &keys).await;
+                    s
+                }))
+            });
+            b.iter(|| {
+                rt.block_on(async {
+                    let mut handles = Vec::with_capacity(TASKS);
+                    for t in 0..TASKS {
+                        let s = Arc::clone(s);
+                        let keys = Arc::clone(&keys);
+                        let order = Arc::clone(&order);
+                        handles.push(tokio::spawn(async move {
+                            for i in order.iter().skip(t * take / TASKS).take(take / TASKS) {
+                                black_box(s.get_bytes(&keys[*i]).await.expect("get"));
+                            }
+                        }));
+                    }
+                    for handle in handles {
+                        handle.await.expect("task");
+                    }
+                });
+            });
+        });
+        group.finish();
+    }
 }
 
 fn benchmark(c: &mut Criterion) {
@@ -606,6 +758,9 @@ fn benchmark(c: &mut Criterion) {
     #[cfg(feature = "oxkv")]
     oxkv_bench::tx_commit_batch(&rt, c);
 
+    #[cfg(feature = "oxkv")]
+    oxkv_bench::zipf_get(&rt, c);
+
     // Threaded writes need a multi-threaded runtime; everything else stays
     // on the single-threaded one so numbers remain comparable.
     #[cfg(feature = "oxkv")]
@@ -616,6 +771,7 @@ fn benchmark(c: &mut Criterion) {
             .build()
             .expect("multi-thread runtime");
         oxkv_bench::concurrent_write(&mt_rt, c);
+        oxkv_bench::mt_random_get(&mt_rt, c);
     }
 
     // Changes matrix: (store size, change counts)
