@@ -9,9 +9,9 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 - **Cursor-based pagination** — bidirectional traversal (`Next` / `Prev`) with inclusive range cursors and limit control
 - **Lucene-style query engine** — filter stored JSON documents with a query language supporting field paths, ranges, wildcards, regex, fuzzy matching, and boolean operators
 - **JSON serialization** — extension methods for inserting and retrieving `serde_json::Value` types via JSON, stored as raw bytes
-- **WASM bindings** — thread-safe wrappers in `src/wasm.rs` expose `BTreeStore` to JavaScript as async promises (WASM `btree` baseline; `oxkv`/`otel` native-only, OXKV snapshot portable across all)
-- **Extensible backends** — the crate defines three traits (`GetSet`, `Transaction`, `Store`) that any backend can implement; ships with an in-memory B-tree backend (`btree`, test and bench baseline + WASM baseline) and an LSM backend (`oxkv`, native-only) generic over `Storage` + `Cache`
-- **LSM backend** — LSM on S3/GCS/Azure/local via [`object_store`](https://docs.rs/object_store): epoch-fenced single writer, WAL with RPO=0, MemTable + SST (L0/L1) with Bloom + CRC, blob overflow for large values, `LruCache` SST cache (trait, `moka` optional), WAL replay, GC and L0→L1 compaction
+- **WASM bindings** — thread-safe wrappers in `src/wasm.rs` expose `BTreeStore` and `LsmStore` to JavaScript as async promises (`otel` native-only, OXKV snapshot portable across all)
+- **Extensible backends** — the crate defines three traits (`GetSet`, `Transaction`, `Store`) that any backend can implement; ships with an in-memory B-tree backend (`btree`, test and bench baseline + WASM baseline) and an LSM backend (`oxkv`, native + wasm) generic over `Storage` + `Cache` (S3/GCS/Azure via `oxkv-s3`)
+- **LSM backend** — portable LSM over pluggable `Storage` (in-memory `MemStorage` everywhere including browsers; S3/GCS/Azure/local via [`object_store`](https://docs.rs/object_store) with `oxkv-s3`, OPFS later): epoch-fenced single writer, WAL with RPO=0, MemTable + SST (L0/L1) with Bloom + CRC, blob overflow for large values, `LruCache` SST cache (trait, `moka` optional), WAL replay, GC and L0→L1 compaction
 - **Validation hooks** — reject invalid writes before they reach storage, scoped to a single key, a key prefix, or the whole store
 - **Reactivity** — watch keys or prefixes and observe every committed change via channels or observer traits; rolled-back transactions never notify
 - **Save/Load** — serialize the entire store contents into a single contiguous `Uint8Array` and reconstruct it from binary data
@@ -32,7 +32,7 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 | [`store::Observer`] | Receives change notifications after they become durable |
 | [`store::HookStore`] | Decorator adding validators and change watching to any store |
 | [`store::OtelStore`] | Feature-gated decorator adding OpenTelemetry traces and metrics to any store |
-| [`store::OxKvStore`] / [`store::OxKvStoreBuilder`] | Feature-gated (`oxkv`, native-only) LSM via `object_store` generic over `Storage` + `Cache`; single-writer epoch fencing, WAL + SST + blob overflow |
+| [`store::OxKvStore`] / [`store::OxKvStoreBuilder`] | Feature-gated (`oxkv`, native + wasm) LSM generic over `Storage` + `Cache` (in-memory `MemStorage`; S3 via `oxkv-s3`); single-writer epoch fencing, WAL + SST + blob overflow |
 | [`store::StoreError::Fenced`] | Terminal fencing error — another owner acquired the epoch via `ownership.json` CAS |
 
 ## Quick Start
@@ -307,29 +307,29 @@ What you get per operation (`get`, `has`, `set`, `delete`, `gets`, `begin_tx`,
 Decorators compose: `OtelStore::new(HookStore::new(OxKvStore::builder().with_store(store).build().await?))` measures
 the full validation pipeline.
 
-## LSM Backend (feature `oxkv`, native-only)
+## LSM Backend (feature `oxkv`, native + wasm)
 
-`OxKvStore` is an LSM tree on S3-compatible storage (S3, GCS, Azure) or local via `object_store` (InMemory/LocalFileSystem). It is `#[cfg(not(target_arch = "wasm32"))]` and shares the same `GetSet`/`Store`/`Transaction` traits as the other backends, so application code is portable. Snapshot bytes (`OXKV` magic `+` version + records) are identical across `BTreeStore` and `OxKvStore` — `save`/`load` round-trip everywhere.
+`OxKvStore` is an LSM tree over any [`Storage`](src/store/storage.rs) backend: in-memory `MemStorage` (native + wasm, including the browser `LsmStore`), or S3-compatible storage (S3, GCS, Azure) and local FS via `object_store` with `oxkv-s3`. It shares the same `GetSet`/`Store`/`Transaction` traits as the other backends, so application code is portable. Snapshot bytes (`OXKV` magic `+` version + records) are identical across `BTreeStore` and `OxKvStore` on every target — `save`/`load` round-trip everywhere.
 
 ```rust,ignore
 use std::sync::Arc;
-use object_store::{memory::InMemory, path::Path};
 use oxkv::{OxKvStore, store::*};
 
-let store: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
-// In prod replace InMemory with AmazonS3Builder / parse_url("s3://bucket/prefix")
-let mut s3 = OxKvStore::builder()
+let store: Arc<dyn Storage> = Arc::new(MemStorage::new());
+// In prod replace MemStorage with an object_store backend (feature `oxkv-s3`):
+// `OxKvStore::builder().with_object_store(s3).with_prefix(...)`
+let mut kv = OxKvStore::builder()
     .with_store(store)
-    .with_prefix(Path::from("my-app/oxkv"))
+    .with_prefix(ObjectPath::from("my-app/oxkv"))
     .build()
     .await
     .unwrap();
 
-s3.set_bytes("hello", b"world").await.unwrap();
-assert_eq!(s3.get_bytes("hello").await.unwrap().as_deref(), Some(b"world".as_slice()));
+kv.set_bytes("hello", b"world").await.unwrap();
+assert_eq!(kv.get_bytes("hello").await.unwrap().as_deref(), Some(b"world".as_slice()));
 
 // Transactions stage in an overlay and become durable only on commit (WAL RPO=0)
-let mut tx = s3.begin_tx().unwrap();
+let mut tx = kv.begin_tx().unwrap();
 tx.set_bytes("a", b"1").await.unwrap();
 tx.commit().await.unwrap();
 ```
@@ -348,14 +348,15 @@ Enable it:
 
 ```toml
 [dependencies]
-oxkv = { version = "0.4", features = ["oxkv"] }
+oxkv = { version = "0.4", features = ["oxkv"] }           # portable LSM core
+# oxkv = { version = "0.4", features = ["oxkv", "oxkv-s3"] } # + S3/GCS/Azure via object_store (native)
 ```
 
-`cargo test --features oxkv` and `cargo bench --features oxkv` exercise it against `InMemory` (bench uses `skip_probe(true)` so the numbers are comparable to `btree_mem`/`oxkv_mem`).
+`cargo test --features oxkv` and `cargo bench --features oxkv` exercise it against `MemStorage` (bench uses `skip_probe(true)` so the numbers are comparable to `btree_mem`/`oxkv_mem`).
 
 ## WASM Bindings
 
-The WASM module in `src/wasm.rs` provides thread-safe wrappers for `BTreeStore`, exposing every store method to JavaScript as async promises.
+The WASM module in `src/wasm.rs` provides thread-safe wrappers for `BTreeStore` and `LsmStore` (in-memory LSM), exposing every store method to JavaScript as async promises. Snapshots are byte-identical across backends, so bytes saved anywhere restore anywhere.
 
 Build for WebAssembly:
 
@@ -433,7 +434,7 @@ wasm-pack test --node
 ## Benchmarking
 
 Criterion benchmarks live in [`benches/kv_bench.rs`](benches/kv_bench.rs) and
-cover `btree_mem` and `s3_mem` (LSM via `object_store::memory::InMemory` with `skip_probe(true)`) at 1K / 100K / 1M scales with a sampling strategy that keeps the full suite in minutes, not hours. `btree` is bench baseline only.
+cover `btree_mem` and `oxkv_mem` (LSM over in-memory `MemStorage` with `skip_probe(true)`) at 1K / 100K / 1M scales with a sampling strategy that keeps the full suite in minutes, not hours. `btree` is bench baseline only.
 
 ```bash
 cargo bench --bench kv_bench                     # everything (tuned to minutes)
@@ -496,16 +497,16 @@ wasm-pack build --target web   # or nodejs, bundler, etc.
 
 ## Architecture
 
-- `src/wasm.rs` — manual wasm-bindgen wrappers for `BTreeStore` (thread-safe JS-facing types; OXKV snapshot portable across all backends)
+- `src/wasm.rs` — manual wasm-bindgen wrappers for `BTreeStore` + `LsmStore` (thread-safe JS-facing types; OXKV snapshot portable across all backends)
 - `src/store/mod.rs` — core traits (`GetSet`, `Transaction`, `Store`, `GetSetExt`, `StoreExt`) and error types (`StoreError::Fenced`, `StoreError::NotModified`)
 - `src/store/btree.rs` — in-memory B-tree backend (`btree`, test/bench + WASM baseline)
-- `src/store/lsm/mod.rs` — LSM backend generic over `Storage`+`Cache` (`oxkv`, native-only): `OxKvStore`/`OxKvStoreBuilder`/`OxKvTx`, WAL + MemTable + SST + manifest + GC/compaction
+- `src/store/lsm/mod.rs` — LSM backend generic over `Storage`+`Cache` (`oxkv`, native + wasm): `OxKvStore`/`OxKvStoreBuilder`/`OxKvTx`, WAL + MemTable + SST + manifest + GC/compaction
 - `src/store/lsm/sst.rs` — SST file format (blocks, Bloom filter, CRC32)
 - `src/store/lsm/blob.rs` — blob overflow for large values (`e{epoch}/blob/{hash}` with CRC)
 - `src/store/lsm/manifest.rs` — `manifest.json` with ETag CAS and `ManifestCache`
 - `src/store/lsm/ownership.rs` — `ownership.json` epoch fencing
 - `src/store/lsm/probe.rs` — conditional-write probe (`If-None-Match` / `If-Match`)
-- `src/store/storage.rs` — `Storage` trait (object_store for S3/memory/local, OPFS future)
+- `src/store/storage.rs` — `Storage` trait + `MemStorage` (in-memory, every target) + `object_store` impl (S3/memory/local, native `oxkv-s3`; OPFS future)
 - `src/store/cache.rs` — `Cache` trait + `LruCache` (weight-aware, `moka` optional)
 - `src/store/hooks.rs` — `HookStore` decorator providing validation hooks and change notifications
 - `src/store/otel.rs` — `OtelStore` decorator emitting OpenTelemetry spans and metrics (feature `otel`)
