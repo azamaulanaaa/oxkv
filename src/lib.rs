@@ -1,4 +1,4 @@
-//! A transactional key-value store with WASM bindings (`BTreeStore` + `LsmStore`)
+//! A transactional key-value store with WASM bindings (`BTreeStore` + `OxKvStore`)
 //! and Lucene-style JSON queries.
 //!
 //! With the `otel` feature enabled, `OtelStore` wraps any backend with

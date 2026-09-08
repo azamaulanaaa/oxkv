@@ -1,8 +1,8 @@
-//! WASM bindings — `BTreeStore` (light baseline) and `LsmStore` (LSM engine).
+//! WASM bindings — `BTreeStore` (light baseline) and `OxKvStore` (LSM engine).
 //!
 //! The OXKV snapshot wire format (`snapshot.rs` magic `OXKV` + version 1) is
 //! identical across `BTreeStore` and `OxKvStore` on every target, so
-//! `save` bytes restore everywhere via `load`. `LsmStore` binds the LSM
+//! `save` bytes restore everywhere via `load`. `OxKvStore` binds the LSM
 //! engine to an in-memory [`store::MemStorage`]; durable browser storage
 //! (OPFS) arrives later as another [`store::Storage`] backend.
 
@@ -704,25 +704,25 @@ impl JsBTreeTx {
 /// JavaScript calls share one underlying store. Each method acquires the lock,
 /// runs the operation (async), and releases before returning.
 #[cfg(feature = "oxkv")]
-#[wasm_bindgen(js_name = LsmStore)]
-pub struct JsLsmStore {
+#[wasm_bindgen(js_name = OxKvStore)]
+pub struct JsOxKvStore {
     inner: std::sync::Arc<futures::lock::Mutex<store::OxKvStore>>,
 }
 
 #[cfg(feature = "oxkv")]
-#[wasm_bindgen(js_class = LsmStore)]
-impl JsLsmStore {
+#[wasm_bindgen(js_class = OxKvStore)]
+impl JsOxKvStore {
     /// Create a new in-memory LSM store (`MemStorage`, probe skipped).
     ///
     /// Resolves once the initial ownership epoch is acquired; from then on
     /// the instance behaves like any other [`store::Store`].
     /// # Errors
     /// * `StoreError` - if the store fails to initialize
-    #[wasm_bindgen(js_name = "create", return_description = "A new LsmStore handle")]
+    #[wasm_bindgen(js_name = "create", return_description = "A new OxKvStore handle")]
     pub async fn create(
         #[wasm_bindgen(param_description = "Key prefix inside the store; defaults to js-lsm")]
         prefix: Option<String>,
-    ) -> Result<JsLsmStore, JsValue> {
+    ) -> Result<JsOxKvStore, JsValue> {
         let prefix = prefix.unwrap_or_else(|| "js-lsm".to_string());
         let backend = std::sync::Arc::new(store::MemStorage::new());
         match store::OxKvStore::builder()
@@ -960,7 +960,7 @@ impl JsLsmStore {
         let mut store = self.inner.lock().await;
         match store.begin_tx() {
             Ok(tx) => {
-                let js_tx = JsLsmTx {
+                let js_tx = JsOxKvTx {
                     inner: std::sync::Arc::new(futures::lock::Mutex::new(Some(tx))),
                 };
                 Ok(js_tx.into())
@@ -1010,19 +1010,19 @@ impl JsLsmStore {
     }
 }
 
-/// Transaction handle for [`JsLsmStore`]: staged overlay, durable only on `commit`.
+/// Transaction handle for [`JsOxKvStore`]: staged overlay, durable only on `commit`.
 #[cfg(feature = "oxkv")]
-#[wasm_bindgen(js_name = LsmTx)]
+#[wasm_bindgen(js_name = OxKvTx)]
 #[derive(Clone)]
-pub struct JsLsmTx {
+pub struct JsOxKvTx {
     inner: std::sync::Arc<
         futures::lock::Mutex<Option<<store::OxKvStore as store::Store>::Transaction>>,
     >,
 }
 
 #[cfg(feature = "oxkv")]
-#[wasm_bindgen(js_class = LsmTx)]
-impl JsLsmTx {
+#[wasm_bindgen(js_class = OxKvTx)]
+impl JsOxKvTx {
     async fn take_tx(
         self,
     ) -> Result<<store::OxKvStore as store::Store>::Transaction, store::StoreError> {
@@ -1855,7 +1855,7 @@ mod tests {
 
 #[cfg(all(test, feature = "oxkv"))]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
-mod lsm_tests {
+mod oxkv_tests {
     use wasm_bindgen_test::*;
 
     use super::*;
@@ -1878,21 +1878,21 @@ mod lsm_tests {
         result.expect("operation failed")
     }
 
-    async fn new_lsm() -> JsLsmStore {
-        JsLsmStore::create(None).await.expect("create LSM store")
+    async fn new_oxkv() -> JsOxKvStore {
+        JsOxKvStore::create(None).await.expect("create LSM store")
     }
 
-    async fn begin_lsm_tx(js_store: &JsLsmStore) -> JsLsmTx {
+    async fn begin_oxkv_tx(js_store: &JsOxKvStore) -> JsOxKvTx {
         let mut guard = js_store.inner.lock().await;
         let tx = guard.begin_tx().expect("begin_tx failed");
-        JsLsmTx {
+        JsOxKvTx {
             inner: std::sync::Arc::new(futures::lock::Mutex::new(Some(tx))),
         }
     }
 
     #[wasm_bindgen_test]
-    async fn lsm_crud_roundtrip() {
-        let js_store = new_lsm().await;
+    async fn oxkv_crud_roundtrip() {
+        let js_store = new_oxkv().await;
 
         assert_eq!(ok_bytes(js_store.set_bytes("k", b"v1").await), None);
         assert_eq!(
@@ -1913,9 +1913,9 @@ mod lsm_tests {
     }
 
     #[wasm_bindgen_test]
-    async fn lsm_tx_commit_staged() {
-        let js_store = new_lsm().await;
-        let tx = begin_lsm_tx(&js_store).await;
+    async fn oxkv_tx_commit_staged() {
+        let js_store = new_oxkv().await;
+        let tx = begin_oxkv_tx(&js_store).await;
         ok(tx.set_bytes("tx-k", b"tx-v").await);
         // Invisible outside before commit.
         assert!(ok(js_store.get_bytes("tx-k").await).is_null());
@@ -1927,13 +1927,13 @@ mod lsm_tests {
     }
 
     #[wasm_bindgen_test]
-    async fn lsm_save_load_roundtrip() {
-        let js_store = new_lsm().await;
+    async fn oxkv_save_load_roundtrip() {
+        let js_store = new_oxkv().await;
         ok(js_store.set_bytes("a", b"1").await);
         ok(js_store.set_bytes("b", b"2").await);
         let snapshot = to_bytes(&ok(js_store.save().await));
 
-        let restored = new_lsm().await;
+        let restored = new_oxkv().await;
         let count = ok(restored.load(&snapshot).await)
             .as_f64()
             .expect("load returns a count") as u32;
@@ -1943,12 +1943,12 @@ mod lsm_tests {
 
     #[cfg(feature = "btree")]
     #[wasm_bindgen_test]
-    async fn snapshot_portable_btree_to_lsm() {
+    async fn snapshot_portable_btree_to_oxkv() {
         let btree = JsBTreeStore::new();
         ok(btree.set_bytes("shared", b"payload").await);
         let snapshot = to_bytes(&ok(btree.save().await));
 
-        let lsm = new_lsm().await;
+        let lsm = new_oxkv().await;
         let count = ok(lsm.load(&snapshot).await)
             .as_f64()
             .expect("load returns a count") as u32;
