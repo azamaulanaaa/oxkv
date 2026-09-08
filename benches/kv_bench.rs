@@ -42,8 +42,6 @@ use criterion::measurement::WallTime;
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 #[cfg(feature = "btree")]
 use oxkv::BTreeStore;
-#[cfg(feature = "redb")]
-use oxkv::RedbStore;
 #[cfg(feature = "s3")]
 use oxkv::S3Store;
 use oxkv::{Direction, GetSet, Store, Transaction};
@@ -525,11 +523,7 @@ fn benchmark(c: &mut Criterion) {
             seq_insert::<BTreeStore>(&rt, c, "btree_mem", n);
             seq_delete::<BTreeStore>(&rt, c, "btree_mem", n);
         }
-        #[cfg(feature = "redb")]
-        {
-            seq_insert::<RedbStore>(&rt, c, "redb_mem", n);
-            seq_delete::<RedbStore>(&rt, c, "redb_mem", n);
-        }
+
         #[cfg(feature = "s3")]
         {
             s3_bench::seq_insert(&rt, c, n);
@@ -542,8 +536,7 @@ fn benchmark(c: &mut Criterion) {
     for &n in &[SMALL, MEDIUM, LARGE] {
         #[cfg(feature = "btree")]
         random_get::<BTreeStore>(&rt, c, "btree_mem", n);
-        #[cfg(feature = "redb")]
-        random_get::<RedbStore>(&rt, c, "redb_mem", n);
+
         #[cfg(feature = "s3")]
         s3_bench::random_get(&rt, c, n);
     }
@@ -552,16 +545,14 @@ fn benchmark(c: &mut Criterion) {
     for &n in &[SMALL, LARGE] {
         #[cfg(feature = "btree")]
         page_fetch::<BTreeStore>(&rt, c, "btree_mem", n);
-        #[cfg(feature = "redb")]
-        page_fetch::<RedbStore>(&rt, c, "redb_mem", n);
+
         #[cfg(feature = "s3")]
         s3_bench::page_fetch(&rt, c, n);
     }
 
     #[cfg(feature = "btree")]
     tx_commit_batch::<BTreeStore>(&rt, c, "btree_mem");
-    #[cfg(feature = "redb")]
-    tx_commit_batch::<RedbStore>(&rt, c, "redb_mem");
+
     #[cfg(feature = "s3")]
     s3_bench::tx_commit_batch(&rt, c);
 
@@ -570,8 +561,7 @@ fn benchmark(c: &mut Criterion) {
         for &m in counts {
             #[cfg(feature = "btree")]
             point_update::<BTreeStore>(&rt, c, "btree_mem", n, m);
-            #[cfg(feature = "redb")]
-            point_update::<RedbStore>(&rt, c, "redb_mem", n, m);
+
             #[cfg(feature = "s3")]
             s3_bench::point_update(&rt, c, n, m);
         }

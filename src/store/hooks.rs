@@ -621,15 +621,12 @@ impl<T: Transaction + Send + Sync, V: StoreView> Transaction for HookTx<T, V> {
     }
 }
 
-#[cfg(all(test, any(feature = "btree", feature = "redb")))]
+#[cfg(all(test, feature = "btree"))]
 mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-    #[cfg(feature = "btree")]
     use crate::store::BTreeStore;
-    #[cfg(all(feature = "redb", not(feature = "btree")))]
-    use crate::store::RedbStore as BTreeStore;
     use crate::store::StoreError;
 
     struct Rejecting(Scope);
@@ -677,9 +674,6 @@ mod tests {
     }
 
     type StoreUnderTest = HookStore<BTreeStore>;
-    // When `btree` is not enabled but `redb` is, the alias above resolves to
-    // `HookStore<RedbStore>` via the conditional import, so the same suite
-    // exercises the alternative backend.
 
     fn store() -> StoreUnderTest {
         HookStore::new(BTreeStore::default())
