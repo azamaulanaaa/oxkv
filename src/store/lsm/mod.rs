@@ -448,10 +448,11 @@ impl OxKvStore {
         }
     }
 
-    async fn fetch_sst(&self, id: &str) -> Result<Arc<SstFile>> {
-        if let Some(cached) = self.sst_cache.get(&id.to_string()).await {
-            return Ok(cached);
-        }
+    /// Reads and parses `id` straight from storage, bypassing the SST cache.
+    ///
+    /// Window scans (`gets`) use this so a wide range never evicts hot
+    /// point-lookup entries.
+    async fn read_sst(&self, id: &str) -> Result<Arc<SstFile>> {
         let path = ObjectPath::from(id);
         let out = self
             .inner
@@ -460,6 +461,15 @@ impl OxKvStore {
             .map_err(|e| StoreError::Storage(format!("get sst {id} failed: {e}")))?;
         let sst = Arc::new(SstFile::parse(out.bytes)?);
         sst.verify_file_crc()?;
+        Ok(sst)
+    }
+
+    /// Cache-through SST read for point lookups.
+    async fn fetch_sst(&self, id: &str) -> Result<Arc<SstFile>> {
+        if let Some(cached) = self.sst_cache.get(&id.to_string()).await {
+            return Ok(cached);
+        }
+        let sst = self.read_sst(id).await?;
         self.sst_cache
             .insert(id.to_string(), Arc::clone(&sst))
             .await;
@@ -585,7 +595,8 @@ impl OxKvStore {
             if !overlaps {
                 continue;
             }
-            let sst = self.fetch_sst(&meta.id).await?;
+            // Bypass the SST cache: scans must not evict hot entries.
+            let sst = self.read_sst(&meta.id).await?;
             let scan = sst.scan_with_tombstones(scan_start, scan_end, None)?;
             let mut resolved: Vec<(String, Option<Vec<u8>>)> = Vec::with_capacity(scan.len());
             for (key, value) in scan {
@@ -1009,10 +1020,11 @@ impl OxKvTx {
         }
     }
 
-    async fn fetch_sst(&self, id: &str) -> Result<Arc<SstFile>> {
-        if let Some(cached) = self.sst_cache.get(&id.to_string()).await {
-            return Ok(cached);
-        }
+    /// Reads and parses `id` straight from storage, bypassing the SST cache.
+    ///
+    /// Window scans (`gets`) use this so a wide range never evicts hot
+    /// point-lookup entries.
+    async fn read_sst(&self, id: &str) -> Result<Arc<SstFile>> {
         let path = ObjectPath::from(id);
         let out = self
             .inner
@@ -1021,6 +1033,15 @@ impl OxKvTx {
             .map_err(|e| StoreError::Storage(format!("get sst {id} failed: {e}")))?;
         let sst = Arc::new(SstFile::parse(out.bytes)?);
         sst.verify_file_crc()?;
+        Ok(sst)
+    }
+
+    /// Cache-through SST read for point lookups.
+    async fn fetch_sst(&self, id: &str) -> Result<Arc<SstFile>> {
+        if let Some(cached) = self.sst_cache.get(&id.to_string()).await {
+            return Ok(cached);
+        }
+        let sst = self.read_sst(id).await?;
         self.sst_cache
             .insert(id.to_string(), Arc::clone(&sst))
             .await;
@@ -1375,7 +1396,8 @@ impl GetSet for OxKvTx {
             if !overlaps {
                 continue;
             }
-            let sst = self.fetch_sst(&meta.id).await?;
+            // Bypass the SST cache: scans must not evict hot entries.
+            let sst = self.read_sst(&meta.id).await?;
             let scan = sst.scan_with_tombstones(scan_start, scan_end, None)?;
             let mut resolved: Vec<(String, Option<Vec<u8>>)> = Vec::with_capacity(scan.len());
             for (key, value) in scan {
