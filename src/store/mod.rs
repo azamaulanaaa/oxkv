@@ -13,6 +13,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use async_trait::async_trait;
@@ -86,7 +87,7 @@ pub(crate) fn now_millis() -> u64 {
 }
 
 /// Errors that can occur during store operations.
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum StoreError {
     /// An error originating from the underlying storage engine.
     #[error("storage error: {0}")]
@@ -109,8 +110,11 @@ pub enum StoreError {
     Utf8(#[from] std::string::FromUtf8Error),
 
     /// A JSON serialization or deserialization error.
+    ///
+    /// Shared ownership keeps the whole error tree `Clone` without
+    /// duplicating payloads.
     #[error("JSON error: {0}")]
-    Json(#[from] serde_json::Error),
+    Json(Arc<serde_json::Error>),
 
     /// An error when decoding UTF-8 from a byte slice.
     #[error("UTF-8 error: {0}")]
@@ -150,6 +154,12 @@ impl PartialEq for StoreError {
 }
 
 impl Eq for StoreError {}
+
+impl From<serde_json::Error> for StoreError {
+    fn from(error: serde_json::Error) -> Self {
+        StoreError::Json(Arc::new(error))
+    }
+}
 
 impl From<&str> for StoreError {
     fn from(msg: &str) -> Self {
