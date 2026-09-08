@@ -25,7 +25,7 @@
 //!   store on a multi-thread runtime (oxkv only): exercises the write gate
 //! - `zipf_get` — skewed reads over 50 forced SSTs with a 320 KiB cache
 //!   (oxkv only): exercises admission policy; hit ratio prints to stderr
-//! - `mt_random_get` — shared-store point reads from 8 threads (oxkv only)
+//! - `concurrent_random_get` — shared-store point reads from 8 threads (oxkv only)
 //!
 //! A/B comparisons against a base commit (baselines live in gitignored
 //! `target/criterion`, so they never leave your machine):
@@ -674,11 +674,11 @@ mod oxkv_bench {
 
     /// Shared-store point reads from spawned tasks: proves the read path
     /// scales while writes serialize behind the gate.
-    pub(crate) fn mt_random_get(rt: &tokio::runtime::Runtime, c: &mut Criterion) {
+    pub(crate) fn concurrent_random_get(rt: &tokio::runtime::Runtime, c: &mut Criterion) {
         const TASKS: usize = 8;
         const N: usize = MEDIUM;
         let take = READ_SAMPLES;
-        let mut group = c.benchmark_group(format!("mt_random_get/oxkv_mem/{N}"));
+        let mut group = c.benchmark_group(format!("concurrent_random_get/oxkv_mem/{N}"));
         configure(&mut group, N, take);
         let keys: Arc<Vec<String>> = Arc::new((0..N).map(key).collect());
         let order = Arc::new(shuffled(N));
@@ -771,7 +771,7 @@ fn benchmark(c: &mut Criterion) {
             .build()
             .expect("multi-thread runtime");
         oxkv_bench::concurrent_write(&mt_rt, c);
-        oxkv_bench::mt_random_get(&mt_rt, c);
+        oxkv_bench::concurrent_random_get(&mt_rt, c);
     }
 
     // Changes matrix: (store size, change counts)

@@ -596,7 +596,7 @@ in gitignored `target/`, so they never leave your machine.
 | `tx_commit_batch_1000/{backend}` | 1K | committing a pre-staged 1,000-write transaction (staging is untimed, so this isolates durability cost) |
 | `concurrent_write/oxkv_mem/1024` | 1K writes, 8 threads | blind writes from spawned tasks sharing one store (multi-thread runtime): write-gate + group-commit throughput |
 | `zipf_get/oxkv_mem/10000` | 10K keys, 50 SSTs, 2K reads | skewed reads over many small SSTs with a 320 KiB cache: admission policy decides the hit ratio (printed to stderr) |
-| `mt_random_get/oxkv_mem/100000` | 100K keys, 10K reads, 8 threads | shared-store point reads from spawned tasks: read-path scaling while writes serialize |
+| `concurrent_random_get/oxkv_mem/100000` | 100K keys, 10K reads, 8 threads | shared-store point reads from spawned tasks: read-path scaling while writes serialize |
 
 Scale strategy (see `benches/kv_bench.rs` header): full-scan writes (`seq_insert`, `seq_delete`) scale linearly so they run at 1K+100K only — 1M depth is still exercised via `random_get`/`point_update`/`page_fetch`, whose per-iteration work is bounded (sampled reads / one page / few updates) against a 1M-key store built once and reused. Tree/SST depth and index size are identical to a full 1M scan; only the repeated per-iteration cost is removed.
 
