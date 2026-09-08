@@ -4,9 +4,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use moka::future::Cache;
 use object_store::path::Path;
 use object_store::{ObjectStore, PutMode, PutPayload};
+
+use crate::store::cache::{Cache, LruCache};
 
 use crate::store::{Direction, GetSet, KeyValue, Result, Store, StoreError, Transaction};
 
@@ -53,8 +54,8 @@ pub struct S3Store {
     /// Pinned reader versions for WAL GC watermark.
     /// `BTreeMap<version, count>` — `min_key` is the watermark.
     readers: Arc<tokio::sync::Mutex<std::collections::BTreeMap<u64, usize>>>,
-    /// SST file cache — `moka` LRU, ~8k entries (≈256 MB with 32KB blocks).
-    sst_cache: Cache<String, Arc<SstFile>>,
+    /// SST file cache — weight-aware LRU (~256 MB with 32KB blocks).
+    sst_cache: LruCache<String, Arc<SstFile>>,
 }
 
 impl std::fmt::Debug for S3Store {
@@ -443,7 +444,7 @@ impl S3Store {
     }
 
     async fn fetch_sst(&self, id: &str) -> Result<Arc<SstFile>> {
-        if let Some(cached) = self.sst_cache.get(id).await {
+        if let Some(cached) = self.sst_cache.get(&id.to_string()).await {
             return Ok(cached);
         }
         let path = Path::from(id);
@@ -945,7 +946,7 @@ impl S3Store {
                     drop(cache);
                     // Invalidate sst_cache for deleted, keep new.
                     for m in l0_metas.iter().chain(l1_overlapping.iter()) {
-                        self.sst_cache.remove(m.id.as_str()).await;
+                        self.sst_cache.remove(&m.id).await;
                         let p = Path::from(m.id.as_str());
                         let _ = self.inner.delete(&p).await;
                     }
@@ -982,7 +983,7 @@ pub struct S3Tx {
     mem: MemTable,
     wal_seq: Arc<std::sync::atomic::AtomicU64>,
     manifest_cache: Arc<tokio::sync::Mutex<ManifestCache>>,
-    sst_cache: Cache<String, Arc<SstFile>>,
+    sst_cache: LruCache<String, Arc<SstFile>>,
     overlay: std::collections::BTreeMap<String, Option<Vec<u8>>>,
 }
 
@@ -1013,7 +1014,7 @@ impl S3Tx {
     }
 
     async fn fetch_sst(&self, id: &str) -> Result<Arc<SstFile>> {
-        if let Some(cached) = self.sst_cache.get(id).await {
+        if let Some(cached) = self.sst_cache.get(&id.to_string()).await {
             return Ok(cached);
         }
         let path = Path::from(id);
@@ -1616,12 +1617,9 @@ impl S3StoreBuilder {
             sst_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             manifest_cache: Arc::new(tokio::sync::Mutex::new(ManifestCache::new())),
             readers: Arc::new(tokio::sync::Mutex::new(std::collections::BTreeMap::new())),
-            sst_cache: Cache::builder()
-                .weigher(|_k: &String, v: &Arc<SstFile>| {
-                    u32::try_from(v.size()).unwrap_or(u32::MAX)
-                })
-                .max_capacity(256 * 1024 * 1024)
-                .build(),
+            sst_cache: LruCache::new(256 * 1024 * 1024, |_: &String, v: &Arc<SstFile>| {
+                u32::try_from(v.size()).unwrap_or(u32::MAX)
+            }),
         };
         // WAL replay for restart/f fencing — make not-yet-SSTed WAL visible
         {

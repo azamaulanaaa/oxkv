@@ -30,7 +30,7 @@ where
     }
 }
 
-#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "moka", not(target_arch = "wasm32")))]
 mod moka_impl {
     use super::*;
     use moka::future::Cache as MokaCache;
