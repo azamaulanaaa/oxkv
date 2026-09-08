@@ -33,7 +33,7 @@ pub(crate) async fn probe_store(store: Arc<dyn Storage>, prefix: &ObjectPath) ->
         .put_opts(&path, b"probe2".to_vec(), PutMode::Create)
         .await;
     match second {
-        Err(e) if e.to_string().contains("CAS conflict") => {}
+        Err(StoreError::CasConflict(_)) => {}
         Ok(_) => {
             let _ = store.delete(&path).await;
             return Err(StoreError::Storage(
@@ -56,7 +56,7 @@ pub(crate) async fn probe_store(store: Arc<dyn Storage>, prefix: &ObjectPath) ->
         .put_opts(&path, b"probe3".to_vec(), PutMode::Update(stale))
         .await;
     match third {
-        Err(e) if e.to_string().contains("CAS conflict") => {}
+        Err(StoreError::CasConflict(_)) => {}
         Ok(_) => {
             let _ = store.delete(&path).await;
             return Err(StoreError::Storage(

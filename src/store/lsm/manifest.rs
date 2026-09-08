@@ -105,8 +105,8 @@ pub(crate) async fn cas_manifest(
         }),
     };
     let out = store.put_opts(&path, payload, mode).await.map_err(|e| {
-        if e.to_string().contains("CAS conflict") {
-            StoreError::Storage(format!("manifest CAS conflict: {e}"))
+        if let StoreError::CasConflict(detail) = e {
+            StoreError::CasConflict(format!("manifest {path}: {detail}"))
         } else {
             StoreError::Storage(format!("put manifest failed: {e}"))
         }
@@ -279,7 +279,7 @@ mod tests {
         let err = cas_manifest(Arc::clone(&store), &prefix, &manifest, Some(etag))
             .await
             .expect_err("stale must conflict");
-        assert!(err.to_string().contains("CAS conflict"));
+        assert!(matches!(err, StoreError::CasConflict(_)), "{err:?}");
     }
 
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]

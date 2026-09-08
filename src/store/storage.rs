@@ -8,10 +8,10 @@
 //!
 //! # Error contracts
 //!
-//! Backends report two conditions with [`StoreError::Storage`] messages so the
-//! engine's CAS-retry logic works uniformly without backend-specific types:
-//! - missing object: the message contains `not found`
-//! - conditional-write conflict: the message contains `CAS conflict`
+//! Backends report two conditions so the engine's CAS-retry logic works
+//! uniformly without backend-specific types:
+//! - missing object: [`StoreError::Storage`] whose message contains `not found`
+//! - conditional-write conflict: [`StoreError::CasConflict`]
 //!
 //! Conditional reads map `ETag` matches to [`StoreError::NotModified`].
 
@@ -146,7 +146,7 @@ pub trait Storage: Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// Returns a `CAS conflict` [`StoreError::Storage`] when the precondition fails.
+    /// Returns [`StoreError::CasConflict`] when the precondition fails.
     async fn put_opts(
         &self,
         path: &ObjectPath,
@@ -232,26 +232,20 @@ impl Storage for MemStorage {
         match mode {
             PutMode::Create => {
                 if inner.objects.contains_key(path.as_str()) {
-                    return Err(StoreError::Storage(format!(
-                        "CAS conflict: {path}: already exists"
-                    )));
+                    return Err(StoreError::CasConflict(format!("{path}: already exists")));
                 }
             }
             PutMode::Update(expected) => {
                 let current = inner.objects.get(path.as_str()).ok_or_else(|| {
-                    StoreError::Storage(format!("CAS conflict: {path}: missing for update"))
+                    StoreError::CasConflict(format!("{path}: missing for update"))
                 })?;
                 if expected.e_tag.as_deref() != Some(current.etag.as_str()) {
-                    return Err(StoreError::Storage(format!(
-                        "CAS conflict: {path}: etag mismatch"
-                    )));
+                    return Err(StoreError::CasConflict(format!("{path}: etag mismatch")));
                 }
                 if let Some(version) = expected.version.as_deref()
                     && version != current.version.to_string()
                 {
-                    return Err(StoreError::Storage(format!(
-                        "CAS conflict: {path}: version mismatch"
-                    )));
+                    return Err(StoreError::CasConflict(format!("{path}: version mismatch")));
                 }
             }
         }
@@ -388,7 +382,7 @@ fn map_get_error(path: &ObjectPath, err: object_store::Error) -> StoreError {
 fn map_put_error(path: &ObjectPath, err: object_store::Error) -> StoreError {
     match err {
         object_store::Error::AlreadyExists { .. } | object_store::Error::Precondition { .. } => {
-            StoreError::Storage(format!("CAS conflict: {path}: {err}"))
+            StoreError::CasConflict(format!("{path}: {err}"))
         }
         other => StoreError::Storage(format!("put {path} failed: {other}")),
     }
@@ -426,7 +420,7 @@ mod tests {
             .put_opts(&path, b"2".to_vec(), PutMode::Create)
             .await
             .expect_err("second create conflicts");
-        assert!(err.to_string().contains("CAS conflict"), "{err}");
+        assert!(matches!(err, StoreError::CasConflict(_)), "{err:?}");
     }
 
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
@@ -446,7 +440,7 @@ mod tests {
             .put_opts(&path, b"2".to_vec(), PutMode::Update(stale))
             .await
             .expect_err("stale update conflicts");
-        assert!(err.to_string().contains("CAS conflict"), "{err}");
+        assert!(matches!(err, StoreError::CasConflict(_)), "{err:?}");
         let valid = ObjectVersion {
             e_tag: created.e_tag,
             version: None,
@@ -530,7 +524,7 @@ mod tests {
             .put_opts(&path, b"v2".to_vec(), PutMode::Create)
             .await
             .expect_err("duplicate create conflicts");
-        assert!(err.to_string().contains("CAS conflict"), "{err}");
+        assert!(matches!(err, StoreError::CasConflict(_)), "{err:?}");
         let stale = ObjectVersion {
             e_tag: Some("\"stale\"".to_string()),
             version: None,
@@ -539,7 +533,7 @@ mod tests {
             .put_opts(&path, b"v2".to_vec(), PutMode::Update(stale))
             .await
             .expect_err("stale update conflicts");
-        assert!(err.to_string().contains("CAS conflict"), "{err}");
+        assert!(matches!(err, StoreError::CasConflict(_)), "{err:?}");
         let opts = GetOptions {
             if_none_match: created.e_tag,
         };
@@ -791,28 +785,22 @@ impl Storage for OpfsStorage {
         match mode {
             PutMode::Create => {
                 if self.read_existing(path).await?.is_some() {
-                    return Err(StoreError::Storage(format!(
-                        "CAS conflict: {path}: already exists"
-                    )));
+                    return Err(StoreError::CasConflict(format!("{path}: already exists")));
                 }
             }
             PutMode::Update(expected) => {
                 let Some((_, etag)) = self.read_existing(path).await? else {
-                    return Err(StoreError::Storage(format!(
-                        "CAS conflict: {path}: missing for update"
+                    return Err(StoreError::CasConflict(format!(
+                        "{path}: missing for update"
                     )));
                 };
                 if expected.e_tag.as_deref() != Some(etag.as_str()) {
-                    return Err(StoreError::Storage(format!(
-                        "CAS conflict: {path}: etag mismatch"
-                    )));
+                    return Err(StoreError::CasConflict(format!("{path}: etag mismatch")));
                 }
                 if let Some(version) = expected.version.as_deref()
                     && version != etag
                 {
-                    return Err(StoreError::Storage(format!(
-                        "CAS conflict: {path}: version mismatch"
-                    )));
+                    return Err(StoreError::CasConflict(format!("{path}: version mismatch")));
                 }
             }
         }

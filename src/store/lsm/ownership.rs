@@ -121,7 +121,7 @@ pub(crate) async fn acquire_ownership(
 
     match put_res {
         Ok(_) => Ok(new_rec),
-        Err(e) if e.to_string().contains("CAS conflict") => Err(StoreError::Fenced(format!(
+        Err(StoreError::CasConflict(_)) => Err(StoreError::Fenced(format!(
             "ownership CAS conflict at epoch {next_epoch} for session {session} — fenced"
         ))),
         Err(e) => Err(StoreError::Storage(format!("put ownership failed: {e}"))),

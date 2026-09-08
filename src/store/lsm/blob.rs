@@ -82,7 +82,7 @@ pub(crate) async fn put_blob(
     let path = blob_path(prefix, epoch, &hash);
     match store.put_opts(&path, value.to_vec(), PutMode::Create).await {
         Ok(_) => Ok(path),
-        Err(e) if e.to_string().contains("CAS conflict") => Ok(path),
+        Err(StoreError::CasConflict(_)) => Ok(path),
         Err(err) => Err(StoreError::Storage(format!("put blob failed: {err}"))),
     }
 }

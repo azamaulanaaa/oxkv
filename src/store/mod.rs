@@ -92,6 +92,14 @@ pub enum StoreError {
     #[error("storage error: {0}")]
     Storage(String),
 
+    /// A conditional-write precondition failed (`If-None-Match` on create,
+    /// `If-Match` on update): someone else won the CAS race.
+    ///
+    /// Backends report this variant (never a stringly `Storage` message) so
+    /// callers match on the type. Retryable unless fencing says otherwise.
+    #[error("CAS conflict: {0}")]
+    CasConflict(String),
+
     /// A serialization or deserialization error (e.g., JSON).
     #[error("serialization error: {0}")]
     Serialization(String),
@@ -130,6 +138,7 @@ impl PartialEq for StoreError {
             (StoreError::Storage(a), StoreError::Storage(b))
             | (StoreError::Serialization(a), StoreError::Serialization(b))
             | (StoreError::Other(a), StoreError::Other(b))
+            | (StoreError::CasConflict(a), StoreError::CasConflict(b))
             | (StoreError::Fenced(a), StoreError::Fenced(b)) => a == b,
             (StoreError::Utf8(a), StoreError::Utf8(b)) => a == b,
             (StoreError::Utf8Slice(a), StoreError::Utf8Slice(b)) => a == b,

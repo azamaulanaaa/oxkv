@@ -224,8 +224,7 @@ where
             .await;
 
         match put_res {
-            Ok(_) => {}
-            Err(e) if e.to_string().contains("CAS conflict") => {}
+            Ok(_) | Err(StoreError::CasConflict(_)) => {}
             Err(e) => return Err(StoreError::Storage(format!("put wal failed: {e}"))),
         }
 
@@ -272,11 +271,11 @@ where
                     self.maintain_wal(wal_len).await;
                     return Ok(());
                 }
-                Err(e) if e.to_string().contains("CAS conflict") => {
+                Err(StoreError::CasConflict(detail)) => {
                     cache.clear();
                     if attempt == 3 {
                         return Err(StoreError::Storage(format!(
-                            "wal manifest CAS conflict after retries: {e}"
+                            "wal manifest CAS conflict after retries: {detail}"
                         )));
                     }
                     let backoff = cas_backoff(attempt);
@@ -380,8 +379,7 @@ where
             .put_opts(&sst_path, sst_bytes.clone(), PutMode::Create)
             .await;
         match put_res {
-            Ok(_) => {}
-            Err(e) if e.to_string().contains("CAS conflict") => {}
+            Ok(_) | Err(StoreError::CasConflict(_)) => {}
             Err(e) => return Err(StoreError::Storage(format!("put sst failed: {e}"))),
         }
 
@@ -443,7 +441,7 @@ where
                 }
                 Ok(Some(sst_meta))
             }
-            Err(e) if e.to_string().contains("CAS conflict") => {
+            Err(StoreError::CasConflict(detail)) => {
                 let backoff = cas_backoff(0);
                 sleep(backoff).await;
                 cache.clear();
@@ -463,7 +461,7 @@ where
                     return Ok(reloaded.sst.iter().find(|m| m.id == sst_id).cloned());
                 }
                 Err(StoreError::Storage(format!(
-                    "manifest CAS conflict after backoff retry: {e}"
+                    "manifest CAS conflict after backoff retry: {detail}"
                 )))
             }
             Err(e) => Err(e),
@@ -755,7 +753,7 @@ where
                     }
                     return Ok(deleted);
                 }
-                Err(e) if e.to_string().contains("CAS conflict") => {
+                Err(StoreError::CasConflict(_)) => {
                     cache.clear();
                     drop(cache);
                     sleep(cas_backoff(0)).await;
@@ -943,7 +941,7 @@ where
                         }
                         return Ok(None);
                     }
-                    Err(e) if e.to_string().contains("CAS conflict") => {
+                    Err(StoreError::CasConflict(_)) => {
                         cache.clear();
                         drop(cache);
                         sleep(cas_backoff(0)).await;
@@ -964,8 +962,7 @@ where
             .put_opts(&l1_path, sst_bytes.clone(), PutMode::Create)
             .await;
         match put_res {
-            Ok(_) => {}
-            Err(e) if e.to_string().contains("CAS conflict") => {}
+            Ok(_) | Err(StoreError::CasConflict(_)) => {}
             Err(e) => return Err(StoreError::Storage(format!("put L1 sst failed: {e}"))),
         }
         // Verify still owner.
@@ -1040,7 +1037,7 @@ where
                     }
                     return Ok(Some(new_meta));
                 }
-                Err(e) if e.to_string().contains("CAS conflict") => {
+                Err(StoreError::CasConflict(_)) => {
                     cache.clear();
                     drop(cache);
                     sleep(cas_backoff(0)).await;
@@ -1198,8 +1195,7 @@ where
             .put_opts(&path, payload_buf, PutMode::Create)
             .await;
         match put_res {
-            Ok(_) => {}
-            Err(e) if e.to_string().contains("CAS conflict") => {}
+            Ok(_) | Err(StoreError::CasConflict(_)) => {}
             Err(e) => return Err(StoreError::Storage(format!("put wal failed: {e}"))),
         }
         let cur = read_ownership(Arc::clone(&self.inner), &self.prefix).await?;
@@ -1249,11 +1245,11 @@ where
                     self.maintain_wal(wal_len).await;
                     return Ok(true);
                 }
-                Err(e) if e.to_string().contains("CAS conflict") => {
+                Err(StoreError::CasConflict(detail)) => {
                     cache.clear();
                     if attempt == 3 {
                         return Err(StoreError::Storage(format!(
-                            "wal manifest CAS conflict after retries: {e}"
+                            "wal manifest CAS conflict after retries: {detail}"
                         )));
                     }
                     let backoff = cas_backoff(attempt);
@@ -1288,8 +1284,7 @@ where
             .put_opts(&path, payload_buf, PutMode::Create)
             .await;
         match put_res {
-            Ok(_) => {}
-            Err(e) if e.to_string().contains("CAS conflict") => {}
+            Ok(_) | Err(StoreError::CasConflict(_)) => {}
             Err(e) => return Err(StoreError::Storage(format!("put wal failed: {e}"))),
         }
         let cur = read_ownership(Arc::clone(&self.inner), &self.prefix).await?;
@@ -1347,11 +1342,11 @@ where
                     self.maintain_wal(wal_len).await;
                     return Ok(());
                 }
-                Err(e) if e.to_string().contains("CAS conflict") => {
+                Err(StoreError::CasConflict(detail)) => {
                     cache.clear();
                     if attempt == 3 {
                         return Err(StoreError::Storage(format!(
-                            "wal manifest CAS conflict after retries: {e}"
+                            "wal manifest CAS conflict after retries: {detail}"
                         )));
                     }
                     let backoff = cas_backoff(attempt);
@@ -1620,8 +1615,7 @@ where
             .put_opts(&path, payload_buf, PutMode::Create)
             .await;
         match put_res {
-            Ok(_) => {}
-            Err(e) if e.to_string().contains("CAS conflict") => {}
+            Ok(_) | Err(StoreError::CasConflict(_)) => {}
             Err(e) => return Err(StoreError::Storage(format!("put wal failed: {e}"))),
         }
         let cur = read_ownership(Arc::clone(&self.inner), &self.prefix).await?;
@@ -1688,11 +1682,11 @@ where
                     }
                     return Ok(());
                 }
-                Err(e) if e.to_string().contains("CAS conflict") => {
+                Err(StoreError::CasConflict(detail)) => {
                     cache.clear();
                     if attempt == 3 {
                         return Err(StoreError::Storage(format!(
-                            "wal manifest CAS conflict after retries: {e}"
+                            "wal manifest CAS conflict after retries: {detail}"
                         )));
                     }
                     let backoff = cas_backoff(attempt);
@@ -2297,8 +2291,8 @@ mod tests {
             .await
             .expect_err("stale If-Match must be rejected");
         assert!(
-            err.to_string().contains("CAS conflict"),
-            "unexpected error: {err}"
+            matches!(err, StoreError::CasConflict(_)),
+            "unexpected error: {err:?}"
         );
 
         let got1 = store.get(&wal1).await.expect("old epoch wal isolated");
