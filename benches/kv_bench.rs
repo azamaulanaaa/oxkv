@@ -102,11 +102,11 @@ fn configure(group: &mut criterion::BenchmarkGroup<'_, WallTime>, store: usize, 
         group.warm_up_time(Duration::from_secs(2));
         group.measurement_time(Duration::from_secs(10));
     } else if store >= MEDIUM || ops >= MEDIUM {
-        // 100K full-scan writes/reads: each iteration is ~seconds, so cut
-        // criterion's default 100 samples down to stay in minutes.
-        group.sample_size(15);
+        // 100K full-scan writes/reads: each iteration is seconds, so keep
+        // samples and window small — effect sizes here dwarf sampling noise.
+        group.sample_size(10);
         group.warm_up_time(Duration::from_secs(2));
-        group.measurement_time(Duration::from_secs(10));
+        group.measurement_time(Duration::from_secs(5));
     }
 }
 
