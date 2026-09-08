@@ -49,6 +49,15 @@ type WalBuffer = Arc<async_lock::Mutex<Vec<(String, Option<Vec<u8>>)>>>;
 /// fencing safety comes from the monotonic epoch, not session uniqueness.
 static SESSION_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// WAL entries that trigger force-flush + GC maintenance.
+///
+/// Each write CAS-appends one WAL id to `manifest.json`; without a bound the
+/// manifest grows without limit on small-write workloads (the 32 MiB SST
+/// threshold never fires), making every write pay O(list) scan + serde.
+/// Crossing this count force-flushes an SST and GCs covered WALs, keeping
+/// per-write manifest cost flat.
+const WAL_MAINTENANCE_COUNT: usize = 1_000;
+
 /// Storage-backed LSM store (probe + fencing + WAL gate + SST).
 pub struct OxKvStore<C = LruCache<String, Arc<SstFile>>> {
     inner: Arc<dyn Storage>,
@@ -245,7 +254,10 @@ where
             let etag_opt = if etag.is_empty() { None } else { Some(etag) };
             match cas_manifest(Arc::clone(&self.inner), &self.prefix, &manifest, etag_opt).await {
                 Ok(new_etag) => {
+                    let wal_len = manifest.wal.len();
                     cache.update(manifest, new_etag);
+                    drop(cache);
+                    self.maintain_wal(wal_len).await;
                     return Ok(());
                 }
                 Err(e) if e.to_string().contains("CAS conflict") => {
@@ -263,6 +275,18 @@ where
             }
         }
         Ok(())
+    }
+
+    /// Best-effort WAL maintenance after a manifest CAS carrying `wal_len`
+    /// entries: force-flush an SST and GC covered WALs once the list reaches
+    /// `WAL_MAINTENANCE_COUNT`, keeping per-write manifest cost flat.
+    /// Failures are swallowed (fencing/conflicts/reader pins).
+    async fn maintain_wal(&self, wal_len: usize) {
+        if wal_len < WAL_MAINTENANCE_COUNT {
+            return;
+        }
+        let _ = self.flush_mem_to_sst_force().await;
+        let _ = self.gc_wal().await;
     }
 
     /// Convenience: stage + flush (RPO=0) — mirrors `commit_durable`.
@@ -1135,12 +1159,14 @@ where
             let etag_opt = if etag.is_empty() { None } else { Some(etag) };
             match cas_manifest(Arc::clone(&self.inner), &self.prefix, &manifest, etag_opt).await {
                 Ok(new_etag) => {
+                    let wal_len = manifest.wal.len();
                     cache.update(manifest, new_etag);
                     drop(cache);
                     self.mem.write().await.insert(key.to_string(), None);
                     // Best-effort auto maintenance — ignore fencing/conflicts
                     let _ = self.flush_mem_to_sst().await;
                     let _ = self.compact().await;
+                    self.maintain_wal(wal_len).await;
                     return Ok(true);
                 }
                 Err(e) if e.to_string().contains("CAS conflict") => {
@@ -1220,6 +1246,7 @@ where
             let etag_opt = if etag.is_empty() { None } else { Some(etag) };
             match cas_manifest(Arc::clone(&self.inner), &self.prefix, &manifest, etag_opt).await {
                 Ok(new_etag) => {
+                    let wal_len = manifest.wal.len();
                     cache.update(manifest, new_etag);
                     drop(cache);
                     self.mem
@@ -1228,6 +1255,7 @@ where
                         .insert(key.to_string(), Some(value.to_vec()));
                     let _ = self.flush_mem_to_sst().await;
                     let _ = self.compact().await;
+                    self.maintain_wal(wal_len).await;
                     return Ok(prev);
                 }
                 Err(e) if e.to_string().contains("CAS conflict") => {
