@@ -4,14 +4,12 @@
 
 use std::sync::Arc;
 
-use object_store::path::Path;
-use object_store::{ObjectStore, PutMode, PutPayload, PutResult, UpdateVersion};
-
+use crate::store::storage::{ObjectPath, ObjectVersion, PutMode, Storage};
 use crate::store::{Result, StoreError};
 
-fn probe_path(prefix: &Path) -> Path {
-    let base = if prefix.as_ref().is_empty() {
-        Path::from("probe")
+fn probe_path(prefix: &ObjectPath) -> ObjectPath {
+    let base = if prefix.is_empty() {
+        ObjectPath::from("probe")
     } else {
         prefix.child("probe")
     };
@@ -21,28 +19,21 @@ fn probe_path(prefix: &Path) -> Path {
 /// Runs the storage probe against `store` at `prefix/probe/canary`.
 ///
 /// Validates that the store correctly enforces `If-None-Match` and `If-Match`
-/// conditional writes. Returns `Ok(())` only on `ok (create, reject-create, reject-stale)`.
-pub(crate) async fn probe_store(store: Arc<dyn ObjectStore>, prefix: &Path) -> Result<()> {
+/// conditional writes. Returns `Ok(())` only on
+/// `ok (create, reject-create, reject-stale)`.
+pub(crate) async fn probe_store(store: Arc<dyn Storage>, prefix: &ObjectPath) -> Result<()> {
     let path = probe_path(prefix);
 
-    let first: PutResult = store
-        .put_opts(
-            &path,
-            PutPayload::from_static(b"probe"),
-            PutMode::Create.into(),
-        )
+    let first = store
+        .put_opts(&path, b"probe".to_vec(), PutMode::Create)
         .await
         .map_err(|e| StoreError::Storage(format!("probe create failed: {e}")))?;
 
     let second = store
-        .put_opts(
-            &path,
-            PutPayload::from_static(b"probe2"),
-            PutMode::Create.into(),
-        )
+        .put_opts(&path, b"probe2".to_vec(), PutMode::Create)
         .await;
     match second {
-        Err(object_store::Error::AlreadyExists { .. }) => {}
+        Err(e) if e.to_string().contains("CAS conflict") => {}
         Ok(_) => {
             let _ = store.delete(&path).await;
             return Err(StoreError::Storage(
@@ -52,24 +43,20 @@ pub(crate) async fn probe_store(store: Arc<dyn ObjectStore>, prefix: &Path) -> R
         Err(e) => {
             let _ = store.delete(&path).await;
             return Err(StoreError::Storage(format!(
-                "probe second create unexpected error (expected AlreadyExists): {e}"
+                "probe second create unexpected error (expected CAS conflict): {e}"
             )));
         }
     }
 
-    let stale = UpdateVersion {
+    let stale = ObjectVersion {
         e_tag: Some("\"stale-etag-should-not-match\"".to_string()),
         version: None,
     };
     let third = store
-        .put_opts(
-            &path,
-            PutPayload::from_static(b"probe3"),
-            PutMode::Update(stale).into(),
-        )
+        .put_opts(&path, b"probe3".to_vec(), PutMode::Update(stale))
         .await;
     match third {
-        Err(object_store::Error::Precondition { .. }) => {}
+        Err(e) if e.to_string().contains("CAS conflict") => {}
         Ok(_) => {
             let _ = store.delete(&path).await;
             return Err(StoreError::Storage(
@@ -80,21 +67,17 @@ pub(crate) async fn probe_store(store: Arc<dyn ObjectStore>, prefix: &Path) -> R
         Err(e) => {
             let _ = store.delete(&path).await;
             return Err(StoreError::Storage(format!(
-                "probe stale update unexpected error (expected Precondition): {e}"
+                "probe stale update unexpected error (expected CAS conflict): {e}"
             )));
         }
     }
 
-    let valid = UpdateVersion {
+    let valid = ObjectVersion {
         e_tag: first.e_tag.clone(),
         version: first.version.clone(),
     };
     store
-        .put_opts(
-            &path,
-            PutPayload::from_static(b"probe-ok"),
-            PutMode::Update(valid).into(),
-        )
+        .put_opts(&path, b"probe-ok".to_vec(), PutMode::Update(valid))
         .await
         .map_err(|e| StoreError::Storage(format!("probe valid update failed: {e}")))?;
 
@@ -109,17 +92,18 @@ pub(crate) async fn probe_store(store: Arc<dyn ObjectStore>, prefix: &Path) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use object_store::memory::InMemory;
+    use crate::store::MemStorage;
 
-    fn new_in_memory() -> Arc<dyn ObjectStore> {
-        Arc::new(InMemory::new())
+    fn new_in_memory() -> Arc<dyn Storage> {
+        Arc::new(MemStorage::new())
     }
 
-    #[tokio::test]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn probe_ok_on_in_memory() {
         let store = new_in_memory();
-        probe_store(Arc::clone(&store), &Path::default())
+        probe_store(Arc::clone(&store), &ObjectPath::default())
             .await
-            .expect("InMemory must pass probe");
+            .expect("MemStorage must pass probe");
     }
 }

@@ -8,10 +8,9 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use object_store::path::Path;
-use object_store::{GetOptions, ObjectStore, PutMode, PutPayload, UpdateVersion};
 use serde::{Deserialize, Serialize};
 
+use crate::store::storage::{GetOptions, ObjectPath, ObjectVersion, PutMode, Storage};
 use crate::store::{Result, StoreError};
 
 /// Metadata for one SST file recorded in the manifest.
@@ -59,9 +58,9 @@ impl Manifest {
 
 /// Path for `manifest.json`.
 #[must_use]
-pub(crate) fn manifest_path(prefix: &Path) -> Path {
-    if prefix.as_ref().is_empty() {
-        Path::from("manifest.json")
+pub(crate) fn manifest_path(prefix: &ObjectPath) -> ObjectPath {
+    if prefix.is_empty() {
+        ObjectPath::from("manifest.json")
     } else {
         prefix.child("manifest.json")
     }
@@ -69,22 +68,18 @@ pub(crate) fn manifest_path(prefix: &Path) -> Path {
 
 /// Reads manifest at `prefix/manifest.json`; `None` if not found.
 pub(crate) async fn read_manifest(
-    store: Arc<dyn ObjectStore>,
-    prefix: &Path,
+    store: Arc<dyn Storage>,
+    prefix: &ObjectPath,
 ) -> Result<Option<(Manifest, String)>> {
     let path = manifest_path(prefix);
     match store.get(&path).await {
-        Ok(res) => {
-            let etag = res.meta.e_tag.clone().unwrap_or_default();
-            let bytes = res
-                .bytes()
-                .await
-                .map_err(|e| StoreError::Storage(format!("read manifest bytes: {e}")))?;
-            let manifest: Manifest = serde_json::from_slice(&bytes)
+        Ok(out) => {
+            let etag = out.e_tag.clone().unwrap_or_default();
+            let manifest: Manifest = serde_json::from_slice(&out.bytes)
                 .map_err(|e| StoreError::Storage(format!("parse manifest: {e}")))?;
             Ok(Some((manifest, etag)))
         }
-        Err(object_store::Error::NotFound { .. }) => Ok(None),
+        Err(e) if e.to_string().contains("not found") => Ok(None),
         Err(e) => Err(StoreError::Storage(format!("get manifest failed: {e}"))),
     }
 }
@@ -94,35 +89,29 @@ pub(crate) async fn read_manifest(
 /// `expected_etag` is `None` for create, `Some(etag)` for update.
 /// On success returns the new etag.
 pub(crate) async fn cas_manifest(
-    store: Arc<dyn ObjectStore>,
-    prefix: &Path,
+    store: Arc<dyn Storage>,
+    prefix: &ObjectPath,
     manifest: &Manifest,
     expected_etag: Option<String>,
 ) -> Result<String> {
     let path = manifest_path(prefix);
-    let payload = PutPayload::from(
-        serde_json::to_vec(manifest)
-            .map_err(|e| StoreError::Storage(format!("serialize manifest: {e}")))?,
-    );
-    let opts = match expected_etag {
-        None => PutMode::Create.into(),
-        Some(etag) => PutMode::Update(UpdateVersion {
+    let payload = serde_json::to_vec(manifest)
+        .map_err(|e| StoreError::Storage(format!("serialize manifest: {e}")))?;
+    let mode = match expected_etag {
+        None => PutMode::Create,
+        Some(etag) => PutMode::Update(ObjectVersion {
             e_tag: Some(etag),
             version: None,
-        })
-        .into(),
+        }),
     };
-    let res = store
-        .put_opts(&path, payload, opts)
-        .await
-        .map_err(|e| match e {
-            object_store::Error::AlreadyExists { .. }
-            | object_store::Error::Precondition { .. } => {
-                StoreError::Storage(format!("manifest CAS conflict: {e}"))
-            }
-            other => StoreError::Storage(format!("put manifest failed: {other}")),
-        })?;
-    Ok(res.e_tag.unwrap_or_default())
+    let out = store.put_opts(&path, payload, mode).await.map_err(|e| {
+        if e.to_string().contains("CAS conflict") {
+            StoreError::Storage(format!("manifest CAS conflict: {e}"))
+        } else {
+            StoreError::Storage(format!("put manifest failed: {e}"))
+        }
+    })?;
+    Ok(out.e_tag.unwrap_or_default())
 }
 
 /// In-memory cache with `ETag` + TTL.
@@ -177,8 +166,8 @@ impl ManifestCache {
     /// If `NotFound`, returns empty manifest for `epoch`.
     pub async fn load(
         &mut self,
-        store: Arc<dyn ObjectStore>,
-        prefix: &Path,
+        store: Arc<dyn Storage>,
+        prefix: &ObjectPath,
         epoch: u64,
         ttl: Duration,
     ) -> Result<(Manifest, String)> {
@@ -186,24 +175,19 @@ impl ManifestCache {
             let path = manifest_path(prefix);
             let opts = GetOptions {
                 if_none_match: Some(etag.clone()),
-                ..Default::default()
             };
             match store.get_opts(&path, opts).await {
-                Ok(res) => {
-                    let new_etag = res.meta.e_tag.clone().unwrap_or_default();
-                    let bytes = res
-                        .bytes()
-                        .await
-                        .map_err(|e| StoreError::Storage(format!("read manifest: {e}")))?;
-                    let manifest: Manifest = serde_json::from_slice(&bytes)
+                Ok(out) => {
+                    let new_etag = out.e_tag.clone().unwrap_or_default();
+                    let manifest: Manifest = serde_json::from_slice(&out.bytes)
                         .map_err(|e| StoreError::Storage(format!("parse manifest: {e}")))?;
                     self.update(manifest.clone(), new_etag.clone());
                     return Ok((manifest, new_etag));
                 }
-                Err(object_store::Error::NotModified { .. }) => {
+                Err(StoreError::NotModified) => {
                     return Ok((manifest, etag));
                 }
-                Err(object_store::Error::NotFound { .. }) => {
+                Err(e) if e.to_string().contains("not found") => {
                     let empty = Manifest::empty(epoch);
                     self.update(empty.clone(), String::new());
                     return Ok((empty, String::new()));
@@ -235,16 +219,18 @@ impl Default for ManifestCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use object_store::memory::InMemory;
+    use crate::store::MemStorage;
+    use crate::store::sleep;
 
-    fn test_store() -> Arc<dyn ObjectStore> {
-        Arc::new(InMemory::new())
+    fn test_store() -> Arc<dyn Storage> {
+        Arc::new(MemStorage::new())
     }
 
-    #[tokio::test]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn manifest_empty_and_cas() {
         let store = test_store();
-        let prefix = Path::from("oxkv");
+        let prefix = ObjectPath::from("oxkv");
         let manifest = Manifest {
             version: 0,
             epoch: 1,
@@ -275,10 +261,11 @@ mod tests {
         assert!(err.to_string().contains("CAS conflict"));
     }
 
-    #[tokio::test]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn manifest_cache_etag_poll() {
         let store = test_store();
-        let prefix = Path::default();
+        let prefix = ObjectPath::default();
         let epoch = 7;
         let mut cache = ManifestCache::new();
         let ttl = Duration::from_secs(1);
@@ -326,10 +313,11 @@ mod tests {
         assert_eq!(m3.version, 1);
     }
 
-    #[tokio::test]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn manifest_cache_ttl_expiry() {
         let store = test_store();
-        let prefix = Path::default();
+        let prefix = ObjectPath::default();
         let mut cache = ManifestCache::new();
         let ttl = Duration::from_millis(10);
         let epoch = 1;
@@ -348,7 +336,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(m1.version, 5);
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        sleep(Duration::from_millis(20)).await;
         assert!(cache.get_cached(ttl).is_none());
         let (m2, _) = cache
             .load(Arc::clone(&store), &prefix, epoch, ttl)

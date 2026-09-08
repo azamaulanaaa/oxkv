@@ -1,13 +1,15 @@
-//! S3-backed LSM store.
-#![cfg(not(target_arch = "wasm32"))]
+//! LSM store generic over the [`Storage`] trait — native and `wasm32`.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use object_store::path::Path;
-use object_store::{ObjectStore, PutMode, PutPayload};
 
 use crate::store::cache::{Cache, LruCache};
+use crate::store::sleep;
+use crate::store::storage::{ObjectPath, PutMode, Storage};
+
+#[cfg(test)]
+use crate::store::storage::MemStorage;
 
 use crate::store::{Direction, GetSet, KeyValue, Result, Store, StoreError, Transaction};
 
@@ -37,23 +39,23 @@ pub(crate) use manifest::manifest_path;
 pub(crate) use ownership::{epoch_prefix, ownership_path};
 
 type MemMap = std::collections::BTreeMap<String, Option<Vec<u8>>>;
-type MemTable = Arc<tokio::sync::RwLock<MemMap>>;
-type WalBuffer = Arc<tokio::sync::Mutex<Vec<(String, Option<Vec<u8>>)>>>;
+type MemTable = Arc<async_lock::RwLock<MemMap>>;
+type WalBuffer = Arc<async_lock::Mutex<Vec<(String, Option<Vec<u8>>)>>>;
 
 /// S3-backed store (incremental — probe + fencing + WAL gate + SST).
 pub struct OxKvStore {
-    inner: Arc<dyn ObjectStore>,
-    prefix: Path,
+    inner: Arc<dyn Storage>,
+    prefix: ObjectPath,
     epoch: u64,
     session: String,
     mem: MemTable,
     wal_seq: Arc<std::sync::atomic::AtomicU64>,
     wal_buffer: WalBuffer,
     sst_seq: Arc<std::sync::atomic::AtomicU64>,
-    manifest_cache: Arc<tokio::sync::Mutex<ManifestCache>>,
+    manifest_cache: Arc<async_lock::Mutex<ManifestCache>>,
     /// Pinned reader versions for WAL GC watermark.
     /// `BTreeMap<version, count>` — `min_key` is the watermark.
-    readers: Arc<tokio::sync::Mutex<std::collections::BTreeMap<u64, usize>>>,
+    readers: Arc<async_lock::Mutex<std::collections::BTreeMap<u64, usize>>>,
     /// SST file cache — weight-aware LRU (~256 MB with 32KB blocks).
     sst_cache: LruCache<String, Arc<SstFile>>,
 }
@@ -74,7 +76,7 @@ impl OxKvStore {
     pub fn builder() -> OxKvStoreBuilder {
         OxKvStoreBuilder {
             inner: None,
-            prefix: Path::default(),
+            prefix: ObjectPath::default(),
             skip_probe: false,
             session: None,
         }
@@ -89,21 +91,21 @@ impl OxKvStore {
     /// # Errors
     ///
     /// Returns `StoreError::Storage` if conditional writes are not enforced.
-    pub async fn probe(store: Arc<dyn ObjectStore>, prefix: &Path) -> Result<()> {
+    pub async fn probe(store: Arc<dyn Storage>, prefix: &ObjectPath) -> Result<()> {
         probe_store(store, prefix).await
     }
 
     /// Returns the underlying object store (for tests).
     #[cfg(test)]
     #[must_use]
-    pub fn inner_store(&self) -> Arc<dyn ObjectStore> {
+    pub fn inner_store(&self) -> Arc<dyn Storage> {
         Arc::clone(&self.inner)
     }
 
     /// Returns the prefix.
     #[cfg(test)]
     #[must_use]
-    pub fn prefix(&self) -> &Path {
+    pub fn prefix(&self) -> &ObjectPath {
         &self.prefix
     }
 
@@ -185,11 +187,12 @@ impl OxKvStore {
 
         let put_res = self
             .inner
-            .put_opts(&path, PutPayload::from(payload_buf), PutMode::Create.into())
+            .put_opts(&path, payload_buf, PutMode::Create)
             .await;
 
         match put_res {
-            Ok(_) | Err(object_store::Error::AlreadyExists { .. }) => {}
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("CAS conflict") => {}
             Err(e) => return Err(StoreError::Storage(format!("put wal failed: {e}"))),
         }
 
@@ -240,7 +243,7 @@ impl OxKvStore {
                     }
                     let backoff = cas_backoff(attempt);
                     drop(cache);
-                    tokio::time::sleep(backoff).await;
+                    sleep(backoff).await;
                 }
                 Err(e) => return Err(e),
             }
@@ -319,19 +322,16 @@ impl OxKvStore {
             .sst_seq
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         // Fully prefixed id (same layout as `wal_path`) so `fetch_sst` can
-        // resolve it with `Path::from(id)` and manifests stay prefix-safe.
+        // resolve it with `ObjectPath::from(id)` and manifests stay prefix-safe.
         let sst_id = sst_path(&self.prefix, self.epoch, 0, seq).to_string();
-        let sst_path = Path::from(sst_id.as_str());
+        let sst_path = ObjectPath::from(sst_id.as_str());
         let put_res = self
             .inner
-            .put_opts(
-                &sst_path,
-                PutPayload::from(sst_bytes.clone()),
-                PutMode::Create.into(),
-            )
+            .put_opts(&sst_path, sst_bytes.clone(), PutMode::Create)
             .await;
         match put_res {
-            Ok(_) | Err(object_store::Error::AlreadyExists { .. }) => {}
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("CAS conflict") => {}
             Err(e) => return Err(StoreError::Storage(format!("put sst failed: {e}"))),
         }
 
@@ -393,7 +393,7 @@ impl OxKvStore {
             }
             Err(e) if e.to_string().contains("CAS conflict") => {
                 let backoff = cas_backoff(0);
-                tokio::time::sleep(backoff).await;
+                sleep(backoff).await;
                 cache.clear();
                 let (reloaded, _) = cache
                     .load(
@@ -420,7 +420,7 @@ impl OxKvStore {
 
     async fn resolve_value(&self, raw: Vec<u8>) -> Result<Vec<u8>> {
         if let Some(ptr) = try_decode_blob_pointer(&raw) {
-            let blob_path = Path::from(ptr.blob.as_str());
+            let blob_path = ObjectPath::from(ptr.blob.as_str());
             let bytes = get_blob(Arc::clone(&self.inner), &blob_path).await?;
             if bytes.len() != ptr.len {
                 return Err(StoreError::Storage(format!(
@@ -447,17 +447,13 @@ impl OxKvStore {
         if let Some(cached) = self.sst_cache.get(&id.to_string()).await {
             return Ok(cached);
         }
-        let path = Path::from(id);
-        let res = self
+        let path = ObjectPath::from(id);
+        let out = self
             .inner
             .get(&path)
             .await
             .map_err(|e| StoreError::Storage(format!("get sst {id} failed: {e}")))?;
-        let bytes = res
-            .bytes()
-            .await
-            .map_err(|e| StoreError::Storage(format!("read sst {id} failed: {e}")))?;
-        let sst = Arc::new(SstFile::parse(bytes.to_vec())?);
+        let sst = Arc::new(SstFile::parse(out.bytes)?);
         sst.verify_file_crc()?;
         self.sst_cache
             .insert(id.to_string(), Arc::clone(&sst))
@@ -684,22 +680,20 @@ impl OxKvStore {
                     drop(cache);
                     let mut deleted = 0usize;
                     for wal in &to_delete {
-                        let path = Path::from(wal.as_str());
-                        match self.inner.delete(&path).await {
-                            Ok(()) | Err(object_store::Error::NotFound { .. }) => deleted += 1,
-                            Err(e) => {
-                                return Err(StoreError::Storage(format!(
-                                    "delete wal {wal} failed: {e}"
-                                )));
-                            }
+                        let path = ObjectPath::from(wal.as_str());
+                        if let Err(e) = self.inner.delete(&path).await {
+                            return Err(StoreError::Storage(format!(
+                                "delete wal {wal} failed: {e}"
+                            )));
                         }
+                        deleted += 1;
                     }
                     return Ok(deleted);
                 }
                 Err(e) if e.to_string().contains("CAS conflict") => {
                     cache.clear();
                     drop(cache);
-                    tokio::time::sleep(cas_backoff(0)).await;
+                    sleep(cas_backoff(0)).await;
                 }
                 Err(e) => return Err(e),
             }
@@ -783,7 +777,7 @@ impl OxKvStore {
                     Some(raw) => {
                         // Resolve blob pointers if any (L0 may contain pointers).
                         let val = if let Some(ptr) = try_decode_blob_pointer(&raw) {
-                            let blob_path = Path::from(ptr.blob.as_str());
+                            let blob_path = ObjectPath::from(ptr.blob.as_str());
                             get_blob(Arc::clone(&self.inner), &blob_path).await?
                         } else {
                             raw
@@ -849,7 +843,7 @@ impl OxKvStore {
                         cache.update(manifest.clone(), new_etag);
                         drop(cache);
                         for m in l0_metas.iter().chain(l1_overlapping.iter()) {
-                            let p = Path::from(m.id.as_str());
+                            let p = ObjectPath::from(m.id.as_str());
                             let _ = self.inner.delete(&p).await;
                         }
                         return Ok(None);
@@ -857,7 +851,7 @@ impl OxKvStore {
                     Err(e) if e.to_string().contains("CAS conflict") => {
                         cache.clear();
                         drop(cache);
-                        tokio::time::sleep(cas_backoff(0)).await;
+                        sleep(cas_backoff(0)).await;
                     }
                     Err(e) => return Err(e),
                 }
@@ -869,17 +863,14 @@ impl OxKvStore {
             .sst_seq
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let l1_id = sst_path(&self.prefix, self.epoch, 1, seq).to_string();
-        let l1_path = Path::from(l1_id.as_str());
+        let l1_path = ObjectPath::from(l1_id.as_str());
         let put_res = self
             .inner
-            .put_opts(
-                &l1_path,
-                PutPayload::from(sst_bytes.clone()),
-                PutMode::Create.into(),
-            )
+            .put_opts(&l1_path, sst_bytes.clone(), PutMode::Create)
             .await;
         match put_res {
-            Ok(_) | Err(object_store::Error::AlreadyExists { .. }) => {}
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("CAS conflict") => {}
             Err(e) => return Err(StoreError::Storage(format!("put L1 sst failed: {e}"))),
         }
         // Verify still owner.
@@ -947,7 +938,7 @@ impl OxKvStore {
                     // Invalidate sst_cache for deleted, keep new.
                     for m in l0_metas.iter().chain(l1_overlapping.iter()) {
                         self.sst_cache.remove(&m.id).await;
-                        let p = Path::from(m.id.as_str());
+                        let p = ObjectPath::from(m.id.as_str());
                         let _ = self.inner.delete(&p).await;
                     }
                     return Ok(Some(new_meta));
@@ -955,7 +946,7 @@ impl OxKvStore {
                 Err(e) if e.to_string().contains("CAS conflict") => {
                     cache.clear();
                     drop(cache);
-                    tokio::time::sleep(cas_backoff(0)).await;
+                    sleep(cas_backoff(0)).await;
                 }
                 Err(e) => return Err(e),
             }
@@ -976,13 +967,13 @@ impl OxKvStore {
 /// `get`/`has`/`gets` see `overlay` first (read-your-writes) then the
 /// parent's `MemTable` + `SST`s via the same heap-merge.
 pub struct OxKvTx {
-    inner: Arc<dyn ObjectStore>,
-    prefix: Path,
+    inner: Arc<dyn Storage>,
+    prefix: ObjectPath,
     epoch: u64,
     session: String,
     mem: MemTable,
     wal_seq: Arc<std::sync::atomic::AtomicU64>,
-    manifest_cache: Arc<tokio::sync::Mutex<ManifestCache>>,
+    manifest_cache: Arc<async_lock::Mutex<ManifestCache>>,
     sst_cache: LruCache<String, Arc<SstFile>>,
     overlay: std::collections::BTreeMap<String, Option<Vec<u8>>>,
 }
@@ -990,7 +981,7 @@ pub struct OxKvTx {
 impl OxKvTx {
     async fn resolve_value(&self, raw: Vec<u8>) -> Result<Vec<u8>> {
         if let Some(ptr) = try_decode_blob_pointer(&raw) {
-            let blob_path = Path::from(ptr.blob.as_str());
+            let blob_path = ObjectPath::from(ptr.blob.as_str());
             let bytes = get_blob(Arc::clone(&self.inner), &blob_path).await?;
             if bytes.len() != ptr.len {
                 return Err(StoreError::Storage(format!(
@@ -1017,17 +1008,13 @@ impl OxKvTx {
         if let Some(cached) = self.sst_cache.get(&id.to_string()).await {
             return Ok(cached);
         }
-        let path = Path::from(id);
-        let res = self
+        let path = ObjectPath::from(id);
+        let out = self
             .inner
             .get(&path)
             .await
             .map_err(|e| StoreError::Storage(format!("get sst {id} failed: {e}")))?;
-        let bytes = res
-            .bytes()
-            .await
-            .map_err(|e| StoreError::Storage(format!("read sst {id} failed: {e}")))?;
-        let sst = Arc::new(SstFile::parse(bytes.to_vec())?);
+        let sst = Arc::new(SstFile::parse(out.bytes)?);
         sst.verify_file_crc()?;
         self.sst_cache
             .insert(id.to_string(), Arc::clone(&sst))
@@ -1065,10 +1052,11 @@ impl GetSet for OxKvStore {
         let path = wal_path(&self.prefix, self.epoch, seq);
         let put_res = self
             .inner
-            .put_opts(&path, PutPayload::from(payload_buf), PutMode::Create.into())
+            .put_opts(&path, payload_buf, PutMode::Create)
             .await;
         match put_res {
-            Ok(_) | Err(object_store::Error::AlreadyExists { .. }) => {}
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("CAS conflict") => {}
             Err(e) => return Err(StoreError::Storage(format!("put wal failed: {e}"))),
         }
         let cur = read_ownership(Arc::clone(&self.inner), &self.prefix).await?;
@@ -1123,7 +1111,7 @@ impl GetSet for OxKvStore {
                     }
                     let backoff = cas_backoff(attempt);
                     drop(cache);
-                    tokio::time::sleep(backoff).await;
+                    sleep(backoff).await;
                 }
                 Err(e) => return Err(e),
             }
@@ -1143,10 +1131,11 @@ impl GetSet for OxKvStore {
         let path = wal_path(&self.prefix, self.epoch, seq);
         let put_res = self
             .inner
-            .put_opts(&path, PutPayload::from(payload_buf), PutMode::Create.into())
+            .put_opts(&path, payload_buf, PutMode::Create)
             .await;
         match put_res {
-            Ok(_) | Err(object_store::Error::AlreadyExists { .. }) => {}
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("CAS conflict") => {}
             Err(e) => return Err(StoreError::Storage(format!("put wal failed: {e}"))),
         }
         let cur = read_ownership(Arc::clone(&self.inner), &self.prefix).await?;
@@ -1209,7 +1198,7 @@ impl GetSet for OxKvStore {
                     }
                     let backoff = cas_backoff(attempt);
                     drop(cache);
-                    tokio::time::sleep(backoff).await;
+                    sleep(backoff).await;
                 }
                 Err(e) => return Err(e),
             }
@@ -1425,10 +1414,11 @@ impl Transaction for OxKvTx {
         let path = wal_path(&self.prefix, self.epoch, seq);
         let put_res = self
             .inner
-            .put_opts(&path, PutPayload::from(payload_buf), PutMode::Create.into())
+            .put_opts(&path, payload_buf, PutMode::Create)
             .await;
         match put_res {
-            Ok(_) | Err(object_store::Error::AlreadyExists { .. }) => {}
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("CAS conflict") => {}
             Err(e) => return Err(StoreError::Storage(format!("put wal failed: {e}"))),
         }
         let cur = read_ownership(Arc::clone(&self.inner), &self.prefix).await?;
@@ -1491,7 +1481,7 @@ impl Transaction for OxKvTx {
                     }
                     let backoff = cas_backoff(attempt);
                     drop(cache);
-                    tokio::time::sleep(backoff).await;
+                    sleep(backoff).await;
                 }
                 Err(e) => return Err(e),
             }
@@ -1526,8 +1516,8 @@ impl Store for OxKvStore {
 /// Builder for [`OxKvStore`].
 #[derive(Default)]
 pub struct OxKvStoreBuilder {
-    inner: Option<Arc<dyn ObjectStore>>,
-    prefix: Path,
+    inner: Option<Arc<dyn Storage>>,
+    prefix: ObjectPath,
     skip_probe: bool,
     session: Option<String>,
 }
@@ -1543,17 +1533,26 @@ impl std::fmt::Debug for OxKvStoreBuilder {
 }
 
 impl OxKvStoreBuilder {
-    /// Sets the backing [`ObjectStore`] (use `Arc::new(InMemory::new())` in tests,
-    /// `AmazonS3Builder` / `parse_url` in prod).
+    /// Sets the backing [`Storage`] (use `MemStorage` in tests and wasm;
+    /// on native, an `object_store` backend also works via `with_object_store`).
     #[must_use]
-    pub fn with_store(mut self, store: Arc<dyn ObjectStore>) -> Self {
+    pub fn with_store(mut self, store: Arc<dyn Storage>) -> Self {
         self.inner = Some(store);
         self
     }
 
-    /// Sets the key prefix inside the bucket (e.g. `Path::from("oxkv")`).
+    /// Sets the backing store from an `object_store` backend (native-only,
+    /// requires the `oxkv-s3` feature).
+    #[cfg(all(not(target_arch = "wasm32"), feature = "oxkv-s3"))]
     #[must_use]
-    pub fn with_prefix(mut self, prefix: Path) -> Self {
+    pub fn with_object_store(mut self, store: Arc<dyn object_store::ObjectStore>) -> Self {
+        self.inner = Some(Arc::new(store));
+        self
+    }
+
+    /// Sets the key prefix inside the bucket (e.g. `ObjectPath::from("oxkv")`).
+    #[must_use]
+    pub fn with_prefix(mut self, prefix: ObjectPath) -> Self {
         self.prefix = prefix;
         self
     }
@@ -1589,7 +1588,7 @@ impl OxKvStoreBuilder {
     #[allow(clippy::too_many_lines)]
     pub async fn build(self) -> Result<OxKvStore> {
         let store = self.inner.ok_or_else(|| {
-            StoreError::Storage("OxKvStore requires an ObjectStore via with_store()".to_string())
+            StoreError::Storage("OxKvStore requires a Storage via with_store()".to_string())
         })?;
 
         if !self.skip_probe {
@@ -1611,12 +1610,12 @@ impl OxKvStoreBuilder {
             prefix: self.prefix.clone(),
             epoch: rec.epoch,
             session: session.clone(),
-            mem: Arc::new(tokio::sync::RwLock::new(std::collections::BTreeMap::new())),
+            mem: Arc::new(async_lock::RwLock::new(std::collections::BTreeMap::new())),
             wal_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            wal_buffer: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            wal_buffer: Arc::new(async_lock::Mutex::new(Vec::new())),
             sst_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            manifest_cache: Arc::new(tokio::sync::Mutex::new(ManifestCache::new())),
-            readers: Arc::new(tokio::sync::Mutex::new(std::collections::BTreeMap::new())),
+            manifest_cache: Arc::new(async_lock::Mutex::new(ManifestCache::new())),
+            readers: Arc::new(async_lock::Mutex::new(std::collections::BTreeMap::new())),
             sst_cache: LruCache::new(256 * 1024 * 1024, |_: &String, v: &Arc<SstFile>| {
                 u32::try_from(v.size()).unwrap_or(u32::MAX)
             }),
@@ -1637,14 +1636,11 @@ impl OxKvStoreBuilder {
                 Err(_) => (Manifest::empty(s3store.epoch), String::new()),
             };
             for wal_id in &manifest.wal {
-                let path = Path::from(wal_id.clone());
-                let Ok(res) = s3store.inner.get(&path).await else {
+                let path = ObjectPath::from(wal_id.clone());
+                let Ok(out) = s3store.inner.get(&path).await else {
                     continue;
                 };
-                let Ok(bytes) = res.bytes().await else {
-                    continue;
-                };
-                let data = bytes.to_vec();
+                let data = out.bytes;
                 let mut pos = 0usize;
                 let mut mem = s3store.mem.write().await;
                 while pos + 4 <= data.len() {
@@ -1796,86 +1792,53 @@ pub(crate) fn merged_gets_bytes(
 
 /// In-memory store helper for tests.
 #[cfg(test)]
-pub(crate) fn new_in_memory() -> Arc<dyn ObjectStore> {
-    Arc::new(object_store::memory::InMemory::new())
+pub(crate) fn new_in_memory() -> Arc<dyn Storage> {
+    Arc::new(MemStorage::new())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use object_store::{ObjectStore, PutResult};
+    use crate::store::storage::{GetOptions, GetOutput, MemStorage, ObjectVersion, PutOutcome};
 
-    #[tokio::test]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn probe_rejects_b2_like_store_via_builder() {
-        #[derive(Debug)]
+        #[derive(Clone)]
         struct NoConditionStore {
-            inner: Arc<dyn ObjectStore>,
-        }
-
-        impl std::fmt::Display for NoConditionStore {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "NoConditionStore")
-            }
+            inner: MemStorage,
         }
 
         #[async_trait::async_trait]
-        impl ObjectStore for NoConditionStore {
+        impl Storage for NoConditionStore {
+            async fn get(&self, path: &ObjectPath) -> Result<GetOutput> {
+                self.inner.get(path).await
+            }
+
+            async fn get_opts(&self, path: &ObjectPath, options: GetOptions) -> Result<GetOutput> {
+                self.inner.get_opts(path, options).await
+            }
+
             async fn put_opts(
                 &self,
-                location: &Path,
-                payload: PutPayload,
-                _opts: object_store::PutOptions,
-            ) -> object_store::Result<PutResult> {
-                self.inner.put(location, payload).await
+                path: &ObjectPath,
+                payload: Vec<u8>,
+                _mode: PutMode,
+            ) -> Result<PutOutcome> {
+                // Ignore conditional modes: unconditional overwrite (no fencing support).
+                self.inner.delete(path).await?;
+                self.inner.put_opts(path, payload, PutMode::Create).await
             }
 
-            async fn put_multipart_opts(
-                &self,
-                _location: &Path,
-                _opts: object_store::PutMultipartOptions,
-            ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
-                unimplemented!()
-            }
-
-            async fn get_opts(
-                &self,
-                location: &Path,
-                options: object_store::GetOptions,
-            ) -> object_store::Result<object_store::GetResult> {
-                self.inner.get_opts(location, options).await
-            }
-
-            async fn delete(&self, location: &Path) -> object_store::Result<()> {
-                self.inner.delete(location).await
-            }
-
-            fn list(
-                &self,
-                prefix: Option<&Path>,
-            ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
-            {
-                self.inner.list(prefix)
-            }
-
-            async fn list_with_delimiter(
-                &self,
-                prefix: Option<&Path>,
-            ) -> object_store::Result<object_store::ListResult> {
-                self.inner.list_with_delimiter(prefix).await
-            }
-
-            async fn copy(&self, from: &Path, to: &Path) -> object_store::Result<()> {
-                self.inner.copy(from, to).await
-            }
-
-            async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> object_store::Result<()> {
-                self.inner.copy_if_not_exists(from, to).await
+            async fn delete(&self, path: &ObjectPath) -> Result<()> {
+                self.inner.delete(path).await
             }
         }
 
-        let inner = new_in_memory();
-        let bad: Arc<dyn ObjectStore> = Arc::new(NoConditionStore { inner });
-        let err = probe_store(Arc::clone(&bad), &Path::default())
+        let bad: Arc<dyn Storage> = Arc::new(NoConditionStore {
+            inner: MemStorage::new(),
+        });
+        let err = probe_store(Arc::clone(&bad), &ObjectPath::default())
             .await
             .expect_err("must reject");
         assert!(
@@ -1885,85 +1848,58 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn builder_runs_probe_by_default() {
         let store = new_in_memory();
         let built = OxKvStore::builder()
             .with_store(Arc::clone(&store))
-            .with_prefix(Path::from("oxkv"))
+            .with_prefix(ObjectPath::from("oxkv"))
             .build()
             .await
             .expect("builder with InMemory must pass probe");
-        assert_eq!(built.prefix().as_ref(), "oxkv");
+        assert_eq!(built.prefix().as_str(), "oxkv");
     }
 
-    #[tokio::test]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn builder_skip_probe_flag() {
         assert!(!OxKvStore::builder().is_skip_probe());
         assert!(OxKvStore::builder().skip_probe(true).is_skip_probe());
     }
 
-    #[tokio::test]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn builder_skip_probe_allows_b2_like_store() {
-        #[derive(Debug)]
+        #[derive(Clone)]
         struct NoConditionStore {
-            inner: Arc<dyn ObjectStore>,
-        }
-        impl std::fmt::Display for NoConditionStore {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "NoConditionStore")
-            }
+            inner: MemStorage,
         }
         #[async_trait::async_trait]
-        impl ObjectStore for NoConditionStore {
+        impl Storage for NoConditionStore {
+            async fn get(&self, path: &ObjectPath) -> Result<GetOutput> {
+                self.inner.get(path).await
+            }
+            async fn get_opts(&self, path: &ObjectPath, options: GetOptions) -> Result<GetOutput> {
+                self.inner.get_opts(path, options).await
+            }
             async fn put_opts(
                 &self,
-                location: &Path,
-                payload: PutPayload,
-                _opts: object_store::PutOptions,
-            ) -> object_store::Result<PutResult> {
-                self.inner.put(location, payload).await
+                path: &ObjectPath,
+                payload: Vec<u8>,
+                _mode: PutMode,
+            ) -> Result<PutOutcome> {
+                // Ignore conditional modes: unconditional overwrite (no fencing support).
+                self.inner.delete(path).await?;
+                self.inner.put_opts(path, payload, PutMode::Create).await
             }
-            async fn put_multipart_opts(
-                &self,
-                _location: &Path,
-                _opts: object_store::PutMultipartOptions,
-            ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
-                unimplemented!()
-            }
-            async fn get_opts(
-                &self,
-                location: &Path,
-                options: object_store::GetOptions,
-            ) -> object_store::Result<object_store::GetResult> {
-                self.inner.get_opts(location, options).await
-            }
-            async fn delete(&self, location: &Path) -> object_store::Result<()> {
-                self.inner.delete(location).await
-            }
-            fn list(
-                &self,
-                prefix: Option<&Path>,
-            ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
-            {
-                self.inner.list(prefix)
-            }
-            async fn list_with_delimiter(
-                &self,
-                prefix: Option<&Path>,
-            ) -> object_store::Result<object_store::ListResult> {
-                self.inner.list_with_delimiter(prefix).await
-            }
-            async fn copy(&self, from: &Path, to: &Path) -> object_store::Result<()> {
-                self.inner.copy(from, to).await
-            }
-            async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> object_store::Result<()> {
-                self.inner.copy_if_not_exists(from, to).await
+            async fn delete(&self, path: &ObjectPath) -> Result<()> {
+                self.inner.delete(path).await
             }
         }
 
-        let bad: Arc<dyn ObjectStore> = Arc::new(NoConditionStore {
-            inner: new_in_memory(),
+        let bad: Arc<dyn Storage> = Arc::new(NoConditionStore {
+            inner: MemStorage::new(),
         });
         let err = OxKvStore::builder()
             .with_store(Arc::clone(&bad))
@@ -1980,53 +1916,64 @@ mod tests {
             .expect("skip_probe must allow bad store");
     }
 
-    #[tokio::test]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn probe_static_entry_point() {
         let store = new_in_memory();
-        OxKvStore::probe(store, &Path::default())
+        OxKvStore::probe(store, &ObjectPath::default())
             .await
             .expect("static probe must pass");
     }
 
-    #[test]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn ownership_path_no_prefix() {
-        assert_eq!(ownership_path(&Path::default()).as_ref(), "ownership.json");
+        assert_eq!(
+            ownership_path(&ObjectPath::default()).as_str(),
+            "ownership.json"
+        );
     }
 
-    #[test]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn ownership_path_with_prefix() {
         assert_eq!(
-            ownership_path(&Path::from("oxkv")).as_ref(),
+            ownership_path(&ObjectPath::from("oxkv")).as_str(),
             "oxkv/ownership.json"
         );
     }
 
-    #[test]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn manifest_path_and_epoch_prefix_formatting() {
-        assert_eq!(manifest_path(&Path::default()).as_ref(), "manifest.json");
-        assert_eq!(epoch_prefix(&Path::default(), 7).as_ref(), "e000007");
         assert_eq!(
-            epoch_prefix(&Path::from("oxkv"), 7).as_ref(),
+            manifest_path(&ObjectPath::default()).as_str(),
+            "manifest.json"
+        );
+        assert_eq!(epoch_prefix(&ObjectPath::default(), 7).as_str(), "e000007");
+        assert_eq!(
+            epoch_prefix(&ObjectPath::from("oxkv"), 7).as_str(),
             "oxkv/e000007"
         );
         assert_eq!(
-            wal_path(&Path::from("oxkv"), 7, 42).as_ref(),
+            wal_path(&ObjectPath::from("oxkv"), 7, 42).as_str(),
             "oxkv/e000007/wal/00000042.log"
         );
         assert_eq!(
-            sst_path(&Path::from("oxkv"), 7, 0, 123).as_ref(),
+            sst_path(&ObjectPath::from("oxkv"), 7, 0, 123).as_str(),
             "oxkv/e000007/sst/L0/000000123.sst"
         );
         assert_eq!(
-            blob_path(&Path::from("oxkv"), 7, "abc").as_ref(),
+            blob_path(&ObjectPath::from("oxkv"), 7, "abc").as_str(),
             "oxkv/e000007/blob/abc"
         );
     }
 
-    #[tokio::test]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn fencing_acquire_increments_epoch() {
         let store = new_in_memory();
-        let prefix = Path::from("oxkv");
+        let prefix = ObjectPath::from("oxkv");
         let r1 = acquire_ownership(Arc::clone(&store), &prefix, "node-a")
             .await
             .expect("first acquire");
@@ -2044,16 +1991,17 @@ mod tests {
         assert_eq!(cur.epoch, 2);
     }
 
-    #[tokio::test]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn fencing_stale_writer_superseded_prefix_invisible() {
         let store = new_in_memory();
-        let prefix = Path::from("oxkv");
+        let prefix = ObjectPath::from("oxkv");
         let r1 = acquire_ownership(Arc::clone(&store), &prefix, "node-a")
             .await
             .unwrap();
         let wal1 = wal_path(&prefix, r1.epoch, 1);
         store
-            .put(&wal1, PutPayload::from_static(b"wal1"))
+            .put_opts(&wal1, b"wal1".to_vec(), PutMode::Create)
             .await
             .unwrap();
 
@@ -2063,41 +2011,39 @@ mod tests {
         assert_eq!(r2.epoch, 2);
         let wal2 = wal_path(&prefix, r2.epoch, 1);
         store
-            .put(&wal2, PutPayload::from_static(b"wal2"))
+            .put_opts(&wal2, b"wal2".to_vec(), PutMode::Create)
             .await
             .unwrap();
 
-        let stale_ver = object_store::UpdateVersion {
+        let stale_ver = ObjectVersion {
             e_tag: Some("\"stale-etag-r1\"".to_string()),
             version: None,
         };
         let stale_path = ownership_path(&prefix);
-        let stale_put = store
-            .put_opts(
-                &stale_path,
-                PutPayload::from_static(b"stale"),
-                PutMode::Update(stale_ver).into(),
-            )
-            .await;
+        let err = store
+            .put_opts(&stale_path, b"stale".to_vec(), PutMode::Update(stale_ver))
+            .await
+            .expect_err("stale If-Match must be rejected");
         assert!(
-            matches!(stale_put, Err(object_store::Error::Precondition { .. })),
-            "stale If-Match must be rejected"
+            err.to_string().contains("CAS conflict"),
+            "unexpected error: {err}"
         );
 
         let got1 = store.get(&wal1).await.expect("old epoch wal isolated");
-        assert_eq!(got1.bytes().await.unwrap().as_ref(), b"wal1");
+        assert_eq!(got1.bytes, b"wal1");
         let got2 = store.get(&wal2).await.expect("new epoch wal");
-        assert_eq!(got2.bytes().await.unwrap().as_ref(), b"wal2");
+        assert_eq!(got2.bytes, b"wal2");
         let cur = read_ownership(store, &prefix).await.unwrap().unwrap();
         assert_eq!(cur.epoch, 2);
     }
 
-    #[tokio::test]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn wal_durable_and_sst_with_overflow() {
         let store = new_in_memory();
         let s3 = OxKvStore::builder()
             .with_store(Arc::clone(&store))
-            .with_prefix(Path::from("oxkv"))
+            .with_prefix(ObjectPath::from("oxkv"))
             .with_session("sess-1")
             .build()
             .await
@@ -2120,12 +2066,13 @@ mod tests {
         assert_eq!(got2, b"v1");
     }
 
-    #[tokio::test]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn read_path_heap_merge_tombstone() {
         let store = new_in_memory();
         let s3 = OxKvStore::builder()
             .with_store(Arc::clone(&store))
-            .with_prefix(Path::from("oxkv2"))
+            .with_prefix(ObjectPath::from("oxkv2"))
             .with_session("sess-2")
             .build()
             .await
@@ -2153,7 +2100,8 @@ mod tests {
         assert_eq!(scanned[0].key, "b");
     }
 
-    #[test]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn merge_sources_newest_wins_and_tombstone_suppressed() {
         let sources = vec![
             vec![
@@ -2173,7 +2121,8 @@ mod tests {
         assert_eq!(merged[1].key, "c");
     }
 
-    #[test]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn merged_gets_respects_direction_and_limit() {
         let sources = vec![vec![
             ("a".to_string(), Some(b"1".to_vec())),
@@ -2196,12 +2145,13 @@ mod tests {
         assert_eq!(prev[2].key, "a");
     }
 
-    #[tokio::test]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn wal_gc_pinned_reader_holds_log() {
         let store = new_in_memory();
         let s3 = OxKvStore::builder()
             .with_store(Arc::clone(&store))
-            .with_prefix(Path::from("gc-test"))
+            .with_prefix(ObjectPath::from("gc-test"))
             .with_session("gc-sess")
             .build()
             .await
@@ -2225,7 +2175,7 @@ mod tests {
             cache
                 .load(
                     Arc::clone(&store),
-                    &Path::from("gc-test"),
+                    &ObjectPath::from("gc-test"),
                     s3.epoch(),
                     std::time::Duration::from_secs(0),
                 )
@@ -2235,7 +2185,7 @@ mod tests {
         assert!(!manifest_held.wal.is_empty(), "WAL retained while pinned");
         // WAL objects still exist.
         for wal in &manifest_held.wal {
-            let p = Path::from(wal.clone());
+            let p = ObjectPath::from(wal.clone());
             assert!(
                 store.get(&p).await.is_ok(),
                 "WAL {wal} must exist while pinned"
@@ -2248,13 +2198,14 @@ mod tests {
         assert!(deleted > 0, "WAL should be GC'd after unpin");
         // Verify WAL objects deleted and manifest cleared.
         for wal in &manifest_held.wal {
-            let p = Path::from(wal.clone());
+            let p = ObjectPath::from(wal.clone());
+            let err = store
+                .get(&p)
+                .await
+                .expect_err("WAL must be deleted after GC");
             assert!(
-                matches!(
-                    store.get(&p).await,
-                    Err(object_store::Error::NotFound { .. })
-                ),
-                "WAL {wal} must be deleted after GC"
+                err.to_string().contains("not found"),
+                "WAL {wal} must be deleted after GC: {err}"
             );
         }
         let (manifest_gc, _) = {
@@ -2262,7 +2213,7 @@ mod tests {
             cache
                 .load(
                     Arc::clone(&store),
-                    &Path::from("gc-test"),
+                    &ObjectPath::from("gc-test"),
                     s3.epoch(),
                     std::time::Duration::from_secs(0),
                 )
@@ -2284,12 +2235,13 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn compaction_l0_to_l1_idempotent() {
         let store = new_in_memory();
         let s3 = OxKvStore::builder()
             .with_store(Arc::clone(&store))
-            .with_prefix(Path::from("compact-test"))
+            .with_prefix(ObjectPath::from("compact-test"))
             .with_session("compact-sess")
             .build()
             .await
@@ -2312,7 +2264,7 @@ mod tests {
             cache
                 .load(
                     Arc::clone(&store),
-                    &Path::from("compact-test"),
+                    &ObjectPath::from("compact-test"),
                     s3.epoch(),
                     std::time::Duration::from_secs(0),
                 )
@@ -2330,7 +2282,7 @@ mod tests {
             cache
                 .load(
                     Arc::clone(&store),
-                    &Path::from("compact-test"),
+                    &ObjectPath::from("compact-test"),
                     s3.epoch(),
                     std::time::Duration::from_secs(0),
                 )
@@ -2351,13 +2303,11 @@ mod tests {
         );
         // Old L0 objects must be deleted.
         for m in m_before.sst.iter().filter(|m| m.level == 0) {
-            let p = Path::from(m.id.clone());
+            let p = ObjectPath::from(m.id.clone());
+            let err = store.get(&p).await.expect_err("old L0 must be deleted");
             assert!(
-                matches!(
-                    store.get(&p).await,
-                    Err(object_store::Error::NotFound { .. })
-                ),
-                "old L0 {} must be deleted",
+                err.to_string().contains("not found"),
+                "old L0 {} must be deleted: {err}",
                 m.id
             );
         }
@@ -2375,13 +2325,14 @@ mod tests {
         assert!(second.is_none(), "second compact should be no-op");
     }
 
-    #[tokio::test]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn s3store_store_trait_harness() {
         use crate::store::{GetSet, Store, Transaction};
         let store = new_in_memory();
         let mut s3 = OxKvStore::builder()
             .with_store(Arc::clone(&store))
-            .with_prefix(Path::from("store-harness"))
+            .with_prefix(ObjectPath::from("store-harness"))
             .with_session("harness-sess")
             .build()
             .await

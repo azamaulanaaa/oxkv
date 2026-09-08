@@ -169,7 +169,8 @@ where
 mod tests {
     use super::*;
 
-    #[tokio::test]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn weight_eviction_removes_oldest() {
         let cache = LruCache::new(10, |_: &String, v: &usize| {
             u32::try_from(*v).expect("test weight fits u32")
@@ -180,7 +181,8 @@ mod tests {
         assert_eq!(cache.get(&"b".to_string()).await, Some(6));
     }
 
-    #[tokio::test]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn touch_moves_to_back() {
         let cache = LruCache::new(10, |_: &String, v: &usize| {
             u32::try_from(*v).expect("test weight fits u32")
@@ -194,7 +196,8 @@ mod tests {
         assert!(cache.get(&"c".to_string()).await.is_some());
     }
 
-    #[tokio::test]
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn remove_clears_weight() {
         let cache = LruCache::new(10, |_: &String, v: &usize| {
             u32::try_from(*v).expect("test weight fits u32")

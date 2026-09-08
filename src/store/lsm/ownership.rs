@@ -4,10 +4,9 @@
 
 use std::sync::Arc;
 
-use object_store::path::Path;
-use object_store::{ObjectStore, PutMode, PutPayload, UpdateVersion};
 use serde::{Deserialize, Serialize};
 
+use crate::store::storage::{ObjectPath, ObjectVersion, PutMode, Storage};
 use crate::store::{Result, StoreError};
 
 /// Ownership record stored at `{prefix}/ownership.json`.
@@ -27,9 +26,9 @@ pub(crate) struct OwnershipRecord {
 
 /// Returns the path for `ownership.json`.
 #[must_use]
-pub(crate) fn ownership_path(prefix: &Path) -> Path {
-    if prefix.as_ref().is_empty() {
-        Path::from("ownership.json")
+pub(crate) fn ownership_path(prefix: &ObjectPath) -> ObjectPath {
+    if prefix.is_empty() {
+        ObjectPath::from("ownership.json")
     } else {
         prefix.child("ownership.json")
     }
@@ -43,31 +42,31 @@ pub(crate) fn format_epoch(epoch: u64) -> String {
 
 /// Returns the epoch-scoped prefix `\{prefix}/e{epoch:06}`.
 #[must_use]
-pub(crate) fn epoch_prefix(prefix: &Path, epoch: u64) -> Path {
+pub(crate) fn epoch_prefix(prefix: &ObjectPath, epoch: u64) -> ObjectPath {
     let epoch_str = format_epoch(epoch);
-    if prefix.as_ref().is_empty() {
-        Path::from(epoch_str)
+    if prefix.is_empty() {
+        ObjectPath::from(epoch_str)
     } else {
-        prefix.child(epoch_str)
+        prefix.child(&epoch_str)
     }
 }
 
 /// Returns `\{prefix}/e{epoch:06}/wal/{seq:08}.log`.
 #[must_use]
-pub(crate) fn wal_path(prefix: &Path, epoch: u64, seq: u64) -> Path {
+pub(crate) fn wal_path(prefix: &ObjectPath, epoch: u64, seq: u64) -> ObjectPath {
     epoch_prefix(prefix, epoch)
         .child("wal")
-        .child(format!("{seq:08}.log"))
+        .child(&format!("{seq:08}.log"))
 }
 
 /// Returns `\{prefix}/e{epoch:06}/sst/{level}/{id:09}.sst`.
 #[must_use]
 #[allow(dead_code)]
-pub(crate) fn sst_path(prefix: &Path, epoch: u64, level: u8, id: u64) -> Path {
+pub(crate) fn sst_path(prefix: &ObjectPath, epoch: u64, level: u8, id: u64) -> ObjectPath {
     epoch_prefix(prefix, epoch)
         .child("sst")
-        .child(format!("L{level}"))
-        .child(format!("{id:09}.sst"))
+        .child(&format!("L{level}"))
+        .child(&format!("{id:09}.sst"))
 }
 
 /// Backoff for CAS contention: `50ms*2^n + jitter`, cap `1s`.
@@ -84,28 +83,23 @@ pub(crate) fn cas_backoff(attempt: u32) -> std::time::Duration {
 /// `session` is the owner identifier. On success returns the new
 /// `OwnershipRecord` with `epoch = old.epoch + 1` (or `1` on first acquire).
 pub(crate) async fn acquire_ownership(
-    store: Arc<dyn ObjectStore>,
-    prefix: &Path,
+    store: Arc<dyn Storage>,
+    prefix: &ObjectPath,
     session: &str,
 ) -> Result<OwnershipRecord> {
     let path = ownership_path(prefix);
 
     let (existing, version) = match store.get(&path).await {
-        Ok(res) => {
-            let meta = res.meta.clone();
-            let bytes = res
-                .bytes()
-                .await
-                .map_err(|e| StoreError::Storage(format!("read ownership failed: {e}")))?;
-            let rec: OwnershipRecord = serde_json::from_slice(&bytes)
+        Ok(out) => {
+            let rec: OwnershipRecord = serde_json::from_slice(&out.bytes)
                 .map_err(|e| StoreError::Storage(format!("corrupt ownership.json: {e}")))?;
-            let ver = UpdateVersion {
-                e_tag: meta.e_tag.clone(),
-                version: meta.version.clone(),
+            let ver = ObjectVersion {
+                e_tag: out.e_tag.clone(),
+                version: out.version.clone(),
             };
             (Some(rec), Some(ver))
         }
-        Err(object_store::Error::NotFound { .. }) => (None, None),
+        Err(e) if e.to_string().contains("not found") => (None, None),
         Err(e) => return Err(StoreError::Storage(format!("get ownership failed: {e}"))),
     };
 
@@ -116,24 +110,18 @@ pub(crate) async fn acquire_ownership(
         lease_expiry_ms: None,
         manifest_etag: None,
     };
-    let payload = PutPayload::from(
-        serde_json::to_vec(&new_rec)
-            .map_err(|e| StoreError::Storage(format!("serialize ownership: {e}")))?,
-    );
+    let payload = serde_json::to_vec(&new_rec)
+        .map_err(|e| StoreError::Storage(format!("serialize ownership: {e}")))?;
 
     let put_res = if let Some(ver) = version {
-        store
-            .put_opts(&path, payload, PutMode::Update(ver).into())
-            .await
+        store.put_opts(&path, payload, PutMode::Update(ver)).await
     } else {
-        store.put_opts(&path, payload, PutMode::Create.into()).await
+        store.put_opts(&path, payload, PutMode::Create).await
     };
 
     match put_res {
         Ok(_) => Ok(new_rec),
-        Err(
-            object_store::Error::AlreadyExists { .. } | object_store::Error::Precondition { .. },
-        ) => Err(StoreError::Fenced(format!(
+        Err(e) if e.to_string().contains("CAS conflict") => Err(StoreError::Fenced(format!(
             "ownership CAS conflict at epoch {next_epoch} for session {session} — fenced"
         ))),
         Err(e) => Err(StoreError::Storage(format!("put ownership failed: {e}"))),
@@ -142,21 +130,17 @@ pub(crate) async fn acquire_ownership(
 
 /// Reads the current ownership record, if any.
 pub(crate) async fn read_ownership(
-    store: Arc<dyn ObjectStore>,
-    prefix: &Path,
+    store: Arc<dyn Storage>,
+    prefix: &ObjectPath,
 ) -> Result<Option<OwnershipRecord>> {
     let path = ownership_path(prefix);
     match store.get(&path).await {
-        Ok(res) => {
-            let bytes = res
-                .bytes()
-                .await
-                .map_err(|e| StoreError::Storage(format!("read ownership failed: {e}")))?;
-            let rec: OwnershipRecord = serde_json::from_slice(&bytes)
+        Ok(out) => {
+            let rec: OwnershipRecord = serde_json::from_slice(&out.bytes)
                 .map_err(|e| StoreError::Storage(format!("corrupt ownership.json: {e}")))?;
             Ok(Some(rec))
         }
-        Err(object_store::Error::NotFound { .. }) => Ok(None),
+        Err(e) if e.to_string().contains("not found") => Ok(None),
         Err(e) => Err(StoreError::Storage(format!("get ownership failed: {e}"))),
     }
 }

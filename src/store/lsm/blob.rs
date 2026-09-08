@@ -4,11 +4,10 @@
 
 use std::sync::Arc;
 
-use object_store::path::Path;
-use object_store::{ObjectStore, PutMode, PutPayload};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::store::storage::{ObjectPath, PutMode, Storage};
 use crate::store::{Result, StoreError};
 
 use super::ownership::epoch_prefix;
@@ -44,17 +43,15 @@ pub(crate) fn blob_hash(value: &[u8]) -> String {
     buf
 }
 
-/// Returns `\{prefix}/e{epoch:06}/blob/{hash}` for large-value overflow.
+/// Returns `\{prefix}/e{epoch}/blob/{hash}` for large-value overflow.
 #[must_use]
-pub(crate) fn blob_path(prefix: &Path, epoch: u64, hash: &str) -> Path {
-    epoch_prefix(prefix, epoch)
-        .child("blob")
-        .child(hash.to_string())
+pub(crate) fn blob_path(prefix: &ObjectPath, epoch: u64, hash: &str) -> ObjectPath {
+    epoch_prefix(prefix, epoch).child("blob").child(hash)
 }
 
 /// Encodes a blob pointer as JSON bytes for inline SST value.
 #[must_use]
-pub(crate) fn encode_blob_pointer(blob: &Path, len: usize, crc: u32) -> Vec<u8> {
+pub(crate) fn encode_blob_pointer(blob: &ObjectPath, len: usize, crc: u32) -> Vec<u8> {
     let ptr = BlobPointer {
         blob: blob.to_string(),
         len,
@@ -76,29 +73,25 @@ pub(crate) fn try_decode_blob_pointer(value: &[u8]) -> Option<BlobPointer> {
 
 /// Puts `value` to `e{epoch}/blob/{hash}` via `If-None-Match` and returns the path.
 pub(crate) async fn put_blob(
-    store: Arc<dyn ObjectStore>,
-    prefix: &Path,
+    store: Arc<dyn Storage>,
+    prefix: &ObjectPath,
     epoch: u64,
     value: &[u8],
-) -> Result<Path> {
+) -> Result<ObjectPath> {
     let hash = blob_hash(value);
     let path = blob_path(prefix, epoch, &hash);
-    let payload = PutPayload::from(value.to_vec());
-    match store.put_opts(&path, payload, PutMode::Create.into()).await {
-        Ok(_) | Err(object_store::Error::AlreadyExists { .. }) => Ok(path),
+    match store.put_opts(&path, value.to_vec(), PutMode::Create).await {
+        Ok(_) => Ok(path),
+        Err(e) if e.to_string().contains("CAS conflict") => Ok(path),
         Err(err) => Err(StoreError::Storage(format!("put blob failed: {err}"))),
     }
 }
 
 /// Gets blob value at `blob_path`.
-pub(crate) async fn get_blob(store: Arc<dyn ObjectStore>, blob_path: &Path) -> Result<Vec<u8>> {
-    let res = store
+pub(crate) async fn get_blob(store: Arc<dyn Storage>, blob_path: &ObjectPath) -> Result<Vec<u8>> {
+    let out = store
         .get(blob_path)
         .await
         .map_err(|e| StoreError::Storage(format!("get blob {blob_path} failed: {e}")))?;
-    let bytes = res
-        .bytes()
-        .await
-        .map_err(|e| StoreError::Storage(format!("read blob failed: {e}")))?;
-    Ok(bytes.to_vec())
+    Ok(out.bytes)
 }
