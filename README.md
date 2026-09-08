@@ -32,7 +32,7 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 | [`store::Observer`] | Receives change notifications after they become durable |
 | [`store::HookStore`] | Decorator adding validators and change watching to any store |
 | [`store::OtelStore`] | Feature-gated decorator adding OpenTelemetry traces and metrics to any store |
-| [`store::S3Store`] / [`store::S3StoreBuilder`] | Feature-gated (`s3`, native-only) LSM on S3 via `object_store`; single-writer epoch fencing, WAL + SST + blob overflow |
+| [`store::OxKvStore`] / [`store::OxKvStoreBuilder`] | Feature-gated (`s3`, native-only) LSM on S3 via `object_store`; single-writer epoch fencing, WAL + SST + blob overflow |
 | [`store::StoreError::Fenced`] | Terminal fencing error — another owner acquired the epoch via `ownership.json` CAS |
 
 ## Quick Start
@@ -304,21 +304,21 @@ What you get per operation (`get`, `has`, `set`, `delete`, `gets`, `begin_tx`,
   (`db.operation.name`, `oxkv.outcome` = `ok`/`error`) and
   `oxkv.store.operation.duration` histogram in seconds.
 
-Decorators compose: `OtelStore::new(HookStore::new(S3Store::builder().with_store(store).build().await?))` measures
+Decorators compose: `OtelStore::new(HookStore::new(OxKvStore::builder().with_store(store).build().await?))` measures
 the full validation pipeline.
 
-## LSM Backend (feature `s3`, native-only)
+## LSM Backend (feature `oxkv`, native-only)
 
-`S3Store` is an LSM tree on S3-compatible storage (S3, GCS, Azure) or local via `object_store` (InMemory/LocalFileSystem) and `single_writer` for OPFS. It is `#[cfg(not(target_arch = "wasm32"))]` and shares the same `GetSet`/`Store`/`Transaction` traits as the other backends, so application code is portable. Snapshot bytes (`OXKV` magic `+` version + records) are identical across `BTreeStore`, `S3Store` fenced, and `single_writer` — `save`/`load` round-trip everywhere.
+`OxKvStore` is an LSM tree on S3-compatible storage (S3, GCS, Azure) or local via `object_store` (InMemory/LocalFileSystem) and `single_writer` for OPFS. It is `#[cfg(not(target_arch = "wasm32"))]` and shares the same `GetSet`/`Store`/`Transaction` traits as the other backends, so application code is portable. Snapshot bytes (`OXKV` magic `+` version + records) are identical across `BTreeStore`, `OxKvStore` fenced, and `single_writer` — `save`/`load` round-trip everywhere.
 
 ```rust,ignore
 use std::sync::Arc;
 use object_store::{memory::InMemory, path::Path};
-use oxkv::{S3Store, store::*};
+use oxkv::{OxKvStore, store::*};
 
 let store: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
 // In prod replace InMemory with AmazonS3Builder / parse_url("s3://bucket/prefix")
-let mut s3 = S3Store::builder()
+let mut s3 = OxKvStore::builder()
     .with_store(store)
     .with_prefix(Path::from("my-app/oxkv"))
     .build()
@@ -348,10 +348,10 @@ Enable it:
 
 ```toml
 [dependencies]
-oxkv = { version = "0.4", features = ["s3"] }
+oxkv = { version = "0.4", features = ["oxkv"] }
 ```
 
-`cargo test --features s3` and `cargo bench --features s3` exercise it against `InMemory` (bench uses `skip_probe(true)` so the numbers are comparable to `btree_mem`/`redb_mem`).
+`cargo test --features oxkv` and `cargo bench --features oxkv` exercise it against `InMemory` (bench uses `skip_probe(true)` so the numbers are comparable to `btree_mem`/`redb_mem`).
 
 ## WASM Bindings
 
@@ -440,7 +440,7 @@ cargo bench --bench kv_bench                     # everything (tuned to minutes)
 cargo bench --bench kv_bench 1000                # quick sweep of the 1k groups
 cargo bench --bench kv_bench point_update        # just the changes matrix
 cargo bench --bench kv_bench 1000000items_100    # one specific cell of the matrix
-cargo bench --features s3 --bench kv_bench       # include S3 (InMemory)
+cargo bench --features oxkv --bench kv_bench       # include OxKv (InMemory)
 ```
 
 Query-engine benchmarks live in [`benches/query_bench.rs`](benches/query_bench.rs)
@@ -500,7 +500,7 @@ wasm-pack build --target web   # or nodejs, bundler, etc.
 - `src/wasm.rs` — manual wasm-bindgen wrappers for `BTreeStore` (thread-safe JS-facing types; OXKV snapshot portable across all backends)
 - `src/store/mod.rs` — core traits (`GetSet`, `Transaction`, `Store`, `GetSetExt`, `StoreExt`) and error types (`StoreError::Fenced`, `StoreError::NotModified`)
 - `src/store/btree.rs` — in-memory B-tree backend (`btree`, default, bench/WASM baseline)
-- `src/store/lsm/mod.rs` — LSM backend generic over `Storage`+`Cache` (`s3`, native-only): `S3Store`/`S3StoreBuilder` with `single_writer` for local/OPFS, `S3Tx`, WAL + MemTable + SST + manifest + GC/compaction
+- `src/store/lsm/mod.rs` — LSM backend generic over `Storage`+`Cache` (`s3`, native-only): `OxKvStore`/`OxKvStoreBuilder` with `single_writer` for local/OPFS, `S3Tx`, WAL + MemTable + SST + manifest + GC/compaction
 - `src/store/lsm/sst.rs` — SST file format (blocks, Bloom filter, CRC32)
 - `src/store/lsm/blob.rs` — blob overflow for large values (`e{epoch}/blob/{hash}` with CRC)
 - `src/store/lsm/manifest.rs` — `manifest.json` with ETag CAS and `ManifestCache`

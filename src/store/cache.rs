@@ -162,7 +162,7 @@ where
     }
 }
 
-#[cfg(all(test, feature = "s3"))]
+#[cfg(all(test, feature = "oxkv"))]
 mod tests {
     use super::*;
 

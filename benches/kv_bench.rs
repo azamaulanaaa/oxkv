@@ -1,4 +1,10 @@
-#![allow(missing_docs, clippy::expect_used, clippy::unwrap_used)]
+#![allow(
+    missing_docs,
+    clippy::expect_used,
+    clippy::unwrap_used,
+    dead_code,
+    unused_variables
+)]
 
 //! Benchmarks for storing and manipulating key-value data at 1,000-item,
 //! 100,000-item, and 1,000,000-item scales across all shipped backends.
@@ -28,13 +34,13 @@
 //! - Large-store groups use fewer samples with short warmup/measurement
 //!   windows (see `configure`).
 //!
-//! S3 backend (feature `s3`) uses `object_store::memory::InMemory` with
+//! `OxKv` backend (feature `oxkv`) uses `object_store::memory::InMemory` with
 //! `skip_probe(true)` so the numbers are comparable to `btree_mem`/`redb_mem`
 //! without network I/O. Prefix is unique per store instance to avoid
 //! ownership fencing within the same `InMemory` bucket.
 
 use std::hint::black_box;
-#[cfg(feature = "s3")]
+#[cfg(feature = "oxkv")]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -42,8 +48,8 @@ use criterion::measurement::WallTime;
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 #[cfg(feature = "btree")]
 use oxkv::BTreeStore;
-#[cfg(feature = "s3")]
-use oxkv::S3Store;
+#[cfg(feature = "oxkv")]
+use oxkv::OxKvStore;
 use oxkv::{Direction, GetSet, Store, Transaction};
 
 const SMALL: usize = 1_000;
@@ -319,10 +325,10 @@ fn point_update<S>(
 }
 
 // ---------------------------------------------------------------------------
-// S3 backend (InMemory, skip_probe) — same workload shapes, distinct helpers
-// because S3Store is not Default and requires async builder.
+// OxKv backend (InMemory, skip_probe) — same workload shapes, distinct helpers
+// because OxKvStore is not Default and requires async builder.
 // ---------------------------------------------------------------------------
-#[cfg(feature = "s3")]
+#[cfg(feature = "oxkv")]
 #[allow(clippy::wildcard_imports)]
 mod s3_bench {
     use std::sync::Arc;
@@ -334,16 +340,16 @@ mod s3_bench {
 
     static S3_CTR: AtomicUsize = AtomicUsize::new(0);
 
-    pub(crate) async fn new_s3_store() -> S3Store {
+    pub(crate) async fn new_s3_store() -> OxKvStore {
         let id = S3_CTR.fetch_add(1, Ordering::Relaxed);
-        S3Store::builder()
+        OxKvStore::builder()
             .with_store(Arc::new(InMemory::new()))
             .with_prefix(Path::from(format!("bench-{id}")))
             .with_session(format!("bench-sess-{id}"))
             .skip_probe(true)
             .build()
             .await
-            .expect("S3Store::builder with InMemory")
+            .expect("OxKvStore::builder with InMemory")
     }
 
     pub(crate) fn seq_insert(rt: &tokio::runtime::Runtime, c: &mut Criterion, n: usize) {
@@ -369,7 +375,7 @@ mod s3_bench {
         configure(&mut group, n, take);
         let keys: Vec<String> = (0..n).map(key).collect();
         let order = shuffled(n);
-        let mut store: Option<S3Store> = None;
+        let mut store: Option<OxKvStore> = None;
         group.bench_function("get", |b| {
             b.iter(|| {
                 let s = store.get_or_insert_with(|| {
@@ -397,7 +403,7 @@ mod s3_bench {
             usize::try_from(PAGE).expect("page size fits"),
         );
         let keys: Vec<String> = (0..n).map(key).collect();
-        let mut store: Option<S3Store> = None;
+        let mut store: Option<OxKvStore> = None;
         let starts: Vec<String> = (0..128usize).map(|j| key((j * 7919 + n / 2) % n)).collect();
         group.bench_function("fetch", |b| {
             let mut j = 0usize;
@@ -487,7 +493,7 @@ mod s3_bench {
             c.benchmark_group(format!("point_update/s3_mem/{items}items_{changes}changes"));
         configure(&mut group, items, changes);
         let keys: Vec<String> = (0..items).map(key).collect();
-        let mut store: Option<S3Store> = None;
+        let mut store: Option<OxKvStore> = None;
         group.bench_function("update", |b| {
             let mut j = 0usize;
             b.iter(|| {
@@ -524,7 +530,7 @@ fn benchmark(c: &mut Criterion) {
             seq_delete::<BTreeStore>(&rt, c, "btree_mem", n);
         }
 
-        #[cfg(feature = "s3")]
+        #[cfg(feature = "oxkv")]
         {
             s3_bench::seq_insert(&rt, c, n);
             s3_bench::seq_delete(&rt, c, n);
@@ -537,7 +543,7 @@ fn benchmark(c: &mut Criterion) {
         #[cfg(feature = "btree")]
         random_get::<BTreeStore>(&rt, c, "btree_mem", n);
 
-        #[cfg(feature = "s3")]
+        #[cfg(feature = "oxkv")]
         s3_bench::random_get(&rt, c, n);
     }
 
@@ -546,14 +552,14 @@ fn benchmark(c: &mut Criterion) {
         #[cfg(feature = "btree")]
         page_fetch::<BTreeStore>(&rt, c, "btree_mem", n);
 
-        #[cfg(feature = "s3")]
+        #[cfg(feature = "oxkv")]
         s3_bench::page_fetch(&rt, c, n);
     }
 
     #[cfg(feature = "btree")]
     tx_commit_batch::<BTreeStore>(&rt, c, "btree_mem");
 
-    #[cfg(feature = "s3")]
+    #[cfg(feature = "oxkv")]
     s3_bench::tx_commit_batch(&rt, c);
 
     // Changes matrix: (store size, change counts)
@@ -562,7 +568,7 @@ fn benchmark(c: &mut Criterion) {
             #[cfg(feature = "btree")]
             point_update::<BTreeStore>(&rt, c, "btree_mem", n, m);
 
-            #[cfg(feature = "s3")]
+            #[cfg(feature = "oxkv")]
             s3_bench::point_update(&rt, c, n, m);
         }
     }

@@ -31,19 +31,19 @@ pub use hooks::{
 mod hooks;
 #[cfg(all(feature = "otel", not(target_arch = "wasm32")))]
 pub use otel::{OtelStore, OtelTx};
-#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "oxkv", not(target_arch = "wasm32")))]
 mod cache;
-#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "oxkv", not(target_arch = "wasm32")))]
 mod lsm;
 #[cfg(all(feature = "otel", not(target_arch = "wasm32")))]
 mod otel;
-#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "oxkv", not(target_arch = "wasm32")))]
 mod storage;
-#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "oxkv", not(target_arch = "wasm32")))]
 pub use cache::{Cache, LruCache};
-#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
-pub use lsm::{S3Store, S3StoreBuilder};
-#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "oxkv", not(target_arch = "wasm32")))]
+pub use lsm::{OxKvStore, OxKvStoreBuilder};
+#[cfg(all(feature = "oxkv", not(target_arch = "wasm32")))]
 pub use storage::{GetOutput, PutOutcome, Storage};
 
 /// A specialized `Result` type for store operations.

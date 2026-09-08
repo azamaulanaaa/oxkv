@@ -41,7 +41,7 @@ type MemTable = Arc<tokio::sync::RwLock<MemMap>>;
 type WalBuffer = Arc<tokio::sync::Mutex<Vec<(String, Option<Vec<u8>>)>>>;
 
 /// S3-backed store (incremental — probe + fencing + WAL gate + SST).
-pub struct S3Store {
+pub struct OxKvStore {
     inner: Arc<dyn ObjectStore>,
     prefix: Path,
     epoch: u64,
@@ -58,9 +58,9 @@ pub struct S3Store {
     sst_cache: LruCache<String, Arc<SstFile>>,
 }
 
-impl std::fmt::Debug for S3Store {
+impl std::fmt::Debug for OxKvStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("S3Store")
+        f.debug_struct("OxKvStore")
             .field("prefix", &self.prefix)
             .field("epoch", &self.epoch)
             .field("session", &self.session)
@@ -68,11 +68,11 @@ impl std::fmt::Debug for S3Store {
     }
 }
 
-impl S3Store {
+impl OxKvStore {
     /// Creates a new store builder.
     #[must_use]
-    pub fn builder() -> S3StoreBuilder {
-        S3StoreBuilder {
+    pub fn builder() -> OxKvStoreBuilder {
+        OxKvStoreBuilder {
             inner: None,
             prefix: Path::default(),
             skip_probe: false,
@@ -968,14 +968,14 @@ impl S3Store {
 // Store trait impl — persistent GetSet + transactional (deferred commit)
 // ---------------------------------------------------------------------------
 
-/// Transaction for `S3Store` — staged overlay, durable only on `commit`.
+/// Transaction for `OxKvStore` — staged overlay, durable only on `commit`.
 ///
 /// `stage_set`/`stage_delete` are buffered in `overlay` and invisible to
-/// the parent `S3Store` until `commit` applies them to the shared
+/// the parent `OxKvStore` until `commit` applies them to the shared
 /// `MemTable`/`WalBuffer` and `flush`es the WAL to S3 (RPO=0).
 /// `get`/`has`/`gets` see `overlay` first (read-your-writes) then the
 /// parent's `MemTable` + `SST`s via the same heap-merge.
-pub struct S3Tx {
+pub struct OxKvTx {
     inner: Arc<dyn ObjectStore>,
     prefix: Path,
     epoch: u64,
@@ -987,7 +987,7 @@ pub struct S3Tx {
     overlay: std::collections::BTreeMap<String, Option<Vec<u8>>>,
 }
 
-impl S3Tx {
+impl OxKvTx {
     async fn resolve_value(&self, raw: Vec<u8>) -> Result<Vec<u8>> {
         if let Some(ptr) = try_decode_blob_pointer(&raw) {
             let blob_path = Path::from(ptr.blob.as_str());
@@ -1037,17 +1037,17 @@ impl S3Tx {
 }
 
 #[async_trait]
-impl GetSet for S3Store {
+impl GetSet for OxKvStore {
     async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        S3Store::get_bytes(self, key).await
+        OxKvStore::get_bytes(self, key).await
     }
 
     async fn has(&self, key: &str) -> Result<bool> {
-        S3Store::has(self, key).await
+        OxKvStore::has(self, key).await
     }
 
     async fn delete(&mut self, key: &str) -> Result<bool> {
-        let prev = S3Store::get_bytes(self, key).await?;
+        let prev = OxKvStore::get_bytes(self, key).await?;
         let existed = prev.is_some();
         if !existed {
             return Ok(false);
@@ -1132,7 +1132,7 @@ impl GetSet for S3Store {
     }
 
     async fn set_bytes(&mut self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
-        let prev = S3Store::get_bytes(self, key).await?;
+        let prev = OxKvStore::get_bytes(self, key).await?;
         // Atomic: encode and flush before mutating MemTable
         let mut payload_buf = Vec::new();
         crate::store::encode_record(&mut payload_buf, key, value)
@@ -1223,12 +1223,12 @@ impl GetSet for S3Store {
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
-        S3Store::gets_bytes(self, limit, direction, cursor).await
+        OxKvStore::gets_bytes(self, limit, direction, cursor).await
     }
 }
 
 #[async_trait]
-impl GetSet for S3Tx {
+impl GetSet for OxKvTx {
     async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
         if let Some(v) = self.overlay.get(key) {
             return match v {
@@ -1400,7 +1400,7 @@ impl GetSet for S3Tx {
 }
 
 #[async_trait]
-impl Transaction for S3Tx {
+impl Transaction for OxKvTx {
     async fn commit(self) -> Result<()> {
         if self.overlay.is_empty() {
             return Ok(());
@@ -1505,11 +1505,11 @@ impl Transaction for S3Tx {
 }
 
 #[async_trait]
-impl Store for S3Store {
-    type Transaction = S3Tx;
+impl Store for OxKvStore {
+    type Transaction = OxKvTx;
 
     fn begin_tx(&mut self) -> Result<Self::Transaction> {
-        Ok(S3Tx {
+        Ok(OxKvTx {
             inner: Arc::clone(&self.inner),
             prefix: self.prefix.clone(),
             epoch: self.epoch,
@@ -1523,18 +1523,18 @@ impl Store for S3Store {
     }
 }
 
-/// Builder for [`S3Store`].
+/// Builder for [`OxKvStore`].
 #[derive(Default)]
-pub struct S3StoreBuilder {
+pub struct OxKvStoreBuilder {
     inner: Option<Arc<dyn ObjectStore>>,
     prefix: Path,
     skip_probe: bool,
     session: Option<String>,
 }
 
-impl std::fmt::Debug for S3StoreBuilder {
+impl std::fmt::Debug for OxKvStoreBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("S3StoreBuilder")
+        f.debug_struct("OxKvStoreBuilder")
             .field("prefix", &self.prefix)
             .field("skip_probe", &self.skip_probe)
             .field("has_store", &self.inner.is_some())
@@ -1542,7 +1542,7 @@ impl std::fmt::Debug for S3StoreBuilder {
     }
 }
 
-impl S3StoreBuilder {
+impl OxKvStoreBuilder {
     /// Sets the backing [`ObjectStore`] (use `Arc::new(InMemory::new())` in tests,
     /// `AmazonS3Builder` / `parse_url` in prod).
     #[must_use]
@@ -1587,9 +1587,9 @@ impl S3StoreBuilder {
     /// Returns `StoreError::Storage` if the probe fails or `StoreError::Fenced`
     /// if `ownership.json` CAS loses the race.
     #[allow(clippy::too_many_lines)]
-    pub async fn build(self) -> Result<S3Store> {
+    pub async fn build(self) -> Result<OxKvStore> {
         let store = self.inner.ok_or_else(|| {
-            StoreError::Storage("S3Store requires an ObjectStore via with_store()".to_string())
+            StoreError::Storage("OxKvStore requires an ObjectStore via with_store()".to_string())
         })?;
 
         if !self.skip_probe {
@@ -1606,7 +1606,7 @@ impl S3StoreBuilder {
         });
         let rec = acquire_ownership(Arc::clone(&store), &self.prefix, &session).await?;
 
-        let s3store = S3Store {
+        let s3store = OxKvStore {
             inner: Arc::clone(&store),
             prefix: self.prefix.clone(),
             epoch: rec.epoch,
@@ -1888,7 +1888,7 @@ mod tests {
     #[tokio::test]
     async fn builder_runs_probe_by_default() {
         let store = new_in_memory();
-        let built = S3Store::builder()
+        let built = OxKvStore::builder()
             .with_store(Arc::clone(&store))
             .with_prefix(Path::from("oxkv"))
             .build()
@@ -1899,8 +1899,8 @@ mod tests {
 
     #[tokio::test]
     async fn builder_skip_probe_flag() {
-        assert!(!S3Store::builder().is_skip_probe());
-        assert!(S3Store::builder().skip_probe(true).is_skip_probe());
+        assert!(!OxKvStore::builder().is_skip_probe());
+        assert!(OxKvStore::builder().skip_probe(true).is_skip_probe());
     }
 
     #[tokio::test]
@@ -1965,14 +1965,14 @@ mod tests {
         let bad: Arc<dyn ObjectStore> = Arc::new(NoConditionStore {
             inner: new_in_memory(),
         });
-        let err = S3Store::builder()
+        let err = OxKvStore::builder()
             .with_store(Arc::clone(&bad))
             .build()
             .await
             .expect_err("must reject without skip_probe");
         assert!(err.to_string().contains("conditional writes"));
 
-        S3Store::builder()
+        OxKvStore::builder()
             .with_store(bad)
             .skip_probe(true)
             .build()
@@ -1983,7 +1983,7 @@ mod tests {
     #[tokio::test]
     async fn probe_static_entry_point() {
         let store = new_in_memory();
-        S3Store::probe(store, &Path::default())
+        OxKvStore::probe(store, &Path::default())
             .await
             .expect("static probe must pass");
     }
@@ -2095,7 +2095,7 @@ mod tests {
     #[tokio::test]
     async fn wal_durable_and_sst_with_overflow() {
         let store = new_in_memory();
-        let s3 = S3Store::builder()
+        let s3 = OxKvStore::builder()
             .with_store(Arc::clone(&store))
             .with_prefix(Path::from("oxkv"))
             .with_session("sess-1")
@@ -2123,7 +2123,7 @@ mod tests {
     #[tokio::test]
     async fn read_path_heap_merge_tombstone() {
         let store = new_in_memory();
-        let s3 = S3Store::builder()
+        let s3 = OxKvStore::builder()
             .with_store(Arc::clone(&store))
             .with_prefix(Path::from("oxkv2"))
             .with_session("sess-2")
@@ -2199,7 +2199,7 @@ mod tests {
     #[tokio::test]
     async fn wal_gc_pinned_reader_holds_log() {
         let store = new_in_memory();
-        let s3 = S3Store::builder()
+        let s3 = OxKvStore::builder()
             .with_store(Arc::clone(&store))
             .with_prefix(Path::from("gc-test"))
             .with_session("gc-sess")
@@ -2287,7 +2287,7 @@ mod tests {
     #[tokio::test]
     async fn compaction_l0_to_l1_idempotent() {
         let store = new_in_memory();
-        let s3 = S3Store::builder()
+        let s3 = OxKvStore::builder()
             .with_store(Arc::clone(&store))
             .with_prefix(Path::from("compact-test"))
             .with_session("compact-sess")
@@ -2379,7 +2379,7 @@ mod tests {
     async fn s3store_store_trait_harness() {
         use crate::store::{GetSet, Store, Transaction};
         let store = new_in_memory();
-        let mut s3 = S3Store::builder()
+        let mut s3 = OxKvStore::builder()
             .with_store(Arc::clone(&store))
             .with_prefix(Path::from("store-harness"))
             .with_session("harness-sess")

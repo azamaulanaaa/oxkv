@@ -22,9 +22,9 @@ btree = []
 ## The crate depends only on the OpenTelemetry *API*; applications plug in
 ## their own SDK providers globally, so exporters stay out of this crate.
 otel = ["dep:opentelemetry"]
-## Enables [`S3Store`] — LSM on S3 (native-only, `#[cfg(not(target_arch = "wasm32"))]`).
+## Enables [`OxKvStore`] — LSM via `Storage` (native-only, `#[cfg(not(target_arch = "wasm32"))]`).
 ## Each `dep:` below is justified inline where the dependency is declared.
-s3 = ["dep:object_store", "dep:tokio", "dep:crc32fast", "dep:sha2"]
+oxkv = ["dep:object_store", "dep:tokio", "dep:crc32fast", "dep:sha2"]
 ## Optional moka-backed cache (native-only) — alternative to built-in LruCache.
 moka = ["dep:moka"]
 
