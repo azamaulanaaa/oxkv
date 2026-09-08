@@ -2397,6 +2397,44 @@ mod tests {
 
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn tx_only_workload_stays_bounded() {
+        let inner = new_in_memory();
+        let mut s3 = OxKvStore::builder()
+            .with_store(Arc::clone(&inner))
+            .with_prefix(ObjectPath::from("oxkv-tx-bound"))
+            .with_session("sess-tx-bound")
+            .skip_probe(true)
+            .build()
+            .await
+            .unwrap();
+
+        // 2.5x the maintenance threshold in single-write commits: without
+        // tx-side maintenance the WAL list would hold every commit's id and
+        // mem would never reach an SST.
+        for i in 0..2_500 {
+            let mut tx = s3.begin_tx().unwrap();
+            tx.set_bytes(&format!("t{i:05}"), b"v").await.unwrap();
+            tx.commit().await.unwrap();
+        }
+
+        assert_eq!(
+            s3.get_bytes("t00042").await.unwrap().as_deref(),
+            Some(b"v".as_slice())
+        );
+
+        let path = ObjectPath::from("oxkv-tx-bound").child("manifest.json");
+        let out = inner.get(&path).await.expect("manifest readable");
+        let manifest: Manifest = serde_json::from_slice(&out.bytes).expect("manifest parses");
+        assert!(
+            manifest.wal.len() <= WAL_MAINTENANCE_COUNT,
+            "wal list len {}",
+            manifest.wal.len()
+        );
+        assert!(!manifest.sst.is_empty(), "tx flushes created SSTs");
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn put_bytes_matches_set_bytes() {
         let mut s3 = OxKvStore::builder()
             .with_store(new_in_memory())
