@@ -122,7 +122,7 @@ pub(crate) struct ManifestCache {
 
 #[derive(Debug, Clone)]
 struct CachedEntry {
-    manifest: Manifest,
+    manifest: Arc<Manifest>,
     etag: String,
     fetched_at_ms: u64,
 }
@@ -136,10 +136,10 @@ impl ManifestCache {
 
     /// Returns cached manifest if `TTL` not expired.
     #[must_use]
-    pub fn get_cached(&self, ttl: Duration) -> Option<(Manifest, String)> {
+    pub fn get_cached(&self, ttl: Duration) -> Option<(Arc<Manifest>, String)> {
         let entry = self.entry.as_ref()?;
         if u128::from(now_millis().wrapping_sub(entry.fetched_at_ms)) < ttl.as_millis() {
-            Some((entry.manifest.clone(), entry.etag.clone()))
+            Some((Arc::clone(&entry.manifest), entry.etag.clone()))
         } else {
             None
         }
@@ -148,7 +148,7 @@ impl ManifestCache {
     /// Updates cache with `manifest`+`etag` at now.
     pub fn update(&mut self, manifest: Manifest, etag: String) {
         self.entry = Some(CachedEntry {
-            manifest,
+            manifest: Arc::new(manifest),
             etag,
             fetched_at_ms: now_millis(),
         });
@@ -170,7 +170,7 @@ impl ManifestCache {
         prefix: &ObjectPath,
         epoch: u64,
         ttl: Duration,
-    ) -> Result<(Manifest, String)> {
+    ) -> Result<(Arc<Manifest>, String)> {
         if let Some((manifest, etag)) = self.get_cached(ttl) {
             let path = manifest_path(prefix);
             let opts = GetOptions {
@@ -182,7 +182,7 @@ impl ManifestCache {
                     let manifest: Manifest = serde_json::from_slice(&out.bytes)
                         .map_err(|e| StoreError::Storage(format!("parse manifest: {e}")))?;
                     self.update(manifest.clone(), new_etag.clone());
-                    return Ok((manifest, new_etag));
+                    return Ok((Arc::new(manifest), new_etag));
                 }
                 Err(StoreError::NotModified) => {
                     return Ok((manifest, etag));
@@ -190,7 +190,7 @@ impl ManifestCache {
                 Err(e) if e.to_string().contains("not found") => {
                     let empty = Manifest::empty(epoch);
                     self.update(empty.clone(), String::new());
-                    return Ok((empty, String::new()));
+                    return Ok((Arc::new(empty), String::new()));
                 }
                 Err(e) => return Err(StoreError::Storage(format!("get manifest failed: {e}"))),
             }
@@ -199,12 +199,12 @@ impl ManifestCache {
         match read_manifest(Arc::clone(&store), prefix).await? {
             Some((manifest, etag)) => {
                 self.update(manifest.clone(), etag.clone());
-                Ok((manifest, etag))
+                Ok((Arc::new(manifest), etag))
             }
             None => {
                 let empty = Manifest::empty(epoch);
                 self.update(empty.clone(), String::new());
-                Ok((empty, String::new()))
+                Ok((Arc::new(empty), String::new()))
             }
         }
     }

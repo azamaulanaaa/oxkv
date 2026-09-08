@@ -238,7 +238,7 @@ where
         let wal_id = path.to_string();
         for attempt in 0..4 {
             let mut cache = self.manifest_cache.lock().await;
-            let (mut manifest, etag) = cache
+            let (manifest, etag) = cache
                 .load(
                     Arc::clone(&self.inner),
                     &self.prefix,
@@ -246,6 +246,8 @@ where
                     std::time::Duration::from_secs(1),
                 )
                 .await?;
+            // Owned copy for mutation; readers share the cached `Arc`.
+            let mut manifest = (*manifest).clone();
             if manifest.wal.iter().any(|w| w == &wal_id) {
                 return Ok(());
             }
@@ -390,7 +392,7 @@ where
         }
 
         let mut cache = self.manifest_cache.lock().await;
-        let (mut manifest, etag) = cache
+        let (manifest, etag) = cache
             .load(
                 Arc::clone(&self.inner),
                 &self.prefix,
@@ -398,6 +400,8 @@ where
                 std::time::Duration::from_secs(1),
             )
             .await?;
+        // Owned copy for mutation; readers share the cached `Arc`.
+        let mut manifest = (*manifest).clone();
         if manifest.sst.iter().any(|m| m.id == sst_id) {
             let existing = manifest.sst.iter().find(|m| m.id == sst_id).cloned();
             {
@@ -446,7 +450,7 @@ where
                     for key in snapshot.keys() {
                         mem.remove(key);
                     }
-                    return Ok(reloaded.sst.into_iter().find(|m| m.id == sst_id));
+                    return Ok(reloaded.sst.iter().find(|m| m.id == sst_id).cloned());
                 }
                 Err(StoreError::Storage(format!(
                     "manifest CAS conflict after backoff retry: {e}"
@@ -702,7 +706,7 @@ where
         let min_version = self.min_reader_version().await;
         for _ in 0..4 {
             let mut cache = self.manifest_cache.lock().await;
-            let (mut manifest, etag) = cache
+            let (manifest, etag) = cache
                 .load(
                     Arc::clone(&self.inner),
                     &self.prefix,
@@ -710,6 +714,8 @@ where
                     std::time::Duration::from_secs(1),
                 )
                 .await?;
+            // Owned copy for mutation; readers share the cached `Arc`.
+            let mut manifest = (*manifest).clone();
             if manifest.wal.is_empty() || manifest.sst.is_empty() {
                 return Ok(0);
             }
@@ -868,7 +874,7 @@ where
             // No live keys — just CAS remove old files.
             for _ in 0..4 {
                 let mut cache = self.manifest_cache.lock().await;
-                let (mut manifest, etag) = cache
+                let (manifest, etag) = cache
                     .load(
                         Arc::clone(&self.inner),
                         &self.prefix,
@@ -876,6 +882,8 @@ where
                         std::time::Duration::from_secs(1),
                     )
                     .await?;
+                // Owned copy for mutation; readers share the cached `Arc`.
+                let mut manifest = (*manifest).clone();
                 let before_len = manifest.sst.len();
                 manifest.sst.retain(|m| {
                     !(l0_metas.iter().any(|x| x.id == m.id)
@@ -941,7 +949,7 @@ where
         // CAS manifest: remove old L0/L1 overlapping, add new L1.
         for _ in 0..4 {
             let mut cache = self.manifest_cache.lock().await;
-            let (mut manifest, etag) = cache
+            let (manifest, etag) = cache
                 .load(
                     Arc::clone(&self.inner),
                     &self.prefix,
@@ -949,6 +957,8 @@ where
                     std::time::Duration::from_secs(1),
                 )
                 .await?;
+            // Owned copy for mutation; readers share the cached `Arc`.
+            let mut manifest = (*manifest).clone();
             // Idempotency: if new L1 already present, reuse.
             if manifest.sst.iter().any(|m| m.id == l1_id) {
                 let existing = manifest.sst.iter().find(|m| m.id == l1_id).cloned();
@@ -1142,7 +1152,7 @@ where
         let wal_id = path.to_string();
         for attempt in 0..4 {
             let mut cache = self.manifest_cache.lock().await;
-            let (mut manifest, etag) = cache
+            let (manifest, etag) = cache
                 .load(
                     Arc::clone(&self.inner),
                     &self.prefix,
@@ -1150,6 +1160,8 @@ where
                     std::time::Duration::from_secs(1),
                 )
                 .await?;
+            // Owned copy for mutation; readers share the cached `Arc`.
+            let mut manifest = (*manifest).clone();
             if manifest.wal.iter().any(|w| w == &wal_id) {
                 self.mem.write().await.insert(key.to_string(), None);
                 return Ok(true);
@@ -1228,7 +1240,7 @@ where
         let wal_id = path.to_string();
         for attempt in 0..4 {
             let mut cache = self.manifest_cache.lock().await;
-            let (mut manifest, etag) = cache
+            let (manifest, etag) = cache
                 .load(
                     Arc::clone(&self.inner),
                     &self.prefix,
@@ -1236,6 +1248,8 @@ where
                     std::time::Duration::from_secs(1),
                 )
                 .await?;
+            // Owned copy for mutation; readers share the cached `Arc`.
+            let mut manifest = (*manifest).clone();
             if manifest.wal.iter().any(|w| w == &wal_id) {
                 drop(cache);
                 self.mem
@@ -1525,7 +1539,7 @@ where
         let wal_id = path.to_string();
         for attempt in 0..4 {
             let mut cache = self.manifest_cache.lock().await;
-            let (mut manifest, etag) = cache
+            let (manifest, etag) = cache
                 .load(
                     Arc::clone(&self.inner),
                     &self.prefix,
@@ -1533,6 +1547,8 @@ where
                     std::time::Duration::from_secs(1),
                 )
                 .await?;
+            // Owned copy for mutation; readers share the cached `Arc`.
+            let mut manifest = (*manifest).clone();
             if manifest.wal.iter().any(|w| w == &wal_id) {
                 // Idempotent retry — WAL already durable, apply overlay to MemTable
                 {
@@ -1752,7 +1768,7 @@ impl OxKvStoreBuilder {
                 .await
             {
                 Ok(v) => v,
-                Err(_) => (Manifest::empty(s3store.epoch), String::new()),
+                Err(_) => (Arc::new(Manifest::empty(s3store.epoch)), String::new()),
             };
             for wal_id in &manifest.wal {
                 let path = ObjectPath::from(wal_id.clone());
