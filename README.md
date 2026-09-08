@@ -464,6 +464,7 @@ await durable.setBytes("k", new TextEncoder().encode("v"));
 
 ### Streaming Snapshots from JavaScript
 
+Both `BTreeStore` and `OxKvStore` expose `saveStream()`/`loadStream()`.
 Snapshot export/import works over native JS streams — pipe straight to a file,
 network upload or `IndexedDB` without buffering the whole store:
 
