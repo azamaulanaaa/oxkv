@@ -21,6 +21,8 @@
 //!   (staging happens in untimed setup, so the number measures durability cost)
 //! - `seq_delete` — deletion of every key from a freshly populated store
 //! - `point_update` — in-place updates of a few keys inside a large store
+//! - `concurrent_write` — 8 threads x 128 blind writes against one shared
+//!   store on a multi-thread runtime (oxkv only): exercises the write gate
 //!
 //! Scale strategy (keeps the full suite in minutes, not hours):
 //! - Full-scan writes (`seq_insert`, `seq_delete`) scale linearly, so they
@@ -519,6 +521,45 @@ mod oxkv_bench {
         });
         group.finish();
     }
+
+    /// Concurrent blind writes from spawned tasks sharing one store.
+    ///
+    /// Runs on a multi-threaded runtime (passed in): 8 tasks x 128 keys,
+    /// each key owned by exactly one task, so the count measures write-gate
+    /// throughput rather than contention on a single key.
+    pub(crate) fn concurrent_write(rt: &tokio::runtime::Runtime, c: &mut Criterion) {
+        const TASKS: usize = 8;
+        const PER_TASK: usize = 128;
+        let mut group =
+            c.benchmark_group(format!("concurrent_write/oxkv_mem/{}", TASKS * PER_TASK));
+        configure(&mut group, TASKS * PER_TASK, TASKS * PER_TASK);
+        group.bench_function("store", |b| {
+            b.iter_batched(
+                || rt.block_on(new_oxkv_store()),
+                |store| {
+                    let store = Arc::new(store);
+                    rt.block_on(async {
+                        let mut handles = Vec::with_capacity(TASKS);
+                        for t in 0..TASKS {
+                            let store = Arc::clone(&store);
+                            handles.push(tokio::spawn(async move {
+                                for i in 0..PER_TASK {
+                                    let k = format!("t{t:02}:{i:04}");
+                                    store.put_bytes(&k, &PAYLOAD).await.expect("put");
+                                }
+                            }));
+                        }
+                        for handle in handles {
+                            handle.await.expect("task");
+                        }
+                        black_box(());
+                    });
+                },
+                BatchSize::PerIteration,
+            );
+        });
+        group.finish();
+    }
 }
 
 fn benchmark(c: &mut Criterion) {
@@ -564,6 +605,18 @@ fn benchmark(c: &mut Criterion) {
 
     #[cfg(feature = "oxkv")]
     oxkv_bench::tx_commit_batch(&rt, c);
+
+    // Threaded writes need a multi-threaded runtime; everything else stays
+    // on the single-threaded one so numbers remain comparable.
+    #[cfg(feature = "oxkv")]
+    {
+        let mt_rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(8)
+            .enable_all()
+            .build()
+            .expect("multi-thread runtime");
+        oxkv_bench::concurrent_write(&mt_rt, c);
+    }
 
     // Changes matrix: (store size, change counts)
     for &(n, counts) in &[(SMALL, &[1usize, 10][..]), (LARGE, &[1, 100, 1_000][..])] {

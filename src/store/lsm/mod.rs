@@ -2338,6 +2338,63 @@ mod tests {
         assert_eq!(got2, b"v1");
     }
 
+    /// Concurrent tasks share one store on a multi-threaded runtime: blind
+    /// writes, point reads, and per-task transaction commits interleave
+    /// across threads. Distinct values per key catch cross-talk; the final
+    /// sweep asserts every write landed exactly once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_writers_and_readers_share_store() {
+        let kv = Arc::new(
+            OxKvStore::builder()
+                .with_store(new_in_memory())
+                .with_prefix(ObjectPath::from("oxkv-concurrent"))
+                .build()
+                .await
+                .expect("build"),
+        );
+        let mut handles = Vec::new();
+        for t in 0..8u32 {
+            let kv = Arc::clone(&kv);
+            handles.push(tokio::spawn(async move {
+                for i in 0..25u32 {
+                    let k = format!("t{t}-k{i}");
+                    kv.put_bytes(&k, k.as_bytes()).await.expect("shared write");
+                    let got = kv
+                        .get_bytes(&k)
+                        .await
+                        .expect("shared read")
+                        .expect("present");
+                    assert_eq!(got, k.as_bytes());
+                }
+                let tx = kv.begin_tx().expect("begin_tx");
+                let k = format!("t{t}-tx");
+                tx.put_bytes(&k, k.as_bytes()).await.expect("stage");
+                tx.commit().await.expect("commit");
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("task");
+        }
+        for t in 0..8u32 {
+            for i in 0..25u32 {
+                let k = format!("t{t}-k{i}");
+                let got = kv
+                    .get_bytes(&k)
+                    .await
+                    .expect("sweep read")
+                    .expect("present");
+                assert_eq!(got, k.as_bytes());
+            }
+            let k = format!("t{t}-tx");
+            let got = kv
+                .get_bytes(&k)
+                .await
+                .expect("sweep tx read")
+                .expect("present");
+            assert_eq!(got, k.as_bytes());
+        }
+    }
+
     #[cfg(all(feature = "moka", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn build_with_cache_accepts_moka() {

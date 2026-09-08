@@ -66,7 +66,9 @@ harness = false
 
 [dev-dependencies]
 mockall = "0.15"
-tokio = { version = "1.53.1", features = ["test-util", "macros"] }
+# Multi-threaded runtime for the threaded stress test and bench; the engine
+# itself stays runtime-agnostic (`futures`/`async-lock` only).
+tokio = { version = "1.53.1", features = ["test-util", "macros", "rt-multi-thread"] }
 
 # Criterion pulls in Rayon, which does not compile for wasm32; benches are a
 # native-only concern. Same for the OpenTelemetry SDK used by the `otel`
