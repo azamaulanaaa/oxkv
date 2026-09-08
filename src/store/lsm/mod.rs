@@ -76,6 +76,11 @@ pub struct OxKvStore<C = LruCache<String, Arc<SstFile>>> {
     /// Pinned reader versions for WAL GC watermark.
     /// `BTreeMap<version, count>` — `min_key` is the watermark.
     readers: Arc<async_lock::Mutex<std::collections::BTreeMap<u64, usize>>>,
+    /// Fair gate serializing the durable write paths (`put_bytes` and tx
+    /// `commit`): concurrent writers queue here instead of CAS-retry-storming
+    /// the manifest. Always acquired outermost, never while holding
+    /// `manifest_cache`, so lock ordering stays acyclic.
+    write_gate: Arc<async_lock::Mutex<()>>,
     /// SST file cache — scan-resistant `S3-FIFO` (~256 MB with 32KB blocks).
     sst_cache: C,
 }
@@ -1068,6 +1073,11 @@ pub struct OxKvTx<C = LruCache<String, Arc<SstFile>>> {
     sst_seq: Arc<std::sync::atomic::AtomicU64>,
     manifest_cache: Arc<async_lock::Mutex<ManifestCache>>,
     readers: Arc<async_lock::Mutex<std::collections::BTreeMap<u64, usize>>>,
+    /// Fair gate serializing the durable write paths (`put_bytes` and tx
+    /// `commit`): concurrent writers queue here instead of CAS-retry-storming
+    /// the manifest. Always acquired outermost, never while holding
+    /// `manifest_cache`, so lock ordering stays acyclic.
+    write_gate: Arc<async_lock::Mutex<()>>,
     sst_cache: C,
     overlay: std::sync::Mutex<std::collections::BTreeMap<String, Option<Vec<u8>>>>,
 }
@@ -1147,6 +1157,7 @@ where
             sst_seq: Arc::clone(&self.sst_seq),
             manifest_cache: Arc::clone(&self.manifest_cache),
             readers: Arc::clone(&self.readers),
+            write_gate: Arc::clone(&self.write_gate),
             sst_cache: self.sst_cache.clone(),
         }
     }
@@ -1262,6 +1273,8 @@ where
     }
 
     async fn put_bytes(&self, key: &str, value: &[u8]) -> Result<()> {
+        // Serialize concurrent writers; see `write_gate`.
+        let _gate = self.write_gate.lock().await;
         // Atomic: encode and flush before mutating MemTable
         let mut payload_buf = Vec::new();
         crate::store::encode_record(&mut payload_buf, key, value)
@@ -1571,6 +1584,8 @@ where
 {
     #[allow(clippy::too_many_lines)]
     async fn commit(self) -> Result<()> {
+        // Serialize concurrent writers; see `write_gate`.
+        let _gate = self.write_gate.lock().await;
         // Drain under the lock: `commit` consumes the transaction, so taking
         // ownership up front is equivalent and keeps no guard across awaits.
         let overlay = std::mem::take(
@@ -1713,6 +1728,7 @@ where
             sst_seq: Arc::clone(&self.sst_seq),
             manifest_cache: Arc::clone(&self.manifest_cache),
             readers: Arc::clone(&self.readers),
+            write_gate: Arc::clone(&self.write_gate),
             sst_cache: self.sst_cache.clone(),
             overlay: std::sync::Mutex::new(std::collections::BTreeMap::new()),
         })
@@ -1873,6 +1889,7 @@ impl OxKvStoreBuilder {
             sst_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             manifest_cache,
             readers: Arc::new(async_lock::Mutex::new(std::collections::BTreeMap::new())),
+            write_gate: Arc::new(async_lock::Mutex::new(())),
             sst_cache: cache,
         };
         // WAL replay for restart/f fencing — make not-yet-SSTed WAL visible
