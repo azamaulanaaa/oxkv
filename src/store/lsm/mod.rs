@@ -2368,6 +2368,9 @@ mod tests {
     /// writes, point reads, and per-task transaction commits interleave
     /// across threads. Distinct values per key catch cross-talk; the final
     /// sweep asserts every write landed exactly once.
+    // Threaded stress: wasm32-unknown-unknown is single-threaded and the
+    // multi-thread scheduler feature does not compile there (see Cargo.toml).
+    #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_writers_and_readers_share_store() {
         let kv = Arc::new(
@@ -2423,6 +2426,7 @@ mod tests {
 
     /// Concurrent writes to one key never lose updates: every task reports
     /// success and the final value is one of the written ones.
+    #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn group_commit_same_key_hammer() {
         let kv = Arc::new(
@@ -2462,6 +2466,7 @@ mod tests {
 
     /// Barrier-released writers fuse into fewer WAL files than operations:
     /// at least one batch must carry two or more records.
+    #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn group_commit_batches_concurrent_writes() {
         use std::sync::Barrier;
@@ -2512,6 +2517,7 @@ mod tests {
 
     /// Dropped stores rebuild from multi-record WAL files: concurrent writes
     /// replay exactly, proving batched WAL needs no format changes.
+    #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn group_commit_wal_replay_after_rebuild() {
         let inner = new_in_memory();

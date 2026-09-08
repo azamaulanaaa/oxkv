@@ -66,15 +66,20 @@ harness = false
 
 [dev-dependencies]
 mockall = "0.15"
-# Multi-threaded runtime for the threaded stress test and bench; the engine
-# itself stays runtime-agnostic (`futures`/`async-lock` only).
-tokio = { version = "1.53.1", features = ["test-util", "macros", "rt-multi-thread"] }
+# Kept wasm-safe on purpose: `wasm-pack test --node` builds `--tests`, and
+# tokio hard-errors on wasm32 when any of fs/io-std/net/process/
+# rt-multi-thread/signal is enabled. The engine itself stays
+# runtime-agnostic (`futures`/`async-lock` only).
+tokio = { version = "1.53.1", features = ["test-util", "macros"] }
 
 # Criterion pulls in Rayon, which does not compile for wasm32; benches are a
 # native-only concern. Same for the OpenTelemetry SDK used by the `otel`
 # feature's tests (its rand/getrandom chain needs a wasm-specific backend).
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = "0.7"
+# Multi-threaded scheduler for the threaded stress tests and benches.
+# Native-only: the feature does not compile for wasm32 (see above).
+tokio = { version = "1.53.1", features = ["rt-multi-thread"] }
 opentelemetry_sdk = { version = "0.32", default-features = false, features = [
   "trace",
   "metrics",
