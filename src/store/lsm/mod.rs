@@ -1188,6 +1188,11 @@ where
 
     async fn set_bytes(&mut self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
         let prev = OxKvStore::get_bytes(self, key).await?;
+        self.put_bytes(key, value).await?;
+        Ok(prev)
+    }
+
+    async fn put_bytes(&mut self, key: &str, value: &[u8]) -> Result<()> {
         // Atomic: encode and flush before mutating MemTable
         let mut payload_buf = Vec::new();
         crate::store::encode_record(&mut payload_buf, key, value)
@@ -1239,7 +1244,7 @@ where
                     .insert(key.to_string(), Some(value.to_vec()));
                 let _ = self.flush_mem_to_sst().await;
                 let _ = self.compact().await;
-                return Ok(prev);
+                return Ok(());
             }
             manifest.wal.push(wal_id.clone());
             manifest.version = manifest.version.wrapping_add(1);
@@ -1256,7 +1261,7 @@ where
                     let _ = self.flush_mem_to_sst().await;
                     let _ = self.compact().await;
                     self.maintain_wal(wal_len).await;
-                    return Ok(prev);
+                    return Ok(());
                 }
                 Err(e) if e.to_string().contains("CAS conflict") => {
                     cache.clear();
@@ -1272,7 +1277,7 @@ where
                 Err(e) => return Err(e),
             }
         }
-        Ok(prev)
+        Ok(())
     }
 
     async fn gets_bytes(
@@ -1349,6 +1354,11 @@ where
         let prev = self.get_bytes(key).await?;
         self.overlay.insert(key.to_string(), Some(value.to_vec()));
         Ok(prev)
+    }
+
+    async fn put_bytes(&mut self, key: &str, value: &[u8]) -> Result<()> {
+        self.overlay.insert(key.to_string(), Some(value.to_vec()));
+        Ok(())
     }
 
     async fn gets_bytes(
@@ -2240,6 +2250,44 @@ mod tests {
             manifest.wal.len() <= WAL_MAINTENANCE_COUNT,
             "wal list len {}",
             manifest.wal.len()
+        );
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn put_bytes_matches_set_bytes() {
+        let mut s3 = OxKvStore::builder()
+            .with_store(new_in_memory())
+            .with_prefix(ObjectPath::from("oxkv-put"))
+            .with_session("sess-put")
+            .skip_probe(true)
+            .build()
+            .await
+            .unwrap();
+
+        // Fresh key: blind write lands, overwrite replaces.
+        s3.put_bytes("k1", b"v1").await.unwrap();
+        assert_eq!(
+            s3.get_bytes("k1").await.unwrap().as_deref(),
+            Some(b"v1".as_slice())
+        );
+        s3.put_bytes("k1", b"v2").await.unwrap();
+        assert_eq!(
+            s3.get_bytes("k1").await.unwrap().as_deref(),
+            Some(b"v2".as_slice())
+        );
+        // Parity: set_bytes on the same key reports the put value as prev.
+        let prev = s3.set_bytes("k1", b"v3").await.unwrap();
+        assert_eq!(prev.as_deref(), Some(b"v2".as_slice()));
+
+        // Tx staging stays invisible until commit, like set_bytes.
+        let mut tx = s3.begin_tx().unwrap();
+        tx.put_bytes("tk", b"tv").await.unwrap();
+        assert_eq!(s3.get_bytes("tk").await.unwrap(), None);
+        tx.commit().await.unwrap();
+        assert_eq!(
+            s3.get_bytes("tk").await.unwrap().as_deref(),
+            Some(b"tv".as_slice())
         );
     }
 

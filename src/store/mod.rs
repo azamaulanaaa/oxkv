@@ -217,6 +217,24 @@ pub trait GetSet {
     /// Returns a [`StoreError`] if the underlying storage fails.
     async fn set_bytes(&mut self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>>;
 
+    /// Sets a key-value pair without reading the previous value.
+    ///
+    /// Same durability as [`GetSet::set_bytes`] but skips the read-your-write
+    /// lookup, so blind inserts avoid a full read path (manifest + SST scan).
+    /// Prefer this for ingest where the previous value is discarded.
+    ///
+    /// The default body delegates to `set_bytes` and discards the result, so
+    /// existing implementors are unaffected; backends that read-then-write
+    /// internally override it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] if the underlying storage fails.
+    async fn put_bytes(&mut self, key: &str, value: &[u8]) -> Result<()> {
+        self.set_bytes(key, value).await?;
+        Ok(())
+    }
+
     /// Retrieves multiple key-value pairs with cursor-based pagination.
     ///
     /// # Parameters
@@ -716,6 +734,20 @@ pub trait GetSetExt: GetSet {
             Some(prev) => Ok(Some(serde_json::from_slice(&prev)?)),
             None => Ok(None),
         }
+    }
+
+    /// Sets a JSON-serialized value without reading the previous value.
+    ///
+    /// Blind-write counterpart to [`GetSetExt::set`]: same durability, no
+    /// read-your-write lookup. Backends that override [`GetSet::put_bytes`]
+    /// skip the read path entirely.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] if serialization or storage fails.
+    async fn put<T: serde::Serialize + Sync>(&mut self, key: &str, value: &T) -> Result<()> {
+        let json = serde_json::to_vec(value)?;
+        self.put_bytes(key, &json).await
     }
 
     /// Retrieves a value and deserializes it using JSON.
