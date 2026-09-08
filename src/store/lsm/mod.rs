@@ -58,6 +58,10 @@ static SESSION_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 /// per-write manifest cost flat.
 const WAL_MAINTENANCE_COUNT: usize = 1_000;
 
+/// L1 files that trigger a bounding compaction merging the smallest
+/// adjacent pair (keeps the SST list — and every read's scan — short).
+const L1_MERGE_COUNT: usize = 16;
+
 /// Storage-backed LSM store (probe + fencing + WAL gate + SST).
 pub struct OxKvStore<C = LruCache<String, Arc<SstFile>>> {
     inner: Arc<dyn Storage>,
@@ -791,7 +795,12 @@ where
             .filter(|m| m.level == 0)
             .map(|m| m.size)
             .sum();
-        if l0_count < 4 && l0_bytes <= 128 * 1024 * 1024 {
+        let l1_count = manifest_snapshot
+            .sst
+            .iter()
+            .filter(|m| m.level == 1)
+            .count();
+        if l0_count < 4 && l0_bytes <= 128 * 1024 * 1024 && l1_count < L1_MERGE_COUNT {
             return Ok(None);
         }
         // Collect L0 range.
@@ -801,9 +810,6 @@ where
             .filter(|m| m.level == 0)
             .cloned()
             .collect();
-        if l0_metas.is_empty() {
-            return Ok(None);
-        }
         let l0_min = l0_metas
             .iter()
             .map(|m| m.min_key.as_str())
@@ -815,13 +821,39 @@ where
             .max()
             .unwrap_or("");
         // Overlapping L1.
-        let l1_overlapping: Vec<SstMeta> = manifest_snapshot
+        let mut l1_overlapping: Vec<SstMeta> = manifest_snapshot
             .sst
             .iter()
             .filter(|m| m.level == 1)
             .filter(|m| !(m.max_key.as_str() < l0_min || m.min_key.as_str() > l0_max))
             .cloned()
             .collect();
+        // Bound L1 file count: fold the smallest adjacent pair (plus anything
+        // overlapping its range) into this compaction. Adjacent-only keeps L1
+        // sorted runs non-overlapping, so L1 tombstone-drop stays sound.
+        if l1_count >= L1_MERGE_COUNT {
+            let mut by_min: Vec<&SstMeta> = manifest_snapshot
+                .sst
+                .iter()
+                .filter(|m| m.level == 1)
+                .collect();
+            by_min.sort_by(|a, b| a.min_key.cmp(&b.min_key));
+            if let Some(pair) = by_min.windows(2).min_by_key(|w| w[0].size + w[1].size) {
+                let lo = pair[0].min_key.as_str().min(pair[1].min_key.as_str());
+                let hi = pair[0].max_key.as_str().max(pair[1].max_key.as_str());
+                for m in manifest_snapshot.sst.iter().filter(|m| m.level == 1) {
+                    if m.max_key.as_str() >= lo
+                        && m.min_key.as_str() <= hi
+                        && !l1_overlapping.iter().any(|x| x.id == m.id)
+                    {
+                        l1_overlapping.push(m.clone());
+                    }
+                }
+            }
+        }
+        if l0_metas.is_empty() && l1_overlapping.is_empty() {
+            return Ok(None);
+        }
         // Read all overlapping SSTs via heap merge (newest wins, tombstones suppressed in final L1 except needed).
         let mut sources: Vec<Vec<(String, Option<Vec<u8>>)>> = Vec::new();
         for meta in l0_metas.iter().rev().chain(l1_overlapping.iter().rev()) {
