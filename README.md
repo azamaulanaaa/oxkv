@@ -580,9 +580,14 @@ generated corpus of 1,000 or 100,000 JSON documents.
 The filter is a plain substring match on benchmark names. Results land in
 `target/criterion/` as HTML reports; re-running a filter compares against the
 previous run and flags regressions/improvements automatically. For A/B work
-across commits, save a named baseline on the base (`-- --save-baseline base`)
-and compare the contender against it (`-- --baseline base`); baselines live
-in gitignored `target/`, so they never leave your machine.
+across commits, save a named baseline on the base commit and compare the
+contender against it; baselines live in gitignored `target/`, so they never
+leave your machine:
+
+  ```bash
+  cargo bench --bench kv_bench -- --save-baseline base   # on the base commit
+  cargo bench --bench kv_bench -- --baseline base        # on the contender
+  ```
 
 ### Workloads
 
@@ -594,11 +599,11 @@ in gitignored `target/`, so they never leave your machine.
 | `page_fetch_100/{backend}/{n}` | 1K, 1M | one paginated range fetch of 100 entries from rotating start cursors |
 | `point_update/{backend}/{n}items_{m}changes` | 1K×{1,10}, 1M×{1,100,1000} | in-place updates of a few keys inside a large store |
 | `tx_commit_batch_1000/{backend}` | 1K | committing a pre-staged 1,000-write transaction (staging is untimed, so this isolates durability cost) |
-| `concurrent_write/oxkv_mem/1024` | 1K writes, 8 threads | blind writes from spawned tasks sharing one store (multi-thread runtime): write-gate + group-commit throughput |
-| `zipf_get/oxkv_mem/10000` | 10K keys, 50 SSTs, 2K reads | skewed reads over many small SSTs with a 320 KiB cache: admission policy decides the hit ratio (printed to stderr) |
-| `concurrent_random_get/oxkv_mem/100000` | 100K keys, 10K reads, 8 threads | shared-store point reads from spawned tasks: read-path scaling while writes serialize |
+| `concurrent_write/oxkv_mem/1024` | 1,024 writes (8 tasks × 128) | blind writes from spawned tasks sharing one store (multi-thread runtime): write-gate + group-commit throughput; store rebuilt per iteration in untimed setup |
+| `zipf_get/oxkv_mem/10000` | 10K keys, 2K reads/iter | skewed reads (Zipf 1.07, fixed seed) over the SSTs from 50 forced flushes — background compaction folds those into roughly a dozen larger files, so the 320 KiB cache holds a mid-range fraction and admission policy decides the hit ratio (printed to stderr) |
+| `concurrent_random_get/oxkv_mem/100000` | 100K keys, 10K reads split over 8 tasks | shared-store point reads from spawned tasks (multi-thread runtime, store populated once and reused): read-path scaling while writes serialize |
 
-Scale strategy (see `benches/kv_bench.rs` header): full-scan writes (`seq_insert`, `seq_delete`) scale linearly so they run at 1K+100K only — 1M depth is still exercised via `random_get`/`point_update`/`page_fetch`, whose per-iteration work is bounded (sampled reads / one page / few updates) against a 1M-key store built once and reused. Tree/SST depth and index size are identical to a full 1M scan; only the repeated per-iteration cost is removed.
+Scale strategy (see `benches/kv_bench.rs` header): full-scan writes (`seq_insert`, `seq_delete`) scale linearly so they run at 1K+100K only — 1M depth is still exercised via `random_get`/`point_update`/`page_fetch`, whose per-iteration work is bounded (sampled reads / one page / few updates) against a 1M-key store built once and reused. Tree/SST depth and index size are identical to a full 1M scan; only the repeated per-iteration cost is removed. The oxkv-only groups (`concurrent_write`, `zipf_get`, `concurrent_random_get`) are fixed-scale by design: they measure threading and cache behavior, not scaling.
 
 Setup work (populating stores for read/update benchmarks, staging
 transactions) runs in untimed warmup or setup phases, so measured numbers
@@ -607,7 +612,7 @@ count only the operation under test.
 ### Runtime notes
 
 - 1K groups complete in ~tens of seconds; 100K full-scan groups use 10 samples with 2 s warmup / 5 s measurement; 1M sampled groups use 10 samples with 2 s warmup / 10 s measurement — the full suite stays in minutes.
-- Throughput is reported as `Elements` = ops per iteration (so `random_get/oxkv_mem/1000000` reports 10K, not 1M).
+- Throughput is reported as `Elements` = ops per iteration (so `random_get/oxkv_mem/1000000` reports 10K, not 1M; `zipf_get` reports 2K, `concurrent_write` 1,024, `concurrent_random_get` 10K).
 
   ```bash
   cargo bench --bench kv_bench seq_insert/oxkv_mem/100000
