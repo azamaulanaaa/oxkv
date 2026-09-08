@@ -40,6 +40,10 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Test (--all-features)
         run: cargo test --all-features
+      - name: Check docs
+        # README ships as crate docs: intra-doc links (e.g. feature-gated
+        # items) resolve only when every feature exists — docs.rs does the same.
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 
   wasm:
     name: Test (wasm32)
@@ -73,3 +77,42 @@ jobs:
         # Feature-gated code (e.g. otel) must stay compilable on wasm even
         # though its tests only run in the native job.
         run: cargo check --target wasm32-unknown-unknown --all-features
+      - name: Clippy (wasm32)
+        # Lints inside wasm-only code (timer bridges, OPFS backend) are
+        # invisible to the native job.
+        run: cargo clippy --target wasm32-unknown-unknown --all-features -- -D warnings
+
+  wasm-browser:
+    name: Test (wasm32 headless Chrome)
+    runs-on: ubuntu-latest
+    container:
+      image: rust:1
+    env:
+      CARGO_HOME: /usr/local/cargo
+    steps:
+      - uses: actions/checkout@v7
+      - name: Add wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ${{ env.CARGO_HOME }}/bin/
+            ${{ env.CARGO_HOME }}/registry/index/
+            ${{ env.CARGO_HOME }}/registry/cache/
+            ${{ env.CARGO_HOME }}/git/db/
+            target/
+          key: ${{ runner.os }}-wasm-browser-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-wasm-browser-cargo-
+      - name: Install wasm-pack if missing
+        run: command -v wasm-pack >/dev/null 2>&1 || cargo install wasm-pack --locked
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Install Chromium
+        # Real browser execution: the OPFS persistence test skips on Node
+        # (no navigator.storage there), so only this job proves it.
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq chromium
+      - run: wasm-pack test --headless --chrome
