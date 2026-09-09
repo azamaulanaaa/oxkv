@@ -24,7 +24,7 @@ pub(crate) use manifest::{Manifest, ManifestCache, load_manifest};
 pub(crate) use ownership::read_ownership;
 pub(crate) use read::{ReadCtx, filter_rows, is_not_found, point_lookup, range_lookup};
 pub use reader::{OxKvReader, OxKvRoTx};
-/// Parsed SST file; name it to weigh a custom [`Cache`] (see [`SstFile::size`]).
+/// Parsed SST file; name it to weigh a custom [`crate::store::Cache`] (see [`SstFile::size`]).
 pub use sst::SstFile;
 pub(crate) use sst::TOMBSTONE_VLEN;
 pub use store::{OxKvStore, OxKvStoreBuilder};
