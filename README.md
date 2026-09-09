@@ -364,7 +364,7 @@ What it does under the hood:
 
 ### SST cache
 
-Point lookups go through a 256 MiB scan-resistant `S3-FIFO` cache (`LruCache`, weighed by file size via `SstFile::size`), so hot SSTs are parsed once. Window scans (`gets`) deliberately bypass it: a wide range must never evict hot point-lookup entries, so scans re-read from `Storage` every time.
+Point lookups go through a 256 MiB scan-resistant `S3-FIFO` cache (`LruCache`, weighed by file size via `SstFile::size`), so hot SSTs are parsed once. Window scans (`gets`) route through the same cache: rotating pages reuse the same files, and the small queue plus ghost absorb one-hit entries without evicting hot point-lookup data (`zipf_get` holds a 0.873 hit ratio either way). Scans also pull-merge lazily — each file yields only the entries the page needs instead of decoding to end-of-file — which took `page_fetch_100` at 1M keys from ~290 ms to ~150 µs.
 
 Hit/miss statistics are tracked with atomics shared across clones: `Cache::stats()` returns hits, misses, inserts, capacity evictions, and `hit_ratio()` (backends that don't track, e.g. `moka`, return `None`). On a store, `OxKvStore::sst_cache_stats()` exposes the same numbers — the `zipf_get` bench prints them alongside timings.
 

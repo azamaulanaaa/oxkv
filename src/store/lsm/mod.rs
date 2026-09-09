@@ -616,8 +616,7 @@ where
         if direction == Direction::Prev && cursor.0.is_none() {
             return Ok(Vec::new());
         }
-        let mut sources: Vec<Vec<(String, Option<Vec<u8>>)>> = Vec::new();
-        {
+        let mem_rows: Vec<(String, Option<Vec<u8>>)> = {
             let mem = self.mem.read().await;
             // Filter MemTable by range upfront — page_fetch_100 at LARGE would
             // otherwise clone 1M entries to return 100.
@@ -642,8 +641,8 @@ where
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect()
                 };
-            sources.push(mem_vec);
-        }
+            mem_vec
+        };
         let (manifest, _etag) = load_manifest(
             Arc::clone(&self.inner),
             &self.prefix,
@@ -652,6 +651,40 @@ where
             std::time::Duration::from_secs(1),
         )
         .await?;
+        if direction == Direction::Next {
+            let mut files: Vec<Arc<SstFile>> = Vec::new();
+            for meta in manifest.sst.iter().rev() {
+                let overlaps = {
+                    let min = meta.min_key.as_str();
+                    let max = meta.max_key.as_str();
+                    let after_lower = scan_start.is_none_or(|s| max >= s);
+                    let before_upper = scan_end.is_none_or(|e| min <= e);
+                    after_lower && before_upper
+                };
+                if !overlaps {
+                    continue;
+                }
+                // Admit scans to the SST cache: rotating pages reuse the same
+                // files, and S3-FIFO absorbs one-hit entries without evicting
+                // hot point lookups (zipf_get guards the ratio).
+                files.push(self.fetch_sst(&meta.id).await?);
+            }
+            let mut pull: Vec<MergeSource<'_>> = Vec::with_capacity(files.len() + 1);
+            pull.push(MergeSource::Mem(mem_rows.into_iter()));
+            for file in &files {
+                pull.push(MergeSource::File(file.scan_iter(scan_start, scan_end)));
+            }
+            let merged = pull_merge_next(&mut pull, limit.map(|l| l as usize))?;
+            let mut out = Vec::with_capacity(merged.len());
+            for (key, raw) in merged {
+                out.push(KeyValue {
+                    key,
+                    value: self.resolve_value(raw).await?,
+                });
+            }
+            return Ok(out);
+        }
+        let mut sources = vec![mem_rows];
         for meta in manifest.sst.iter().rev() {
             let overlaps = {
                 let min = meta.min_key.as_str();
@@ -1514,7 +1547,6 @@ where
         if direction == Direction::Prev && cursor.0.is_none() {
             return Ok(Vec::new());
         }
-        let mut sources: Vec<Vec<(String, Option<Vec<u8>>)>> = Vec::new();
         // Overlay newest — filter by range to avoid cloning entire overlay
         // when only a page is needed.
         // Scoped so the guard is dropped before the awaits below (`std` guards are not `Send`).
@@ -1545,9 +1577,8 @@ where
                     .collect()
             }
         };
-        sources.push(overlay_vec);
         // Shared MemTable
-        {
+        let mem_rows: Vec<(String, Option<Vec<u8>>)> = {
             let mem = self.mem.read().await;
             let mem_vec: Vec<(String, Option<Vec<u8>>)> =
                 if scan_start.is_none() && scan_end.is_none() {
@@ -1570,8 +1601,8 @@ where
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect()
                 };
-            sources.push(mem_vec);
-        }
+            mem_vec
+        };
         // SSTs
         let (manifest, _etag) = load_manifest(
             Arc::clone(&self.inner),
@@ -1581,6 +1612,41 @@ where
             std::time::Duration::from_secs(1),
         )
         .await?;
+        if direction == Direction::Next {
+            let mut files: Vec<Arc<SstFile>> = Vec::new();
+            for meta in manifest.sst.iter().rev() {
+                let overlaps = {
+                    let min = meta.min_key.as_str();
+                    let max = meta.max_key.as_str();
+                    let after_lower = scan_start.is_none_or(|s| max >= s);
+                    let before_upper = scan_end.is_none_or(|e| min <= e);
+                    after_lower && before_upper
+                };
+                if !overlaps {
+                    continue;
+                }
+                // Admit scans to the SST cache: rotating pages reuse the same
+                // files, and S3-FIFO absorbs one-hit entries without evicting
+                // hot point lookups (zipf_get guards the ratio).
+                files.push(self.fetch_sst(&meta.id).await?);
+            }
+            let mut pull: Vec<MergeSource<'_>> = Vec::with_capacity(files.len() + 2);
+            pull.push(MergeSource::Mem(overlay_vec.into_iter()));
+            pull.push(MergeSource::Mem(mem_rows.into_iter()));
+            for file in &files {
+                pull.push(MergeSource::File(file.scan_iter(scan_start, scan_end)));
+            }
+            let merged = pull_merge_next(&mut pull, limit.map(|l| l as usize))?;
+            let mut out = Vec::with_capacity(merged.len());
+            for (key, raw) in merged {
+                out.push(KeyValue {
+                    key,
+                    value: self.resolve_value(raw).await?,
+                });
+            }
+            return Ok(out);
+        }
+        let mut sources = vec![overlay_vec, mem_rows];
         for meta in manifest.sst.iter().rev() {
             let overlaps = {
                 let min = meta.min_key.as_str();
@@ -2024,6 +2090,124 @@ pub(crate) fn merge_sources(sources: Vec<Vec<(String, Option<Vec<u8>>)>>) -> Vec
     map.into_iter()
         .filter_map(|(key, value)| value.map(|v| KeyValue { key, value: v }))
         .collect()
+}
+
+/// One pull source for [`pull_merge_next`]: owned mem rows or a borrowing
+/// file scan. File scans borrow their SST, so sources never outlive the
+/// handle vector built alongside them in `gets_bytes`.
+enum MergeSource<'a> {
+    Mem(std::vec::IntoIter<(String, Option<Vec<u8>>)>),
+    File(sst::SstScan<'a>),
+}
+
+impl Iterator for MergeSource<'_> {
+    type Item = Result<(String, Option<Vec<u8>>)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Mem(it) => it.next().map(Ok),
+            Self::File(it) => it.next(),
+        }
+    }
+}
+
+/// Heap entry for [`pull_merge_next`], ordered by ascending key with source
+/// rank breaking ties: smaller rank is newer, so the first pop of a key is
+/// its newest entry and decides it. `BinaryHeap` is a max-heap, hence the
+/// reversed comparison.
+struct MergeHeapEntry {
+    key: String,
+    rank: usize,
+    value: Option<Vec<u8>>,
+    source: usize,
+}
+
+impl PartialEq for MergeHeapEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key && self.rank == other.rank
+    }
+}
+
+impl Eq for MergeHeapEntry {}
+
+impl PartialOrd for MergeHeapEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for MergeHeapEntry {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other
+            .key
+            .cmp(&self.key)
+            .then_with(|| other.rank.cmp(&self.rank))
+    }
+}
+
+/// K-way newest-first merge over sorted per-source iterators, ascending.
+///
+/// Sources must yield range-filtered `(key, raw)` pairs with `None` marking
+/// tombstones, ordered newest-first (rank is the source position). Pulls the
+/// globally smallest undecided key: its newest entry decides it, tombstones
+/// suppress older duplicates without yielding, and iteration stops after
+/// `limit` live keys (`None` drains). Exact: entries pull in global order,
+/// so stopping early returns precisely what an uncapped merge-then-truncate
+/// would, without decoding the unread tail.
+fn pull_merge_next(
+    sources: &mut [MergeSource<'_>],
+    limit: Option<usize>,
+) -> Result<Vec<(String, Vec<u8>)>> {
+    if limit == Some(0) {
+        return Ok(Vec::new());
+    }
+    let mut heap = std::collections::BinaryHeap::new();
+    for (rank, source) in sources.iter_mut().enumerate() {
+        if let Some(head) = source.next() {
+            let (key, value) = head?;
+            heap.push(MergeHeapEntry {
+                key,
+                rank,
+                value,
+                source: rank,
+            });
+        }
+    }
+    let mut out = Vec::new();
+    while let Some(entry) = heap.pop() {
+        while let Some(top) = heap.peek() {
+            if top.key != entry.key {
+                break;
+            }
+            if let Some(dup) = heap.pop()
+                && let Some(next) = sources[dup.source].next()
+            {
+                let (key, value) = next?;
+                heap.push(MergeHeapEntry {
+                    key,
+                    rank: dup.rank,
+                    value,
+                    source: dup.source,
+                });
+            }
+        }
+        if let Some(next) = sources[entry.source].next() {
+            let (key, value) = next?;
+            heap.push(MergeHeapEntry {
+                key,
+                rank: entry.rank,
+                value,
+                source: entry.source,
+            });
+        }
+        if let Some(value) = entry.value {
+            out.push((entry.key, value));
+            if limit.is_some_and(|lim| out.len() >= lim) {
+                break;
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Range-filtered, direction-aware scan over merged sources.
@@ -2558,6 +2742,63 @@ mod tests {
                 let got = rebuilt.get_bytes(&k).await.expect("read").expect("present");
                 assert_eq!(got, k.as_bytes());
             }
+        }
+    }
+
+    /// `pull_merge_next` agrees with the materialized merge on overlapping
+    /// sources with tombstones, at every limit including the truncation edge
+    /// and full drain. Guards the heap ordering, newest-wins dedup, and
+    /// early-stop exactness of lazy page scans.
+    #[test]
+    fn pull_merge_matches_materialized() {
+        use std::collections::BTreeMap;
+        let opt = |v: &str| Some(v.as_bytes().to_vec());
+        let old: BTreeMap<String, Option<Vec<u8>>> = [
+            ("a", opt("old-a")),
+            ("b", opt("old-b")),
+            ("c", opt("old-c")),
+            ("d", opt("old-d")),
+            ("e", opt("old-e")),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        let new: BTreeMap<String, Option<Vec<u8>>> =
+            [("c", opt("new-c")), ("d", None), ("f", opt("new-f"))]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
+        let mem: Vec<(String, Option<Vec<u8>>)> =
+            vec![("a".to_string(), None), ("b".to_string(), opt("mem-b"))];
+        let old_file =
+            SstFile::parse(sst::build_sst(&old, 64).expect("old sst")).expect("parse old");
+        let new_file =
+            SstFile::parse(sst::build_sst(&new, 64).expect("new sst")).expect("parse new");
+        let materialized = |limit: Option<usize>| {
+            let merged = merge_sources(vec![
+                mem.clone(),
+                new_file
+                    .scan_with_tombstones(None, None, None)
+                    .expect("new scan"),
+                old_file
+                    .scan_with_tombstones(None, None, None)
+                    .expect("old scan"),
+            ]);
+            let live: Vec<(String, Vec<u8>)> =
+                merged.into_iter().map(|kv| (kv.key, kv.value)).collect();
+            match limit {
+                Some(lim) => live.into_iter().take(lim).collect(),
+                None => live,
+            }
+        };
+        for limit in [None, Some(0), Some(1), Some(2), Some(3), Some(10)] {
+            let mut sources = vec![
+                MergeSource::Mem(mem.clone().into_iter()),
+                MergeSource::File(new_file.scan_iter(None, None)),
+                MergeSource::File(old_file.scan_iter(None, None)),
+            ];
+            let pulled = pull_merge_next(&mut sources, limit).expect("pull");
+            assert_eq!(pulled, materialized(limit), "limit {limit:?}");
         }
     }
 

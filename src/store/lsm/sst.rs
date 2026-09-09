@@ -603,6 +603,26 @@ impl SstFile {
         Ok(out)
     }
 
+    /// Lazily scans entries in `[start, end]` inclusive, in file order.
+    ///
+    /// Yields `(key, value)` with `None` marking tombstones; blocks outside
+    /// the range are skipped via the footer index and entries decode on pull,
+    /// so a capped consumer never pays for the unread tail. Truncation ends
+    /// the stream, matching [`SstFile::scan`]; encoding errors surface as
+    /// `Err` items and terminate iteration on the next pull.
+    #[must_use]
+    pub fn scan_iter<'a>(&'a self, start: Option<&'a str>, end: Option<&'a str>) -> SstScan<'a> {
+        SstScan {
+            file: self,
+            start,
+            end,
+            block_idx: 0,
+            block: None,
+            pos: 0,
+            done: false,
+        }
+    }
+
     /// Verifies file-level `CRC` (`u64`).
     pub fn verify_file_crc(&self) -> Result<()> {
         let mut hasher = crc32fast::Hasher::new();
@@ -618,6 +638,136 @@ impl SstFile {
             )));
         }
         Ok(())
+    }
+}
+
+/// Decodes one entry at `pos`: key, value (`None` for tombstones), and the
+/// next position. Returns `Ok(None)` on truncation (callers stop, matching
+/// [`SstFile::scan`]) and `Err` on invalid UTF-8, also matching `scan`.
+fn decode_entry(bytes: &[u8], pos: usize) -> Result<Option<(String, Option<Vec<u8>>, usize)>> {
+    if pos + 4 > bytes.len() {
+        return Ok(None);
+    }
+    let klen =
+        u32::from_le_bytes([bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]]) as usize;
+    if pos + 4 + klen + 4 > bytes.len() {
+        return Ok(None);
+    }
+    let key_str = std::str::from_utf8(&bytes[pos + 4..pos + 4 + klen])
+        .map_err(|e| StoreError::Storage(format!("utf8: {e}")))?
+        .to_string();
+    let v_start = pos + 4 + klen;
+    let vlen = u32::from_le_bytes([
+        bytes[v_start],
+        bytes[v_start + 1],
+        bytes[v_start + 2],
+        bytes[v_start + 3],
+    ]) as usize;
+    let is_tombstone = vlen == TOMBSTONE_VLEN as usize;
+    let value = if is_tombstone {
+        None
+    } else {
+        if v_start + 4 + vlen > bytes.len() {
+            return Ok(None);
+        }
+        Some(bytes[v_start + 4..v_start + 4 + vlen].to_vec())
+    };
+    let next = if is_tombstone {
+        v_start + 4
+    } else {
+        v_start + 4 + vlen
+    };
+    Ok(Some((key_str, value, next)))
+}
+
+/// Lazy in-range scan over one [`SstFile`], tombstone-inclusive.
+///
+/// See [`SstFile::scan_iter`]: entries decode on pull in file order, so a
+/// consumer that stops early never pays for the unread tail.
+#[derive(Debug)]
+pub struct SstScan<'a> {
+    file: &'a SstFile,
+    start: Option<&'a str>,
+    end: Option<&'a str>,
+    block_idx: usize,
+    block: Option<&'a [u8]>,
+    pos: usize,
+    done: bool,
+}
+
+impl<'a> SstScan<'a> {
+    /// Range overlap for a block: kept outside `next` so block pruning
+    /// reads as one predicate.
+    fn overlaps(&self, meta: &BlockMeta) -> bool {
+        if let Some(start_key) = self.start {
+            if meta.max_key.as_str() < start_key {
+                return false;
+            }
+        }
+        if let Some(end_key) = self.end {
+            if meta.min_key.as_str() > end_key {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// In-range check for a decoded key, mirroring [`SstFile::scan`].
+    fn in_range(&self, key: &str) -> bool {
+        match (self.start, self.end) {
+            (Some(s), Some(e)) => key >= s && key <= e,
+            (Some(s), None) => key >= s,
+            (None, Some(e)) => key <= e,
+            (None, None) => true,
+        }
+    }
+}
+
+impl Iterator for SstScan<'_> {
+    type Item = Result<(String, Option<Vec<u8>>)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+        loop {
+            if self.block.is_none() {
+                let Some(meta) = self.file.footer.index.get(self.block_idx) else {
+                    return None;
+                };
+                self.block_idx += 1;
+                if !self.overlaps(meta) {
+                    continue;
+                }
+                let meta = &self.file.footer.index[self.block_idx - 1];
+                match self.file.block_bytes(meta) {
+                    Ok(bytes) => {
+                        self.block = Some(bytes);
+                        self.pos = 0;
+                    }
+                    Err(e) => {
+                        self.done = true;
+                        return Some(Err(e));
+                    }
+                }
+            }
+            let bytes = self.block.unwrap_or(&[]);
+            match decode_entry(bytes, self.pos) {
+                Err(e) => {
+                    self.done = true;
+                    return Some(Err(e));
+                }
+                Ok(None) => {
+                    self.block = None;
+                }
+                Ok(Some((key, value, next))) => {
+                    self.pos = next;
+                    if self.in_range(&key) {
+                        return Some(Ok((key, value)));
+                    }
+                }
+            }
+        }
     }
 }
 
