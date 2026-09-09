@@ -1,4 +1,5 @@
-//! WASM bindings — `BTreeStore` (light baseline) and `OxKvStore` (LSM engine).
+//! WASM bindings — `BTreeStore` (light baseline), `OxKvStore` (LSM engine),
+//! and `CachedOxKvStore` (write-through RAM mirror).
 //!
 //! The OXKV snapshot wire format (`snapshot.rs` magic `OXKV` + version 1) is
 //! identical across `BTreeStore` and `OxKvStore` on every target, so
@@ -56,9 +57,16 @@ fn json_compatible<T: Serialize>(value: &T) -> Result<JsValue, store::StoreError
 #[cfg(feature = "btree")]
 mod btree;
 #[cfg(feature = "oxkv")]
+mod cached;
+#[cfg(feature = "oxkv")]
 mod oxkv;
 
 #[cfg(feature = "btree")]
+#[cfg(feature = "oxkv")]
+pub use cached::{JsCachedOxKvStore, JsCachedOxKvTx};
+
+#[cfg(feature = "btree")]
 pub use btree::{JsBTreeStore, JsBTreeTx};
+#[cfg(feature = "oxkv")]
 #[cfg(feature = "oxkv")]
 pub use oxkv::{JsOxKvStore, JsOxKvTx};
