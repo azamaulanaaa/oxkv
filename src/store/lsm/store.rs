@@ -79,6 +79,32 @@ impl<C> std::fmt::Debug for OxKvStore<C> {
     }
 }
 
+/// Clones share writer state: the `MemTable`, sequencers, manifest cache,
+/// write gate, and SST cache are reference-counted, so clones coordinate
+/// as one owner. Required for decorator composition (`HookStore`, `OtelStore`).
+impl<C> Clone for OxKvStore<C>
+where
+    C: Cache<String, Arc<SstFile>>,
+{
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            prefix: self.prefix.clone(),
+            epoch: self.epoch,
+            session: self.session.clone(),
+            mem: Arc::clone(&self.mem),
+            wal_seq: Arc::clone(&self.wal_seq),
+            wal_buffer: Arc::clone(&self.wal_buffer),
+            sst_seq: Arc::clone(&self.sst_seq),
+            manifest_cache: Arc::clone(&self.manifest_cache),
+            readers: Arc::clone(&self.readers),
+            write_gate: Arc::clone(&self.write_gate),
+            pending: Arc::clone(&self.pending),
+            sst_cache: self.sst_cache.clone(),
+        }
+    }
+}
+
 /// Cache-independent entry points (`builder`, `probe`) live on the default
 /// `LruCache` instantiation so `OxKvStore::builder()` needs no turbofish.
 impl OxKvStore {

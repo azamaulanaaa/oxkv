@@ -128,6 +128,23 @@ impl<C> std::fmt::Debug for CachedOxKvStore<C> {
     }
 }
 
+/// Clones share the mirror and the sync state: the `BTreeStore` handle and
+/// the generation tracker are reference-counted, so clones observe the same
+/// keys. Required for decorator composition (`HookStore`, `OtelStore`).
+impl<C> Clone for CachedOxKvStore<C>
+where
+    C: Cache<String, Arc<SstFile>>,
+{
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            mirror: self.mirror.clone(),
+            state: Arc::clone(&self.state),
+            ttl_ms: Arc::clone(&self.ttl_ms),
+        }
+    }
+}
+
 impl<C> CachedOxKvStore<C>
 where
     C: Cache<String, Arc<SstFile>>,
@@ -705,6 +722,7 @@ mod tests {
     use super::*;
     use crate::store::MemStorage;
     use crate::store::storage::Storage;
+    use crate::store::{HookStore, Validator};
 
     async fn writer(prefix: &str) -> (OxKvStore, Arc<dyn Storage>) {
         let backend: Arc<dyn Storage> = Arc::new(MemStorage::new());
@@ -905,6 +923,41 @@ mod tests {
             custom.get_bytes("j").await.expect("get"),
             Some(b"w".to_vec())
         );
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn composes_with_hook_decorator() {
+        struct RequireJson;
+
+        #[async_trait::async_trait]
+        impl Validator for RequireJson {
+            async fn validate(
+                &self,
+                _ctx: &dyn crate::store::StoreView,
+                _key: &str,
+                value: &[u8],
+            ) -> Result<()> {
+                serde_json::from_slice::<serde_json::Value>(value)
+                    .map(|_| ())
+                    .map_err(|e| StoreError::Other(e.to_string()))
+            }
+        }
+
+        let (writer, _) = writer("cached-hooks").await;
+        let cached = CachedOxKvStore::open(writer).await.expect("open");
+        let hooked = HookStore::new(cached.clone()).with_validator(RequireJson);
+        assert!(hooked.set_bytes("raw", b"nope").await.is_err());
+        hooked
+            .set_bytes("doc", br#"{"ok":true}"#)
+            .await
+            .expect("valid");
+        assert_eq!(
+            cached.get_bytes("doc").await.expect("get"),
+            Some(br#"{"ok":true}"#.to_vec())
+        );
+        let scoped = HookStore::new(cached).with_validator(RequireJson);
+        let _ = scoped.watch_all();
     }
 
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
