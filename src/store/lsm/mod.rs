@@ -2802,6 +2802,76 @@ mod tests {
         }
     }
 
+    /// Newest-wins across flush/compact cycles: a newer L0 outranks older
+    /// L1s, and the manifest re-sort inside `compact` preserves that because
+    /// `compact` drains every L0 it merges while `flush` appends new L0s
+    /// after the sorted L1s, keeping reverse manifest order newest-first.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn newest_wins_across_flush_compact() {
+        let inner = new_in_memory();
+        let s = OxKvStore::builder()
+            .with_store(Arc::clone(&inner))
+            .with_prefix(ObjectPath::from("oxkv-resort"))
+            .with_session("sess-resort")
+            .skip_probe(true)
+            .build()
+            .await
+            .unwrap();
+        let read_manifest = || async {
+            let path = ObjectPath::from("oxkv-resort").child("manifest.json");
+            let out = inner.get(&path).await.expect("manifest readable");
+            serde_json::from_slice::<Manifest>(&out.bytes).expect("manifest parses")
+        };
+        // Four single-key flushes, then compact merges the L0s into one L1.
+        for (k, v) in [("k1", "a"), ("k2", "b"), ("k3", "c"), ("k4", "d")] {
+            s.put_bytes(k, v.as_bytes()).await.unwrap();
+            s.flush_mem_to_sst_force().await.expect("flush");
+        }
+        s.compact().await.unwrap();
+        // Old mango version rides one L0; new version plus a smaller key
+        // rides the next, so min_key order and recency order disagree.
+        s.put_bytes("mango", b"v1").await.unwrap();
+        s.put_bytes("zebra", b"v1").await.unwrap();
+        s.flush_mem_to_sst_force().await.expect("flush");
+        s.put_bytes("apple", b"x").await.unwrap();
+        s.put_bytes("mango", b"v2").await.unwrap();
+        s.flush_mem_to_sst_force().await.expect("flush");
+        // Unmerged L0s lose nothing: the newest L0 outranks older files.
+        assert_eq!(
+            s.get_bytes("mango").await.unwrap().as_deref(),
+            Some(b"v2".as_slice())
+        );
+        // Top up L0s so the final compact must merge (and re-sort); each
+        // iteration nets one L0 because auto-compacts only fire at four.
+        loop {
+            let manifest = read_manifest().await;
+            if manifest.sst.iter().filter(|m| m.level == 0).count() >= 4 {
+                break;
+            }
+            let pad = manifest.sst.len();
+            s.put_bytes(&format!("pad{pad}"), b"p").await.unwrap();
+            s.flush_mem_to_sst_force().await.expect("flush");
+        }
+        s.compact().await.unwrap();
+        assert_eq!(
+            s.get_bytes("mango").await.unwrap().as_deref(),
+            Some(b"v2".as_slice())
+        );
+        assert_eq!(
+            s.get_bytes("apple").await.unwrap().as_deref(),
+            Some(b"x".as_slice())
+        );
+        assert_eq!(
+            s.get_bytes("zebra").await.unwrap().as_deref(),
+            Some(b"v1".as_slice())
+        );
+        assert_eq!(
+            s.get_bytes("k1").await.unwrap().as_deref(),
+            Some(b"a".as_slice())
+        );
+    }
+
     #[cfg(all(feature = "moka", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn build_with_cache_accepts_moka() {
