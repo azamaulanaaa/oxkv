@@ -390,8 +390,8 @@ Enable it:
 
 ```toml
 [dependencies]
-oxkv = { version = "0.5", features = ["oxkv"] }           # portable LSM core
-# oxkv = { version = "0.5", features = ["oxkv", "oxkv-s3"] } # + S3/GCS/Azure via object_store (native)
+oxkv = { version = "0.6", features = ["oxkv"] }           # portable LSM core
+# oxkv = { version = "0.6", features = ["oxkv", "oxkv-s3"] } # + S3/GCS/Azure via object_store (native)
 ```
 
 `cargo test --features oxkv` and `cargo bench --features oxkv` exercise it against `MemStorage` (bench uses `skip_probe(true)` so the numbers are comparable to `btree_mem`/`oxkv_mem`).

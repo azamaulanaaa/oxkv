@@ -1,6 +1,6 @@
 [package]
 name = "oxkv"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 description = "A transactional key-value store with WASM bindings (BTreeStore + OxKvStore), cursor pagination, streaming snapshots, optional OpenTelemetry, and a portable LSM backend (native + wasm)."
 license = "MIT OR Apache-2.0"
