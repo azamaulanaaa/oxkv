@@ -58,6 +58,11 @@
 //! `skip_probe(true)` so the numbers are comparable to `btree_mem`/`oxkv_mem`
 //! without network I/O. Prefix is unique per store instance to avoid
 //! ownership fencing within the same `MemStorage` bucket.
+//!
+//! `cached_mem` is the same durable core wrapped by `CachedOxKvStore`
+//! (`build_cached`): every write mirrors into RAM, so only the read shapes
+//! (`random_get`, `page_fetch`) are measured — writes share `oxkv_mem`'s
+//! durable path plus one B-tree insert each, which the other groups cover.
 
 use std::hint::black_box;
 #[cfg(feature = "oxkv")]
@@ -830,6 +835,94 @@ mod oxkv_bench {
     }
 }
 
+// Cached backend (MemStorage, skip_probe, build_cached) — read shapes only:
+// the mirror warms synchronously on every write, so no extra warm step is
+// needed, and writes share oxkv_mem's durable path by construction.
+// ---------------------------------------------------------------------------
+#[cfg(feature = "oxkv")]
+#[allow(clippy::wildcard_imports)]
+mod cached_bench {
+    use std::sync::Arc;
+
+    use oxkv::{CachedOxKvStore, MemStorage, ObjectPath};
+
+    use super::*;
+
+    static CACHED_CTR: AtomicUsize = AtomicUsize::new(0);
+
+    pub(crate) async fn new_cached_store() -> CachedOxKvStore {
+        let id = CACHED_CTR.fetch_add(1, Ordering::Relaxed);
+        OxKvStore::builder()
+            .with_store(Arc::new(MemStorage::new()))
+            .with_prefix(ObjectPath::from(format!("bench-cached-{id}")))
+            .with_session(format!("bench-cached-sess-{id}"))
+            .skip_probe(true)
+            .build_cached()
+            .await
+            .expect("OxKvStore::builder build_cached with MemStorage")
+    }
+
+    pub(crate) fn random_get(rt: &tokio::runtime::Runtime, c: &mut Criterion, n: usize) {
+        let mut group = c.benchmark_group(format!("random_get/cached_mem/{n}"));
+        let take = if n >= LARGE { READ_SAMPLES } else { n };
+        configure(&mut group, n, take);
+        let keys: Vec<String> = (0..n).map(key).collect();
+        let order = shuffled(n);
+        let mut store: Option<CachedOxKvStore> = None;
+        group.bench_function("get", |b| {
+            b.iter(|| {
+                let s = store.get_or_insert_with(|| {
+                    rt.block_on(async {
+                        let mut s = new_cached_store().await;
+                        populate(&mut s, &keys).await;
+                        s
+                    })
+                });
+                rt.block_on(async {
+                    for i in order.iter().take(take) {
+                        black_box(s.get_bytes(&keys[*i]).await.expect("get"));
+                    }
+                });
+            });
+        });
+        group.finish();
+    }
+
+    pub(crate) fn page_fetch(rt: &tokio::runtime::Runtime, c: &mut Criterion, n: usize) {
+        let mut group = c.benchmark_group(format!("page_fetch_{PAGE}/cached_mem/{n}"));
+        configure(
+            &mut group,
+            n,
+            usize::try_from(PAGE).expect("page size fits"),
+        );
+        let keys: Vec<String> = (0..n).map(key).collect();
+        let mut store: Option<CachedOxKvStore> = None;
+        let starts: Vec<String> = (0..128usize).map(|j| key((j * 7919 + n / 2) % n)).collect();
+        group.bench_function("fetch", |b| {
+            let mut j = 0usize;
+            b.iter(|| {
+                let start = starts[j % starts.len()].clone();
+                j += 1;
+                let s = store.get_or_insert_with(|| {
+                    rt.block_on(async {
+                        let mut s = new_cached_store().await;
+                        populate(&mut s, &keys).await;
+                        s
+                    })
+                });
+                rt.block_on(async {
+                    black_box(
+                        s.gets_bytes(Some(PAGE), Direction::Next, (Some(start), None))
+                            .await
+                            .expect("gets_bytes"),
+                    );
+                });
+            });
+        });
+        group.finish();
+    }
+}
+
 fn benchmark(c: &mut Criterion) {
     let rt = runtime();
 
@@ -857,6 +950,9 @@ fn benchmark(c: &mut Criterion) {
 
         #[cfg(feature = "oxkv")]
         oxkv_bench::random_get(&rt, c, n);
+
+        #[cfg(feature = "oxkv")]
+        cached_bench::random_get(&rt, c, n);
     }
 
     // Range fetch: per-iteration work is one page; store depth varies.
@@ -866,6 +962,9 @@ fn benchmark(c: &mut Criterion) {
 
         #[cfg(feature = "oxkv")]
         oxkv_bench::page_fetch(&rt, c, n);
+
+        #[cfg(feature = "oxkv")]
+        cached_bench::page_fetch(&rt, c, n);
     }
 
     #[cfg(feature = "btree")]
