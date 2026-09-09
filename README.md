@@ -9,9 +9,9 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 - **Cursor-based pagination** — bidirectional traversal (`Next` / `Prev`) with inclusive range cursors and limit control
 - **Lucene-style query engine** — filter stored JSON documents with a query language supporting field paths, ranges, wildcards, regex, fuzzy matching, and boolean operators
 - **JSON serialization** — extension methods for inserting and retrieving `serde_json::Value` types via JSON, stored as raw bytes
-- **WASM bindings** — thread-safe wrappers in `src/wasm/` expose `BTreeStore` and `OxKvStore` to JavaScript as async promises (`otel` native-only, OXKV snapshot portable across all)
+- **WASM bindings** — thread-safe wrappers in `src/wasm/` expose `BTreeStore`, `OxKvStore`, and `CachedOxKvStore` to JavaScript as async promises (`otel` native-only, OXKV snapshot portable across all)
 - **Extensible backends** — the crate defines three traits (`GetSet`, `Transaction`, `Store`) that any backend can implement; ships with an in-memory B-tree backend (`btree`, test and bench baseline + WASM baseline) and an LSM backend (`oxkv`, native + wasm) generic over `Storage` + `Cache` (S3/GCS/Azure via `oxkv-s3`)
-- **LSM backend** — portable LSM over pluggable `Storage` (in-memory `MemStorage` everywhere including browsers; S3/GCS/Azure/local via [`object_store`](https://docs.rs/object_store) with `oxkv-s3`, OPFS origin-private storage in browsers): epoch-fenced single writer, WAL with RPO=0, `MemTable` + SST (L0/L1) with Bloom + CRC, blob overflow for large values, scan-resistant `S3-FIFO` SST cache (trait, `moka` optional), WAL replay, GC and L0→L1 compaction, group-committed batched writes, lazy pull-merge range scans, read-only `OxKvReader` followers
+- **LSM backend** — portable LSM over pluggable `Storage` (in-memory `MemStorage` everywhere including browsers; S3/GCS/Azure/local via [`object_store`](https://docs.rs/object_store) with `oxkv-s3`, OPFS origin-private storage in browsers): epoch-fenced single writer, WAL with RPO=0, `MemTable` + SST (L0/L1) with Bloom + CRC, blob overflow for large values, scan-resistant `S3-FIFO` SST cache (trait, `moka` optional), WAL replay, GC and L0→L1 compaction, group-committed batched writes, lazy pull-merge range scans, read-only `OxKvReader` followers, write-through `CachedOxKvStore` RAM mirror
 - **Validation hooks** — reject invalid writes before they reach storage, scoped to a single key, a key prefix, or the whole store
 - **Reactivity** — watch keys or prefixes and observe every committed change via channels or observer traits; rolled-back transactions never notify
 - **Save/Load** — serialize the entire store contents into a single contiguous `Uint8Array` and reconstruct it from binary data
@@ -34,6 +34,7 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 | [`store::OtelStore`] | Feature-gated decorator adding OpenTelemetry traces and metrics to any store |
 | [`store::OxKvStore`] / [`store::OxKvStoreBuilder`] / [`store::OxKvTx`] | Feature-gated (`oxkv`, native + wasm) LSM generic over `Storage` + `Cache` (in-memory `MemStorage`; S3 via `oxkv-s3`); single-writer epoch fencing, WAL + SST + blob overflow |
 | [`store::OxKvReader`] / [`store::OxKvRoTx`] | Feature-gated (`oxkv`, native + wasm) read-only follower sharing the `Store` trait — opens without epoch CAS, follows writer WALs, writes rejected, empty-tx commit is a no-op |
+| [`store::CachedOxKvStore`] / [`store::CachedTx`] | Feature-gated (`oxkv`, native + wasm) write-through RAM mirror sharing the `Store` trait — zero-I/O reads, WAL durability, TTL-checked reads, `refresh`/`check_stale` catch-up, fencing poisons until refresh |
 | [`store::StoreError::Fenced`] | Terminal fencing error — another owner acquired the epoch via `ownership.json` CAS |
 | [`store::StoreError::CasConflict`] | Conditional-write precondition failed — someone else won the CAS race; retryable unless fencing says otherwise |
 
@@ -503,9 +504,43 @@ takeover (new epoch) needs no reader restart, and a scan racing a
 compaction reloads the manifest and retries once instead of failing on the
 deleted file.
 
+### RAM mirror
+
+When RAM is plentiful, `CachedOxKvStore` pairs the durable core with a
+`BTreeStore` holding every resolved key: reads serve from memory while
+writes keep WAL durability. Plain reads are always zero-I/O; the `*_checked`
+variants revalidate against a staleness bound first. Catch-up derives from
+the manifest version plus SST set (WAL appends replay incrementally, a new
+ownership epoch or a missed flush window rebuilds), and `ownership.json` is
+read only on suspected takeover. A write rejected with `Fenced` poisons the
+mirror — reads fail until `refresh` adopts the new owner. Both store types
+are `Clone`, so the mirror composes with `HookStore` and `OtelStore`.
+
+```rust
+# #[tokio::main(flavor = "current_thread")]
+# async fn main() {
+use std::sync::Arc;
+use oxkv::{GetSet, MemStorage, ObjectPath, OxKvStore};
+
+let cached = OxKvStore::builder()
+    .with_store(Arc::new(MemStorage::new()))
+    .with_prefix(ObjectPath::from("mirror-doc"))
+    .skip_probe(true)
+    .build_cached()
+    .await
+    .unwrap();
+cached.put_bytes("hello", b"world").await.unwrap();
+assert_eq!(
+    cached.get_bytes("hello").await.unwrap().as_deref(),
+    Some(b"world".as_slice())
+);
+assert!(!cached.check_stale().await.unwrap());
+# }
+```
+
 ## WASM Bindings
 
-The WASM module in `src/wasm/` provides thread-safe wrappers for `BTreeStore` and `OxKvStore` (in-memory LSM), exposing every store method to JavaScript as async promises. Snapshots are byte-identical across backends, so bytes saved anywhere restore anywhere.
+The WASM module in `src/wasm/` provides thread-safe wrappers for `BTreeStore`, `OxKvStore` (in-memory LSM), and `CachedOxKvStore` (write-through RAM mirror), exposing every store method to JavaScript as async promises. Snapshots are byte-identical across backends, so bytes saved anywhere restore anywhere.
 
 ### Persistent browser storage (OPFS)
 
@@ -524,6 +559,24 @@ console.log(await reopened.get("user1")); // { name: "Ada" }
 ```
 
 Main-thread only (async OPFS handles); cross-tab races resolve last-writer-wins, since OPFS offers no conditional-write primitive on the main thread.
+
+### Cached reads in the browser
+
+`CachedOxKvStore` mirrors every key in memory with the same API plus
+staleness knobs — pass a TTL in milliseconds at creation, then poll or
+catch up when another tab may have taken the epoch:
+
+```js
+import init, { CachedOxKvStore } from "./pkg/oxkv.js";
+
+await init();
+const hot = await CachedOxKvStore.create("my-app", 1000);
+await hot.set("user1", { name: "Ada" });
+
+if (await hot.checkStale()) {
+  await hot.refresh();
+}
+```
 
 Build for WebAssembly:
 
