@@ -583,7 +583,10 @@ cargo bench --bench query_bench query_match/regex    # one query kind, both corp
 feature; `query_match/{kind}/{n}docs` evaluates a pre-parsed query over a
 generated corpus of 1,000 or 100,000 JSON documents.
 
-The filter is a plain substring match on benchmark names. Results land in
+The filter is a plain substring match on benchmark names. Always run through
+`cargo bench` (which passes `--bench` and selects measurement mode): invoking
+the compiled binary directly only smoke-tests each routine once without
+recording stats. Results land in
 `target/criterion/` as HTML reports; re-running a filter compares against the
 previous run and flags regressions/improvements automatically. For A/B work
 across commits, save a named baseline on the base commit and compare the

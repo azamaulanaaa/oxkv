@@ -13,6 +13,10 @@
 //! `cargo bench -- seq_insert`, or tune wall-clock with criterion's standard
 //! flags, e.g. `cargo bench -- --sample-count 10 --measurement-time 5`.
 //!
+//! Always run through `cargo bench`: it passes `--bench`, which selects
+//! measurement mode. Invoking the compiled binary directly runs each routine
+//! exactly once as a smoke test (criterion test mode) and records nothing.
+//!
 //! Workloads:
 //! - `seq_insert` — sequential insertion of every key (the dominant write path)
 //! - `random_get` — point reads in a prime-stride permutation order
