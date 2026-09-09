@@ -48,6 +48,35 @@ const DEFAULT_STALE_TTL: Duration = Duration::from_secs(1);
 /// own write, so any bound comfortably above zero hits without I/O.
 const CACHE_PEEK_TTL: Duration = Duration::from_secs(3600);
 
+/// How the mirror fills with the durable key set.
+///
+/// The default is [`WarmMode::Eager`]: `open` returns only after every key
+/// is mirrored. The other modes return immediately and converge later —
+/// pick them when startup latency matters more than instant full speed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WarmMode {
+    /// Scan the whole store during `open` before serving reads.
+    ///
+    /// Slowest start, fastest steady state: every read after `open` is
+    /// zero-I/O. Best when RAM comfortably holds the dataset.
+    #[default]
+    Eager,
+    /// Return immediately and converge via an explicitly driven scan.
+    ///
+    /// Reads fall through to the durable core until the scan completes;
+    /// drive it with [`warm`](CachedOxKvStore::warm) or
+    /// [`warm_step`](CachedOxKvStore::warm_step) from any task or timer.
+    /// Best when startup must stay instant but the full set fits in RAM.
+    Background,
+    /// Return immediately and converge key-by-key on read misses.
+    ///
+    /// No scan ever runs unless [`warm`](CachedOxKvStore::warm) is called:
+    /// each miss fetches from the core and fills the mirror, so hot keys
+    /// arrive first and untouched keys cost no RAM. Best when the dataset
+    /// exceeds RAM or access is sparse.
+    Lazy,
+}
+
 /// Durability-first view of one mirror generation.
 #[derive(Debug)]
 struct CachedState {
@@ -63,6 +92,14 @@ struct CachedState {
     last_check_ms: u64,
     /// Fencing message while the owning writer is superseded.
     poisoned: Option<String>,
+    /// Full dataset mirrored: reads serve from memory alone.
+    warmed: bool,
+    /// Explicitly driven scan in progress.
+    warming: bool,
+    /// Resume cursor for an explicitly driven scan.
+    warm_cursor: Option<String>,
+    /// Keys already scanned by the driven scan, for the final diff.
+    scanned_keys: BTreeSet<String>,
 }
 
 /// Records one manifest generation into `state`.
@@ -120,6 +157,10 @@ pub struct CachedOxKvStore<C = LruCache<String, Arc<SstFile>>> {
     state: Arc<async_lock::Mutex<CachedState>>,
     /// Staleness bound for the `*_checked` reads, in millis.
     ttl_ms: Arc<std::sync::atomic::AtomicU64>,
+    /// Serializes explicitly driven scans against refresh rebuilds.
+    scan_gate: Arc<async_lock::Mutex<()>>,
+    /// Fill policy chosen at open.
+    mode: WarmMode,
 }
 
 impl<C> std::fmt::Debug for CachedOxKvStore<C> {
@@ -141,6 +182,8 @@ where
             mirror: self.mirror.clone(),
             state: Arc::clone(&self.state),
             ttl_ms: Arc::clone(&self.ttl_ms),
+            scan_gate: Arc::clone(&self.scan_gate),
+            mode: self.mode,
         }
     }
 }
@@ -151,28 +194,51 @@ where
 {
     /// Opens a mirror over `inner`, warming every key into memory.
     ///
+    /// Shorthand for [`open_with_mode`](Self::open_with_mode) with
+    /// [`WarmMode::Eager`].
+    ///
     /// # Errors
     ///
     /// Returns a [`StoreError`] when the bulk scan or the manifest load fails.
     pub async fn open(inner: OxKvStore<C>) -> Result<Self> {
-        let mirror = BTreeStore::default();
+        Self::open_with_mode(inner, WarmMode::Eager).await
+    }
+
+    /// Opens a mirror over `inner` with the given fill policy.
+    ///
+    /// Only [`WarmMode::Eager`] warms before returning; the other modes set
+    /// the ownership epoch and return immediately. The mirror still observes
+    /// every write made through this handle from the start in all modes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] when the bulk scan or the manifest load fails.
+    pub async fn open_with_mode(inner: OxKvStore<C>, mode: WarmMode) -> Result<Self> {
+        let epoch = inner.epoch;
         let store = Self {
             inner,
-            mirror,
+            mirror: BTreeStore::default(),
             state: Arc::new(async_lock::Mutex::new(CachedState {
-                epoch: 0,
+                epoch,
                 version: 0,
                 sst_ids: BTreeSet::new(),
                 replayed: BTreeSet::new(),
                 last_check_ms: 0,
                 poisoned: None,
+                warmed: false,
+                warming: false,
+                warm_cursor: None,
+                scanned_keys: BTreeSet::new(),
             })),
             ttl_ms: Arc::new(std::sync::atomic::AtomicU64::new(
                 u64::try_from(DEFAULT_STALE_TTL.as_millis()).unwrap_or(u64::MAX),
             )),
+            scan_gate: Arc::new(async_lock::Mutex::new(())),
+            mode,
         };
-        store.rebuild().await?;
-        store.state.lock().await.epoch = store.inner.epoch;
+        if mode == WarmMode::Eager {
+            store.warm().await?;
+        }
         Ok(store)
     }
 
@@ -188,6 +254,12 @@ where
             std::sync::atomic::Ordering::Relaxed,
         );
         self
+    }
+
+    /// Returns the fill policy chosen at open.
+    #[must_use]
+    pub fn warm_mode(&self) -> WarmMode {
+        self.mode
     }
 
     /// Returns the durable core for `flush`, `compact`, and `gc_wal`.
@@ -335,7 +407,7 @@ where
         let owner = read_ownership(Arc::clone(&self.inner.inner), &self.inner.prefix).await?;
         let owner_epoch = owner.map_or(known.0, |record| record.epoch);
         if owner_epoch != known.0 || sst_ids(&manifest) != known.2 {
-            let applied = self.rebuild().await?;
+            let applied = self.warm().await?;
             let mut state = self.state.lock().await;
             state.epoch = owner_epoch;
             state.version = manifest.version;
@@ -388,7 +460,75 @@ where
     /// Listed WAL files overlay the scan newest-wins: the scan only sees
     /// SSTs plus the local `MemTable`, so unflushed generations from another
     /// owner would otherwise be missed.
-    async fn rebuild(&self) -> Result<usize> {
+    /// Reports whether the full dataset is mirrored.
+    ///
+    /// Always true for [`WarmMode::Eager`] after `open`; for the other modes
+    /// it turns true once [`warm`](Self::warm) or enough
+    /// [`warm_step`](Self::warm_step) calls complete the scan, or a
+    /// [`refresh`](Self::refresh) rebuilds. Until then reads fall through to
+    /// the durable core on mirror misses.
+    pub async fn is_warmed(&self) -> bool {
+        self.state.lock().await.warmed
+    }
+
+    /// Scans the whole store into the mirror, however many pages it takes.
+    ///
+    /// Converges [`WarmMode::Background`] and [`WarmMode::Lazy`] handles to
+    /// the eager steady state, and re-converges any handle after a missed
+    /// generation. Returns the number of key records applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] when the manifest, a WAL file, or the scan
+    /// fails.
+    pub async fn warm(&self) -> Result<usize> {
+        let _gate = self.scan_gate.lock().await;
+        {
+            let mut state = self.state.lock().await;
+            state.warmed = false;
+            state.warming = false;
+            state.warm_cursor = None;
+            state.scanned_keys.clear();
+        }
+        let mut applied = 0usize;
+        loop {
+            let (done, step_applied) = self.warm_pages(u32::MAX).await?;
+            applied += step_applied;
+            if done {
+                break;
+            }
+        }
+        Ok(applied)
+    }
+
+    /// Advances an explicitly driven scan by up to `pages` SST pages.
+    ///
+    /// Drive this from any task or timer to converge a
+    /// [`WarmMode::Background`] handle without blocking `open`: each call
+    /// resumes where the previous one stopped, and the final call overlays
+    /// the listed WAL files, diffs deletions, and marks the mirror warmed.
+    /// Returns `true` once the full dataset is mirrored. Concurrent drivers
+    /// serialize on an internal gate, so double-driving only wastes work.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] when the manifest, a WAL file, or the scan
+    /// fails.
+    pub async fn warm_step(&self, pages: u32) -> Result<bool> {
+        let _gate = self.scan_gate.lock().await;
+        let (done, _) = self.warm_pages(pages.max(1)).await?;
+        Ok(done)
+    }
+
+    /// Scans up to `max_pages` SST pages into the mirror.
+    ///
+    /// Returns whether the scan exhausted the store plus the records applied
+    /// by this call. The final call finishes the generation: WAL overlay,
+    /// deletion diff, and sync-state publish.
+    async fn warm_pages(&self, max_pages: u32) -> Result<(bool, usize)> {
+        if self.state.lock().await.warmed {
+            return Ok((true, 0));
+        }
         let (manifest, _) = load_manifest(
             Arc::clone(&self.inner.inner),
             &self.inner.prefix,
@@ -397,29 +537,48 @@ where
             Duration::from_secs(0),
         )
         .await?;
-        let mut scanned: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-        let mut cursor: Option<String> = None;
+        let mut applied = 0usize;
+        let mut pages = 0u32;
         loop {
+            if pages >= max_pages {
+                return Ok((false, applied));
+            }
+            let cursor = self.state.lock().await.warm_cursor.clone();
             let batch = self
                 .inner
                 .gets_bytes(Some(SCAN_BATCH), Direction::Next, (cursor.clone(), None))
                 .await?;
             if batch.is_empty() {
-                break;
+                self.finish_warm(&manifest).await?;
+                return Ok((true, applied));
             }
             let last = batch.last().map(|kv| kv.key.clone());
             let short = batch.len() < SCAN_BATCH as usize;
+            let mut state = self.state.lock().await;
             for kv in batch {
                 if cursor.as_deref() == Some(kv.key.as_str()) {
                     continue;
                 }
-                scanned.insert(kv.key, kv.value);
+                state.scanned_keys.insert(kv.key.clone());
+                drop(state);
+                self.mirror.put_bytes(&kv.key, &kv.value).await?;
+                applied += 1;
+                state = self.state.lock().await;
             }
-            cursor = last;
+            state.warm_cursor = last;
+            state.warming = true;
+            drop(state);
+            pages += 1;
             if short {
-                break;
+                self.finish_warm(&manifest).await?;
+                return Ok((true, applied));
             }
         }
+    }
+
+    /// Overlays listed WAL files, diffs deletions, and publishes the sync
+    /// state, completing one warming generation.
+    async fn finish_warm(&self, manifest: &Manifest) -> Result<()> {
         for id in &manifest.wal {
             let path = ObjectPath::from(id.as_str());
             let bytes = match self.inner.inner.get(&path).await {
@@ -428,31 +587,34 @@ where
                 Err(e) => return Err(e),
             };
             for (key, value) in decode_wal_records(&bytes) {
-                match value {
-                    Some(raw) => {
-                        scanned.insert(key, raw);
-                    }
-                    None => {
-                        scanned.remove(&key);
-                    }
+                if let Some(raw) = value {
+                    self.mirror.put_bytes(&key, &raw).await?;
+                    self.state.lock().await.scanned_keys.insert(key);
+                } else {
+                    self.mirror.delete(&key).await?;
+                    self.state.lock().await.scanned_keys.remove(&key);
                 }
             }
         }
+        let scanned = {
+            let mut state = self.state.lock().await;
+            std::mem::take(&mut state.scanned_keys)
+        };
         let current = self
             .mirror
             .gets_bytes(None, Direction::Next, (None, None))
             .await?;
         for kv in &current {
-            if !scanned.contains_key(&kv.key) {
+            if !scanned.contains(&kv.key) {
                 self.mirror.delete(&kv.key).await?;
             }
         }
-        for (key, value) in &scanned {
-            self.mirror.put_bytes(key, value).await?;
-        }
         let mut state = self.state.lock().await;
-        observe_manifest(&mut state, &manifest);
-        Ok(scanned.len())
+        observe_manifest(&mut state, manifest);
+        state.warm_cursor = None;
+        state.warming = false;
+        state.warmed = true;
+        Ok(())
     }
 
     /// Reads `key` from memory, revalidating first when the bound elapsed.
@@ -498,12 +660,28 @@ where
 {
     async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
         self.reject_if_poisoned().await?;
-        self.mirror.get_bytes(key).await
+        if let Some(value) = self.mirror.get_bytes(key).await? {
+            return Ok(Some(value));
+        }
+        if self.state.lock().await.warmed {
+            return Ok(None);
+        }
+        let value = self.inner.get_bytes(key).await?;
+        if let Some(raw) = &value {
+            self.mirror.put_bytes(key, raw).await?;
+        }
+        Ok(value)
     }
 
     async fn has(&self, key: &str) -> Result<bool> {
         self.reject_if_poisoned().await?;
-        self.mirror.has(key).await
+        if self.mirror.has(key).await? {
+            return Ok(true);
+        }
+        if self.state.lock().await.warmed {
+            return Ok(false);
+        }
+        self.inner.has(key).await
     }
 
     async fn delete(&self, key: &str) -> Result<bool> {
@@ -553,7 +731,10 @@ where
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
         self.reject_if_poisoned().await?;
-        self.mirror.gets_bytes(limit, direction, cursor).await
+        if self.state.lock().await.warmed {
+            return self.mirror.gets_bytes(limit, direction, cursor).await;
+        }
+        self.inner.gets_bytes(limit, direction, cursor).await
     }
 }
 
@@ -575,11 +756,46 @@ where
     }
 }
 
+/// Merges staged transaction records over base rows in `direction` order.
+///
+/// Staged deletes suppress their keys; staged sets replace or extend them.
+/// The result is truncated to `limit` after sorting, so callers pass
+/// unbounded base scans and pay only the merge.
+fn merge_staged(
+    mut rows: Vec<KeyValue>,
+    staged: &BTreeMap<String, Option<Vec<u8>>>,
+    direction: Direction,
+    cursor: &(Option<String>, Option<String>),
+    limit: Option<u32>,
+) -> Vec<KeyValue> {
+    for (key, value) in staged {
+        if !in_window(key, direction, cursor) {
+            continue;
+        }
+        rows.retain(|kv| kv.key != *key);
+        if let Some(raw) = value {
+            rows.push(KeyValue {
+                key: key.clone(),
+                value: raw.clone(),
+            });
+        }
+    }
+    match direction {
+        Direction::Next => rows.sort_by(|a, b| a.key.cmp(&b.key)),
+        Direction::Prev => rows.sort_by(|a, b| b.key.cmp(&a.key)),
+    }
+    if let Some(bound) = limit {
+        rows.truncate(bound as usize);
+    }
+    rows
+}
+
 /// Transaction over a [`CachedOxKvStore`].
 ///
 /// Reads merge the staged overlay with the mirror, so no storage I/O happens
-/// before commit; the overlay lands in memory only after the durable commit
-/// succeeds.
+/// before commit once warmed; before that they fall through to the durable
+/// transaction without filling the shared mirror. The overlay lands in memory
+/// only after the durable commit succeeds.
 pub struct CachedTx<C = LruCache<String, Arc<SstFile>>> {
     tx: OxKvTx<C>,
     mirror: BTreeStore,
@@ -603,14 +819,26 @@ where
         if let Some(staged) = lock_ignore_poison(&self.staged).get(key) {
             return Ok(staged.clone());
         }
-        self.mirror.get_bytes(key).await
+        if let Some(value) = self.mirror.get_bytes(key).await? {
+            return Ok(Some(value));
+        }
+        if self.state.lock().await.warmed {
+            return Ok(None);
+        }
+        self.tx.get_bytes(key).await
     }
 
     async fn has(&self, key: &str) -> Result<bool> {
         if let Some(staged) = lock_ignore_poison(&self.staged).get(key) {
             return Ok(staged.is_some());
         }
-        self.mirror.has(key).await
+        if self.mirror.has(key).await? {
+            return Ok(true);
+        }
+        if self.state.lock().await.warmed {
+            return Ok(false);
+        }
+        self.tx.has(key).await
     }
 
     async fn delete(&self, key: &str) -> Result<bool> {
@@ -643,31 +871,16 @@ where
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
-        let mut rows = self
-            .mirror
-            .gets_bytes(None, direction, cursor.clone())
-            .await?;
         let staged = lock_ignore_poison(&self.staged).clone();
-        for (key, value) in &staged {
-            if !in_window(key, direction, &cursor) {
-                continue;
-            }
-            rows.retain(|kv| kv.key != *key);
-            if let Some(raw) = value {
-                rows.push(KeyValue {
-                    key: key.clone(),
-                    value: raw.clone(),
-                });
-            }
-        }
-        match direction {
-            Direction::Next => rows.sort_by(|a, b| a.key.cmp(&b.key)),
-            Direction::Prev => rows.sort_by(|a, b| b.key.cmp(&a.key)),
-        }
-        if let Some(bound) = limit {
-            rows.truncate(bound as usize);
-        }
-        Ok(rows)
+        let warmed = self.state.lock().await.warmed;
+        let rows = if warmed {
+            self.mirror
+                .gets_bytes(None, direction, cursor.clone())
+                .await?
+        } else {
+            self.tx.gets_bytes(None, direction, cursor.clone()).await?
+        };
+        Ok(merge_staged(rows, &staged, direction, &cursor, limit))
     }
 }
 
@@ -958,6 +1171,114 @@ mod tests {
         );
         let scoped = HookStore::new(cached).with_validator(RequireJson);
         let _ = scoped.watch_all();
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn eager_opens_fully_warmed() {
+        let (writer, _) = writer("cached-eager").await;
+        writer.put_bytes("a", b"1").await.expect("put");
+        let cached = CachedOxKvStore::open_with_mode(writer, WarmMode::Eager)
+            .await
+            .expect("open");
+        assert!(cached.is_warmed().await);
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn lazy_falls_through_and_fills_on_miss() {
+        let (writer, _) = writer("cached-lazy").await;
+        let cached = CachedOxKvStore::open_with_mode(writer, WarmMode::Lazy)
+            .await
+            .expect("open");
+        assert!(!cached.is_warmed().await);
+        cached.put_bytes("hot", b"1").await.expect("put");
+        assert_eq!(
+            cached.get_bytes("hot").await.expect("get"),
+            Some(b"1".to_vec())
+        );
+        cached
+            .inner()
+            .put_bytes("cold", b"2")
+            .await
+            .expect("direct put");
+        assert_eq!(
+            cached.get_bytes("cold").await.expect("fall through"),
+            Some(b"2".to_vec())
+        );
+        assert_eq!(
+            cached.inner().get_bytes("cold").await.expect("oracle"),
+            cached.get_bytes("cold").await.expect("filled"),
+        );
+        let rows = cached
+            .gets_bytes(None, Direction::Next, (None, None))
+            .await
+            .expect("scan falls through");
+        assert_eq!(rows.len(), 2);
+        assert!(!cached.is_warmed().await);
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn background_steps_converge_to_warmed() {
+        let (writer, _) = writer("cached-background").await;
+        for i in 0..10 {
+            writer
+                .put_bytes(&format!("k{i:02}"), b"v")
+                .await
+                .expect("put");
+        }
+        let cached = CachedOxKvStore::open_with_mode(writer, WarmMode::Background)
+            .await
+            .expect("open");
+        assert!(!cached.is_warmed().await);
+        assert!(cached.warm_step(1).await.expect("step"));
+        assert!(cached.is_warmed().await);
+        let rows = cached
+            .gets_bytes(None, Direction::Next, (None, None))
+            .await
+            .expect("scan");
+        assert_eq!(rows.len(), 10);
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn warm_converges_lazy_handle() {
+        let (writer, _) = writer("cached-lazy-warm").await;
+        writer.put_bytes("a", b"1").await.expect("put");
+        let cached = CachedOxKvStore::open_with_mode(writer, WarmMode::Lazy)
+            .await
+            .expect("open");
+        let applied = cached.warm().await.expect("warm");
+        assert!(applied >= 1);
+        assert!(cached.is_warmed().await);
+        assert!(!cached.check_stale().await.expect("fresh"));
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn tx_reads_fall_through_before_warmed() {
+        let (writer, _) = writer("cached-tx-cold").await;
+        let cached = CachedOxKvStore::open_with_mode(writer, WarmMode::Lazy)
+            .await
+            .expect("open");
+        cached.put_bytes("a", b"1").await.expect("put");
+        cached
+            .inner()
+            .put_bytes("b", b"2")
+            .await
+            .expect("direct put");
+        let tx = cached.begin_tx().expect("tx");
+        assert_eq!(
+            tx.get_bytes("b").await.expect("fall through"),
+            Some(b"2".to_vec())
+        );
+        let rows = tx
+            .gets_bytes(None, Direction::Next, (None, None))
+            .await
+            .expect("scan");
+        assert_eq!(rows.len(), 2);
+        tx.rollback().await.expect("rollback");
     }
 
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]

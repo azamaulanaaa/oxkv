@@ -19,7 +19,7 @@ mod tx;
 mod wal;
 
 pub(crate) use blob::{get_blob, try_decode_blob_pointer};
-pub use cached::{CachedOxKvStore, CachedTx};
+pub use cached::{CachedOxKvStore, CachedTx, WarmMode};
 pub(crate) use manifest::{Manifest, ManifestCache, load_manifest};
 pub(crate) use ownership::read_ownership;
 pub(crate) use read::{ReadCtx, filter_rows, is_not_found, point_lookup, range_lookup};

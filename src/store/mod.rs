@@ -45,6 +45,7 @@ pub use cache::{Cache, CacheStats, LruCache, S3FifoCache};
 #[cfg(feature = "oxkv")]
 pub use lsm::{
     CachedOxKvStore, CachedTx, OxKvReader, OxKvRoTx, OxKvStore, OxKvStoreBuilder, OxKvTx, SstFile,
+    WarmMode,
 };
 #[cfg(all(feature = "oxkv", target_arch = "wasm32"))]
 pub use storage::OpfsStorage;
