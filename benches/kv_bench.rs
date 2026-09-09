@@ -25,6 +25,9 @@
 //!   (staging happens in untimed setup, so the number measures durability cost)
 //! - `seq_delete` — deletion of every key from a freshly populated store
 //! - `point_update` — in-place updates of a few keys inside a large store
+//! - `write_stage` / `write_wal_put` / `write_flush_check` — write-path
+//!   breakdown (oxkv only): staged-only, raw storage, and flush-check costs
+//!   isolating the stages of a durable write
 //! - `concurrent_write` — 8 threads x 128 blind writes against one shared
 //!   store on a multi-thread runtime (oxkv only): exercises the write gate
 //! - `zipf_get` — end-to-end skewed reads over 50 forced SSTs with a 320 KiB cache
@@ -350,7 +353,7 @@ fn point_update<S>(
 mod oxkv_bench {
     use std::sync::Arc;
 
-    use oxkv::{LruCache, MemStorage, ObjectPath, SstFile};
+    use oxkv::{LruCache, MemStorage, ObjectPath, PutMode, SstFile, Storage};
 
     use super::*;
 
@@ -555,6 +558,88 @@ mod oxkv_bench {
             });
         });
         group.finish();
+    }
+
+    /// Staged-only writes: `stage_set` touches `MemTable` plus the WAL buffer
+    /// and performs no I/O, isolating the in-memory floor of the write path.
+    pub(crate) fn write_stage(rt: &tokio::runtime::Runtime, c: &mut Criterion) {
+        const N: usize = 10_000;
+        let mut group = c.benchmark_group("write_stage/oxkv_mem/10000");
+        group.throughput(Throughput::Elements(N as u64));
+        group.bench_function("stage", |b| {
+            b.iter_batched(
+                || rt.block_on(new_oxkv_store()),
+                |s| {
+                    rt.block_on(async {
+                        for i in 0..N {
+                            s.stage_set(&key(i), &PAYLOAD).await;
+                        }
+                        black_box(());
+                    });
+                },
+                BatchSize::PerIteration,
+            );
+        });
+        group.finish();
+    }
+
+    /// Raw storage floor: `MemStorage` conditional PUTs of WAL-sized payloads
+    /// under fresh keys, with no LSM work above, isolating the per-write
+    /// storage cost from ownership, manifest, and maintenance.
+    pub(crate) fn write_wal_put(rt: &tokio::runtime::Runtime, c: &mut Criterion) {
+        const N: usize = 10_000;
+        let mut group = c.benchmark_group("write_wal_put/oxkv_mem/10000");
+        group.throughput(Throughput::Elements(N as u64));
+        group.bench_function("put", |b| {
+            b.iter_batched(
+                MemStorage::new,
+                |store| {
+                    rt.block_on(async {
+                        for i in 0..N {
+                            let path = ObjectPath::from(format!("bench-wal/{i:08}.log"));
+                            store
+                                .put_opts(&path, PAYLOAD.to_vec(), PutMode::Create)
+                                .await
+                                .expect("wal put");
+                        }
+                        black_box(());
+                    });
+                },
+                BatchSize::PerIteration,
+            );
+        });
+        group.finish();
+    }
+
+    /// Non-force flush-check cost over staged `MemTable` sizes: stages `n`
+    /// entries without durability, then times a single `flush_mem_to_sst`
+    /// that must stay `None` (sizes sit far below the 32 MiB threshold),
+    /// isolating the per-write size-estimate scan from everything else.
+    pub(crate) fn write_flush_check(rt: &tokio::runtime::Runtime, c: &mut Criterion) {
+        for &n in &[1024, 4096, 16384] {
+            let mut group = c.benchmark_group(format!("write_flush_check/oxkv_mem/{n}staged"));
+            group.throughput(Throughput::Elements(1));
+            group.bench_function("check", |b| {
+                b.iter_batched(
+                    || {
+                        rt.block_on(async {
+                            let s = new_oxkv_store().await;
+                            for i in 0..n {
+                                s.stage_set(&key(i), &PAYLOAD).await;
+                            }
+                            s
+                        })
+                    },
+                    |s| {
+                        rt.block_on(async {
+                            black_box(s.flush_mem_to_sst().await.expect("flush check"));
+                        });
+                    },
+                    BatchSize::PerIteration,
+                );
+            });
+            group.finish();
+        }
     }
 
     /// Concurrent blind writes from spawned tasks sharing one store.
@@ -791,6 +876,15 @@ fn benchmark(c: &mut Criterion) {
 
     #[cfg(feature = "oxkv")]
     oxkv_bench::zipf_get(&rt, c);
+
+    // Write-path breakdown: isolate mem, storage, and flush-check costs so
+    // full put_bytes latency can be attributed instead of guessed.
+    #[cfg(feature = "oxkv")]
+    {
+        oxkv_bench::write_stage(&rt, c);
+        oxkv_bench::write_wal_put(&rt, c);
+        oxkv_bench::write_flush_check(&rt, c);
+    }
 
     // Threaded writes need a multi-threaded runtime; everything else stays
     // on the single-threaded one so numbers remain comparable.

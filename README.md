@@ -611,6 +611,9 @@ leave your machine:
 | `concurrent_write/oxkv_mem/1024` | 1,024 writes (8 tasks × 128) | blind writes from spawned tasks sharing one store (multi-thread runtime): write-gate + group-commit throughput; store rebuilt per iteration in untimed setup |
 | `zipf_get/oxkv_mem/10000` | 10K keys, 2K reads/iter | end-to-end skewed reads (Zipf 1.07, fixed seed) over the SSTs from 50 forced flushes — background compaction folds those into roughly a dozen larger files, so the 320 KiB cache holds a mid-range fraction. Whole-SST admission with real parse costs: guards the `fetch_sst` wiring (bypass/invalidation regressions collapse this ratio while `cache_zipf` stays green). Hit ratio printed to stderr. |
 | `concurrent_random_get/oxkv_mem/100000` | 100K keys, 10K reads split over 8 tasks | shared-store point reads from spawned tasks (multi-thread runtime, store populated once and reused): read-path scaling while writes serialize |
+| `write_stage/oxkv_mem/10000` | 10K staged writes | staged-only writes (mem + WAL buffer, no durability): in-memory floor of the write path |
+| `write_wal_put/oxkv_mem/10000` | 10K PUTs | raw `MemStorage` conditional PUTs of WAL-sized payloads under fresh keys: per-write storage cost without LSM work above |
+| `write_flush_check/oxkv_mem/{n}staged` | 1K/4K/16K staged entries | one non-force flush check over N staged entries (always `None` below the 32 MiB threshold): size-estimate cost curve; full `put_bytes` ≈ stage + `wal_put` + residual (ownership, manifest, maintenance) |
 
 Cache micro-benchmarks live in [`benches/cache_bench.rs`](benches/cache_bench.rs)
 and isolate the [`Cache`](src/store/cache.rs) trait itself (the end-to-end
