@@ -58,7 +58,7 @@ static SESSION_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 /// threshold never fires), making every write pay O(list) scan + serde.
 /// Crossing this count force-flushes an SST and GCs covered WALs, keeping
 /// per-write manifest cost flat.
-const WAL_MAINTENANCE_COUNT: usize = 1_000;
+const WAL_MAINTENANCE_COUNT: usize = 200;
 
 /// L1 files that trigger a bounding compaction merging the smallest
 /// adjacent pair (keeps the SST list — and every read's scan — short).
@@ -2649,10 +2649,9 @@ mod tests {
             for j in 0..4 {
                 s3.put_bytes(&format!("c{i:03}/k{j}"), b"v").await.unwrap();
             }
-            s3.flush_mem_to_sst_force()
-                .await
-                .expect("sst flush")
-                .expect("some sst");
+            // Tolerate `None`: WAL maintenance may have flushed this round's
+            // mem mid-round once the WAL list hits its threshold.
+            let _ = s3.flush_mem_to_sst_force().await.expect("sst flush");
             s3.compact().await.unwrap();
         }
 
