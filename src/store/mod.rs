@@ -43,7 +43,7 @@ mod storage;
 #[cfg(feature = "oxkv")]
 pub use cache::{Cache, CacheStats, LruCache, S3FifoCache};
 #[cfg(feature = "oxkv")]
-pub use lsm::{OxKvStore, OxKvStoreBuilder, OxKvTx, SstFile};
+pub use lsm::{OxKvReader, OxKvRoTx, OxKvStore, OxKvStoreBuilder, OxKvTx, SstFile};
 #[cfg(all(feature = "oxkv", target_arch = "wasm32"))]
 pub use storage::OpfsStorage;
 #[cfg(feature = "oxkv")]

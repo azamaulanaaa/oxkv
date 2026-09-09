@@ -19,6 +19,7 @@ mod blob;
 mod manifest;
 mod ownership;
 mod probe;
+mod reader;
 mod sst;
 
 pub(crate) use blob::{
@@ -27,6 +28,7 @@ pub(crate) use blob::{
 pub(crate) use manifest::{Manifest, ManifestCache, SstMeta, cas_manifest, load_manifest};
 pub(crate) use ownership::{acquire_ownership, cas_backoff, read_ownership, sst_path, wal_path};
 pub(crate) use probe::probe_store;
+pub use reader::{OxKvReader, OxKvRoTx};
 /// Parsed SST file; name it to weigh a custom [`Cache`] (see [`SstFile::size`]).
 pub use sst::SstFile;
 pub(crate) use sst::{DEFAULT_BLOCK_SIZE, TOMBSTONE_VLEN, build_sst};
@@ -1961,6 +1963,40 @@ impl OxKvStoreBuilder {
     pub fn assume_single_writer(mut self, assume: bool) -> Self {
         self.assume_single_writer = assume;
         self
+    }
+
+    /// Builds a read-only view over the prefix without acquiring ownership.
+    ///
+    /// Skips the storage probe and the `ownership.json` epoch CAS, so opening
+    /// a reader never fences the current writer. `with_session` and
+    /// `assume_single_writer` are ignored; the manifest is always revalidated
+    /// by TTL.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Storage` when no [`Storage`] was configured.
+    pub async fn build_reader(self) -> Result<OxKvReader> {
+        let store = self.inner.ok_or_else(|| {
+            StoreError::Storage("OxKvStore requires a Storage via with_store()".to_string())
+        })?;
+        OxKvReader::open(store, self.prefix).await
+    }
+
+    /// Builds a read-only view with a caller-supplied SST cache.
+    ///
+    /// See [`Self::build_reader`] for the ownership and probe semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Storage` when no [`Storage`] was configured.
+    pub async fn build_reader_with_cache<C>(self, cache: C) -> Result<OxKvReader<C>>
+    where
+        C: Cache<String, Arc<SstFile>>,
+    {
+        let store = self.inner.ok_or_else(|| {
+            StoreError::Storage("OxKvStore requires a Storage via with_store()".to_string())
+        })?;
+        OxKvReader::open_with_cache(store, self.prefix, cache).await
     }
 
     /// Builds the store with the default SST cache (256 MB scan-resistant
