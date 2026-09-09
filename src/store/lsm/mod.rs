@@ -51,6 +51,11 @@ type WalBuffer = Arc<async_lock::Mutex<Vec<(String, Option<Vec<u8>>)>>>;
 /// fencing safety comes from the monotonic epoch, not session uniqueness.
 static SESSION_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+#[must_use]
+fn is_not_found(err: &StoreError) -> bool {
+    matches!(err, StoreError::Storage(msg) if msg.contains("not found"))
+}
+
 /// WAL entries that trigger force-flush + GC maintenance.
 ///
 /// Each write CAS-appends one WAL id to `manifest.json`; without a bound the
@@ -552,10 +557,23 @@ where
 
     /// Reads `key` via `MemTable` → SSTs (newest first) → blob deref.
     ///
+    /// Restarts once against a fresh manifest when an SST or blob read hits
+    /// `not found`: the snapshot may predate a compaction that deleted the file.
+    ///
     /// # Errors
     ///
     /// Returns `StoreError` on I/O or CRC failure.
     pub async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        match self.point_get(key).await {
+            Err(e) if is_not_found(&e) => {
+                self.manifest_cache.lock().await.clear();
+                self.point_get(key).await
+            }
+            other => other,
+        }
+    }
+
+    async fn point_get(&self, key: &str) -> Result<Option<Vec<u8>>> {
         {
             let mem = self.mem.read().await;
             if let Some(val) = mem.get(key) {
@@ -598,10 +616,31 @@ where
 
     /// Range scan merging `MemTable` + SSTs with tombstone suppression and blob deref.
     ///
+    /// Restarts once against a fresh manifest when an SST or blob read hits `not found`.
+    ///
     /// # Errors
     ///
     /// Returns `StoreError` on I/O or CRC failure.
     pub async fn gets_bytes(
+        &self,
+        limit: Option<u32>,
+        direction: Direction,
+        cursor: (Option<String>, Option<String>),
+    ) -> Result<Vec<KeyValue>> {
+        match self
+            .range_scan(limit, direction, (cursor.0.clone(), cursor.1.clone()))
+            .await
+        {
+            Err(e) if is_not_found(&e) => {
+                self.manifest_cache.lock().await.clear();
+                self.range_scan(limit, direction, cursor).await
+            }
+            other => other,
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn range_scan(
         &self,
         limit: Option<u32>,
         direction: Direction,
@@ -1283,6 +1322,179 @@ where
         Ok(sst)
     }
 
+    async fn point_get(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        let staged = lock_ignore_poison(&self.overlay).get(key).cloned();
+        if let Some(v) = staged {
+            return match v {
+                Some(raw) => Ok(Some(self.resolve_value(raw).await?)),
+                None => Ok(None),
+            };
+        }
+        {
+            let mem = self.mem.read().await;
+            if let Some(v) = mem.get(key) {
+                return match v {
+                    Some(raw) => Ok(Some(self.resolve_value(raw.clone()).await?)),
+                    None => Ok(None),
+                };
+            }
+        }
+        let (manifest, _etag) = load_manifest(
+            Arc::clone(&self.inner),
+            &self.prefix,
+            self.epoch,
+            &self.manifest_cache,
+            std::time::Duration::from_secs(1),
+        )
+        .await?;
+        for meta in manifest.sst.iter().rev() {
+            if key < meta.min_key.as_str() || key > meta.max_key.as_str() {
+                continue;
+            }
+            let sst = self.fetch_sst(&meta.id).await?;
+            match sst.get_option(key)? {
+                Some(Some(raw)) => return Ok(Some(self.resolve_value(raw).await?)),
+                Some(None) => return Ok(None),
+                None => {}
+            }
+        }
+        Ok(None)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn range_scan(
+        &self,
+        limit: Option<u32>,
+        direction: Direction,
+        cursor: (Option<String>, Option<String>),
+    ) -> Result<Vec<KeyValue>> {
+        let (scan_start, scan_end) = match direction {
+            Direction::Next => (cursor.0.as_deref(), cursor.1.as_deref()),
+            Direction::Prev => (cursor.1.as_deref(), cursor.0.as_deref()),
+        };
+        if direction == Direction::Prev && cursor.0.is_none() {
+            return Ok(Vec::new());
+        }
+        let overlay_vec: Vec<(String, Option<Vec<u8>>)> = {
+            let overlay_guard = lock_ignore_poison(&self.overlay);
+            if scan_start.is_none() && scan_end.is_none() {
+                overlay_guard
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect()
+            } else {
+                overlay_guard
+                    .iter()
+                    .filter(|(k, _)| {
+                        if let Some(lo) = scan_start
+                            && k.as_str() < lo
+                        {
+                            return false;
+                        }
+                        if let Some(hi) = scan_end
+                            && k.as_str() > hi
+                        {
+                            return false;
+                        }
+                        true
+                    })
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect()
+            }
+        };
+        let mem_rows: Vec<(String, Option<Vec<u8>>)> = {
+            let mem = self.mem.read().await;
+            let mem_vec: Vec<(String, Option<Vec<u8>>)> =
+                if scan_start.is_none() && scan_end.is_none() {
+                    mem.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                } else {
+                    mem.iter()
+                        .filter(|(k, _)| {
+                            if let Some(lo) = scan_start
+                                && k.as_str() < lo
+                            {
+                                return false;
+                            }
+                            if let Some(hi) = scan_end
+                                && k.as_str() > hi
+                            {
+                                return false;
+                            }
+                            true
+                        })
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect()
+                };
+            mem_vec
+        };
+        let (manifest, _etag) = load_manifest(
+            Arc::clone(&self.inner),
+            &self.prefix,
+            self.epoch,
+            &self.manifest_cache,
+            std::time::Duration::from_secs(1),
+        )
+        .await?;
+        if direction == Direction::Next {
+            let mut files: Vec<Arc<SstFile>> = Vec::new();
+            for meta in manifest.sst.iter().rev() {
+                let overlaps = {
+                    let min = meta.min_key.as_str();
+                    let max = meta.max_key.as_str();
+                    let after_lower = scan_start.is_none_or(|s| max >= s);
+                    let before_upper = scan_end.is_none_or(|e| min <= e);
+                    after_lower && before_upper
+                };
+                if !overlaps {
+                    continue;
+                }
+                files.push(self.fetch_sst(&meta.id).await?);
+            }
+            let mut pull: Vec<MergeSource<'_>> = Vec::with_capacity(files.len() + 2);
+            pull.push(MergeSource::Mem(overlay_vec.into_iter()));
+            pull.push(MergeSource::Mem(mem_rows.into_iter()));
+            for file in &files {
+                pull.push(MergeSource::File(file.scan_iter(scan_start, scan_end)));
+            }
+            let merged = pull_merge_next(&mut pull, limit.map(|l| l as usize))?;
+            let mut out = Vec::with_capacity(merged.len());
+            for (key, raw) in merged {
+                out.push(KeyValue {
+                    key,
+                    value: self.resolve_value(raw).await?,
+                });
+            }
+            return Ok(out);
+        }
+        let mut sources = vec![overlay_vec, mem_rows];
+        for meta in manifest.sst.iter().rev() {
+            let overlaps = {
+                let min = meta.min_key.as_str();
+                let max = meta.max_key.as_str();
+                let after_lower = scan_start.is_none_or(|s| max >= s);
+                let before_upper = scan_end.is_none_or(|e| min <= e);
+                after_lower && before_upper
+            };
+            if !overlaps {
+                continue;
+            }
+            let sst = self.read_sst(&meta.id).await?;
+            let scan = sst.scan_with_tombstones(scan_start, scan_end, None)?;
+            let mut resolved: Vec<(String, Option<Vec<u8>>)> = Vec::with_capacity(scan.len());
+            for (key, value) in scan {
+                match value {
+                    Some(raw) => {
+                        let val = self.resolve_value(raw).await?;
+                        resolved.push((key, Some(val)));
+                    }
+                    None => resolved.push((key, None)),
+                }
+            }
+            sources.push(resolved);
+        }
+        Ok(merged_gets_bytes(sources, limit, direction, cursor))
+    }
+
     /// Store view sharing all mutable state, for running maintenance
     /// (SST flush, GC, compaction) from tx-only workloads.
     ///
@@ -1471,44 +1683,13 @@ where
     C: Cache<String, Arc<SstFile>>,
 {
     async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        let staged = lock_ignore_poison(&self.overlay).get(key).cloned();
-        if let Some(v) = staged {
-            return match v {
-                Some(raw) => Ok(Some(self.resolve_value(raw).await?)),
-                None => Ok(None),
-            };
-        }
-        // Check shared MemTable
-        {
-            let mem = self.mem.read().await;
-            if let Some(v) = mem.get(key) {
-                return match v {
-                    Some(raw) => Ok(Some(self.resolve_value(raw.clone()).await?)),
-                    None => Ok(None),
-                };
+        match self.point_get(key).await {
+            Err(e) if is_not_found(&e) => {
+                self.manifest_cache.lock().await.clear();
+                self.point_get(key).await
             }
+            other => other,
         }
-        // Scan SSTs
-        let (manifest, _etag) = load_manifest(
-            Arc::clone(&self.inner),
-            &self.prefix,
-            self.epoch,
-            &self.manifest_cache,
-            std::time::Duration::from_secs(1),
-        )
-        .await?;
-        for meta in manifest.sst.iter().rev() {
-            if key < meta.min_key.as_str() || key > meta.max_key.as_str() {
-                continue;
-            }
-            let sst = self.fetch_sst(&meta.id).await?;
-            match sst.get_option(key)? {
-                Some(Some(raw)) => return Ok(Some(self.resolve_value(raw).await?)),
-                Some(None) => return Ok(None),
-                None => {}
-            }
-        }
-        Ok(None)
     }
 
     async fn has(&self, key: &str) -> Result<bool> {
@@ -1540,140 +1721,16 @@ where
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
-        let (scan_start, scan_end) = match direction {
-            Direction::Next => (cursor.0.as_deref(), cursor.1.as_deref()),
-            Direction::Prev => (cursor.1.as_deref(), cursor.0.as_deref()),
-        };
-        if direction == Direction::Prev && cursor.0.is_none() {
-            return Ok(Vec::new());
+        match self
+            .range_scan(limit, direction, (cursor.0.clone(), cursor.1.clone()))
+            .await
+        {
+            Err(e) if is_not_found(&e) => {
+                self.manifest_cache.lock().await.clear();
+                self.range_scan(limit, direction, cursor).await
+            }
+            other => other,
         }
-        // Overlay newest — filter by range to avoid cloning entire overlay
-        // when only a page is needed.
-        // Scoped so the guard is dropped before the awaits below (`std` guards are not `Send`).
-        let overlay_vec: Vec<(String, Option<Vec<u8>>)> = {
-            let overlay_guard = lock_ignore_poison(&self.overlay);
-            if scan_start.is_none() && scan_end.is_none() {
-                overlay_guard
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect()
-            } else {
-                overlay_guard
-                    .iter()
-                    .filter(|(k, _)| {
-                        if let Some(lo) = scan_start
-                            && k.as_str() < lo
-                        {
-                            return false;
-                        }
-                        if let Some(hi) = scan_end
-                            && k.as_str() > hi
-                        {
-                            return false;
-                        }
-                        true
-                    })
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect()
-            }
-        };
-        // Shared MemTable
-        let mem_rows: Vec<(String, Option<Vec<u8>>)> = {
-            let mem = self.mem.read().await;
-            let mem_vec: Vec<(String, Option<Vec<u8>>)> =
-                if scan_start.is_none() && scan_end.is_none() {
-                    mem.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-                } else {
-                    mem.iter()
-                        .filter(|(k, _)| {
-                            if let Some(lo) = scan_start
-                                && k.as_str() < lo
-                            {
-                                return false;
-                            }
-                            if let Some(hi) = scan_end
-                                && k.as_str() > hi
-                            {
-                                return false;
-                            }
-                            true
-                        })
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect()
-                };
-            mem_vec
-        };
-        // SSTs
-        let (manifest, _etag) = load_manifest(
-            Arc::clone(&self.inner),
-            &self.prefix,
-            self.epoch,
-            &self.manifest_cache,
-            std::time::Duration::from_secs(1),
-        )
-        .await?;
-        if direction == Direction::Next {
-            let mut files: Vec<Arc<SstFile>> = Vec::new();
-            for meta in manifest.sst.iter().rev() {
-                let overlaps = {
-                    let min = meta.min_key.as_str();
-                    let max = meta.max_key.as_str();
-                    let after_lower = scan_start.is_none_or(|s| max >= s);
-                    let before_upper = scan_end.is_none_or(|e| min <= e);
-                    after_lower && before_upper
-                };
-                if !overlaps {
-                    continue;
-                }
-                // Admit scans to the SST cache: rotating pages reuse the same
-                // files, and S3-FIFO absorbs one-hit entries without evicting
-                // hot point lookups (zipf_get guards the ratio).
-                files.push(self.fetch_sst(&meta.id).await?);
-            }
-            let mut pull: Vec<MergeSource<'_>> = Vec::with_capacity(files.len() + 2);
-            pull.push(MergeSource::Mem(overlay_vec.into_iter()));
-            pull.push(MergeSource::Mem(mem_rows.into_iter()));
-            for file in &files {
-                pull.push(MergeSource::File(file.scan_iter(scan_start, scan_end)));
-            }
-            let merged = pull_merge_next(&mut pull, limit.map(|l| l as usize))?;
-            let mut out = Vec::with_capacity(merged.len());
-            for (key, raw) in merged {
-                out.push(KeyValue {
-                    key,
-                    value: self.resolve_value(raw).await?,
-                });
-            }
-            return Ok(out);
-        }
-        let mut sources = vec![overlay_vec, mem_rows];
-        for meta in manifest.sst.iter().rev() {
-            let overlaps = {
-                let min = meta.min_key.as_str();
-                let max = meta.max_key.as_str();
-                let after_lower = scan_start.is_none_or(|s| max >= s);
-                let before_upper = scan_end.is_none_or(|e| min <= e);
-                after_lower && before_upper
-            };
-            if !overlaps {
-                continue;
-            }
-            // Bypass the SST cache: scans must not evict hot entries.
-            let sst = self.read_sst(&meta.id).await?;
-            let scan = sst.scan_with_tombstones(scan_start, scan_end, None)?;
-            let mut resolved: Vec<(String, Option<Vec<u8>>)> = Vec::with_capacity(scan.len());
-            for (key, value) in scan {
-                match value {
-                    Some(raw) => {
-                        let val = self.resolve_value(raw).await?;
-                        resolved.push((key, Some(val)));
-                    }
-                    None => resolved.push((key, None)),
-                }
-            }
-            sources.push(resolved);
-        }
-        Ok(merged_gets_bytes(sources, limit, direction, cursor))
     }
 }
 
@@ -2293,6 +2350,96 @@ pub(crate) fn new_in_memory() -> Arc<dyn Storage> {
 mod tests {
     use super::*;
     use crate::store::storage::{GetOptions, GetOutput, MemStorage, ObjectVersion, PutOutcome};
+
+    struct FlakySst {
+        inner: MemStorage,
+        fail_once: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl Storage for FlakySst {
+        async fn get(&self, path: &ObjectPath) -> Result<GetOutput> {
+            let is_sst = std::path::Path::new(path.as_str())
+                .extension()
+                .is_some_and(|ext| ext == "sst");
+            if is_sst
+                && self
+                    .fail_once
+                    .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(StoreError::Storage("not found: injected".to_string()));
+            }
+            self.inner.get(path).await
+        }
+
+        async fn get_opts(&self, path: &ObjectPath, options: GetOptions) -> Result<GetOutput> {
+            self.inner.get_opts(path, options).await
+        }
+
+        async fn put_opts(
+            &self,
+            path: &ObjectPath,
+            payload: Vec<u8>,
+            mode: PutMode,
+        ) -> Result<PutOutcome> {
+            self.inner.put_opts(path, payload, mode).await
+        }
+
+        async fn delete(&self, path: &ObjectPath) -> Result<()> {
+            self.inner.delete(path).await
+        }
+    }
+
+    async fn flaky_writer() -> OxKvStore {
+        let backend: Arc<dyn Storage> = Arc::new(FlakySst {
+            inner: MemStorage::new(),
+            fail_once: std::sync::atomic::AtomicBool::new(true),
+        });
+        let store = OxKvStore::builder()
+            .with_store(backend)
+            .skip_probe(true)
+            .build()
+            .await
+            .expect("build");
+        store.put_bytes("k", b"v").await.expect("put");
+        store
+            .flush_mem_to_sst_force()
+            .await
+            .expect("flush")
+            .expect("sst");
+        store
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn point_get_retries_sst_not_found() {
+        let store = flaky_writer().await;
+        assert_eq!(
+            store.get_bytes("k").await.expect("get"),
+            Some(b"v".to_vec())
+        );
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn scan_prev_retries_sst_not_found() {
+        let store = flaky_writer().await;
+        let rows = store
+            .gets_bytes(Some(10), Direction::Prev, (Some("z".to_string()), None))
+            .await
+            .expect("scan");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].key, "k");
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn tx_point_get_retries_sst_not_found() {
+        let store = flaky_writer().await;
+        let tx = store.begin_tx().expect("tx");
+        assert_eq!(tx.get_bytes("k").await.expect("get"), Some(b"v".to_vec()));
+        tx.rollback().await.expect("rollback");
+    }
 
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
