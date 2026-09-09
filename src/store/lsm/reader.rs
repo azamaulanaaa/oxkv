@@ -601,6 +601,7 @@ mod tests {
     use super::*;
     use crate::store::MemStorage;
     use crate::store::OxKvStore;
+    use crate::store::storage::{GetOptions, GetOutput, PutMode, PutOutcome};
 
     async fn writer() -> (OxKvStore, Arc<dyn Storage>, ObjectPath) {
         let backend: Arc<dyn Storage> = Arc::new(MemStorage::new());
@@ -720,5 +721,122 @@ mod tests {
             Some(b"v".to_vec())
         );
         assert!(reader.overlay.read().await.is_empty());
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn reader_follows_epoch_failover() {
+        let (writer1, backend, prefix) = writer().await;
+        writer1.put_bytes("a", b"1").await.expect("put");
+        let reader = OxKvReader::open(Arc::clone(&backend), prefix.clone())
+            .await
+            .expect("open");
+        let writer2 = OxKvStore::builder()
+            .with_store(Arc::clone(&backend))
+            .with_prefix(prefix)
+            .skip_probe(true)
+            .build()
+            .await
+            .expect("takeover");
+        writer2.put_bytes("b", b"2").await.expect("put");
+        assert_eq!(
+            reader.get_bytes("b").await.expect("get"),
+            Some(b"2".to_vec())
+        );
+        assert_eq!(
+            reader.get_bytes("a").await.expect("get"),
+            Some(b"1".to_vec())
+        );
+        assert!(matches!(
+            writer1.put_bytes("x", b"y").await,
+            Err(StoreError::Fenced(_))
+        ));
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn concurrent_reader_opens() {
+        let (store, backend, prefix) = writer().await;
+        store.put_bytes("k", b"v").await.expect("put");
+        let (r1, r2, r3) = tokio::join!(
+            OxKvReader::open(Arc::clone(&backend), prefix.clone()),
+            OxKvReader::open(Arc::clone(&backend), prefix.clone()),
+            OxKvReader::open(Arc::clone(&backend), prefix.clone()),
+        );
+        for reader in [r1.expect("open"), r2.expect("open"), r3.expect("open")] {
+            assert_eq!(
+                reader.get_bytes("k").await.expect("get"),
+                Some(b"v".to_vec())
+            );
+        }
+        let epoch = read_ownership(Arc::clone(&backend), &prefix)
+            .await
+            .expect("ownership")
+            .expect("present")
+            .epoch;
+        assert_eq!(epoch, 1);
+    }
+
+    struct FlakyOnce {
+        inner: MemStorage,
+        fail: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl Storage for FlakyOnce {
+        async fn get(&self, path: &ObjectPath) -> Result<GetOutput> {
+            let is_sst = std::path::Path::new(path.as_str())
+                .extension()
+                .is_some_and(|ext| ext == "sst");
+            if is_sst && self.fail.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                return Err(StoreError::Storage("not found: injected".to_string()));
+            }
+            self.inner.get(path).await
+        }
+
+        async fn get_opts(&self, path: &ObjectPath, options: GetOptions) -> Result<GetOutput> {
+            self.inner.get_opts(path, options).await
+        }
+
+        async fn put_opts(
+            &self,
+            path: &ObjectPath,
+            payload: Vec<u8>,
+            mode: PutMode,
+        ) -> Result<PutOutcome> {
+            self.inner.put_opts(path, payload, mode).await
+        }
+
+        async fn delete(&self, path: &ObjectPath) -> Result<()> {
+            self.inner.delete(path).await
+        }
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn reader_retries_stale_sst() {
+        let flaky = Arc::new(FlakyOnce {
+            inner: MemStorage::new(),
+            fail: std::sync::atomic::AtomicBool::new(false),
+        });
+        let backend: Arc<dyn Storage> = flaky.clone();
+        let store = OxKvStore::builder()
+            .with_store(Arc::clone(&backend))
+            .with_prefix(ObjectPath::from("flaky"))
+            .skip_probe(true)
+            .build()
+            .await
+            .expect("build");
+        store.put_bytes("k", b"v").await.expect("put");
+        store.flush_mem_to_sst_force().await.expect("flush");
+        store.gc_wal().await.expect("gc");
+        let reader = OxKvReader::open(Arc::clone(&backend), ObjectPath::from("flaky"))
+            .await
+            .expect("open");
+        flaky.fail.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            reader.get_bytes("k").await.expect("get"),
+            Some(b"v".to_vec())
+        );
     }
 }

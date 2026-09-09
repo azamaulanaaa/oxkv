@@ -455,6 +455,53 @@ one manifest CAS, and every entry in the batch shares one fate — all
 succeed or all fail together. `delete` and transaction commits take the
 gate without staging and ride it exclusively.
 
+### Multi-reader
+
+One writer serves many readers via `OxKvReader`, which opens a prefix
+without the storage probe or the `ownership.json` epoch CAS — opening one
+never fences the writer, so concurrent opens are safe. It implements the
+same `Store` trait, with every write rejected at runtime and an empty
+transaction commit succeeding as a no-op.
+
+```rust
+# #[tokio::main(flavor = "current_thread")]
+# async fn main() {
+use std::sync::Arc;
+use oxkv::{GetSet, MemStorage, ObjectPath, OxKvReader, OxKvStore, Storage};
+
+let backend: Arc<dyn Storage> = Arc::new(MemStorage::new());
+let writer = OxKvStore::builder()
+    .with_store(Arc::clone(&backend))
+    .with_prefix(ObjectPath::from("multi-doc"))
+    .build()
+    .await
+    .unwrap();
+writer.put_bytes("hello", b"world").await.unwrap();
+
+let reader = OxKvReader::open(Arc::clone(&backend), ObjectPath::from("multi-doc"))
+    .await
+    .unwrap();
+assert_eq!(
+    reader.get_bytes("hello").await.unwrap().as_deref(),
+    Some(b"world".as_slice())
+);
+// Post-open writes appear on the next read — no reopen, no SST flush needed.
+writer.put_bytes("late", b"data").await.unwrap();
+assert_eq!(
+    reader.get_bytes("late").await.unwrap().as_deref(),
+    Some(b"data".as_slice())
+);
+# }
+```
+
+Freshness follows the manifest: every read revalidates it and replays newly
+listed WAL files, so a write is visible as soon as its manifest CAS lands.
+The replay overlay is bounded to the live WAL window — a fully collected
+list means all records are SST-covered, so the overlay is dropped. A writer
+takeover (new epoch) needs no reader restart, and a scan racing a
+compaction reloads the manifest and retries once instead of failing on the
+deleted file.
+
 ## WASM Bindings
 
 The WASM module in `src/wasm/` provides thread-safe wrappers for `BTreeStore` and `OxKvStore` (in-memory LSM), exposing every store method to JavaScript as async promises. Snapshots are byte-identical across backends, so bytes saved anywhere restore anywhere.
