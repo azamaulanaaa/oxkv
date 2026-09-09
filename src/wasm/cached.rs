@@ -29,6 +29,22 @@ pub struct JsCachedOxKvStore {
 
 #[wasm_bindgen(js_class = CachedOxKvStore)]
 impl JsCachedOxKvStore {
+    /// Parses a fill-policy name into its [`store::WarmMode`].
+    ///
+    /// Accepts `eager`, `background`, and `lazy` (exact lowercase); anything
+    /// else is a [`store::StoreError`] surfaced as a rejection.
+    /// Only used to keep the `create` bodies linear; not exposed to JS.
+    fn parse_warm_mode(name: Option<&str>) -> Result<store::WarmMode, JsValue> {
+        match name {
+            None | Some("eager" | "Eager" | "EAGER") => Ok(store::WarmMode::Eager),
+            Some("background") => Ok(store::WarmMode::Background),
+            Some("lazy") => Ok(store::WarmMode::Lazy),
+            Some(other) => Err(store::StoreError::Other(format!(
+                "unknown warm mode `{other}`: expected eager, background, or lazy"
+            ))
+            .into()),
+        }
+    }
     /// Create a new in-memory cached store (`MemStorage`, probe skipped).
     ///
     /// Acquires ownership and warms every key into memory before resolving;
@@ -47,19 +63,28 @@ impl JsCachedOxKvStore {
             param_description = "Staleness bound for checked reads in milliseconds; defaults to 1000"
         )]
         stale_ttl_ms: Option<u64>,
+        #[wasm_bindgen(
+            param_description = "Fill policy: eager, background, or lazy; defaults to eager"
+        )]
+        warm_mode: Option<String>,
     ) -> Result<JsCachedOxKvStore, JsValue> {
         let prefix = prefix.unwrap_or_else(|| "js-lsm".to_string());
         let backend = std::sync::Arc::new(store::MemStorage::new());
         let ttl = std::time::Duration::from_millis(stale_ttl_ms.unwrap_or(1000));
+        let mode = Self::parse_warm_mode(warm_mode.as_deref())?;
         match store::OxKvStore::builder()
             .with_store(backend)
             .with_prefix(store::ObjectPath::from(prefix))
             .skip_probe(true)
-            .build_cached()
+            .build()
             .await
         {
             Ok(store) => Ok(Self {
-                inner: std::sync::Arc::new(futures::lock::Mutex::new(store.with_stale_ttl(ttl))),
+                inner: std::sync::Arc::new(futures::lock::Mutex::new(
+                    store::CachedOxKvStore::open_with_mode(store, mode)
+                        .await?
+                        .with_stale_ttl(ttl),
+                )),
             }),
             Err(e) => Err(e.into()),
         }
@@ -86,18 +111,27 @@ impl JsCachedOxKvStore {
             param_description = "Staleness bound for checked reads in milliseconds; defaults to 1000"
         )]
         stale_ttl_ms: Option<u64>,
+        #[wasm_bindgen(
+            param_description = "Fill policy: eager, background, or lazy; defaults to eager"
+        )]
+        warm_mode: Option<String>,
     ) -> Result<JsCachedOxKvStore, JsValue> {
         let prefix = prefix.unwrap_or_else(|| "js-lsm".to_string());
         let backend = std::sync::Arc::new(store::OpfsStorage::open().await?);
         let ttl = std::time::Duration::from_millis(stale_ttl_ms.unwrap_or(1000));
+        let mode = Self::parse_warm_mode(warm_mode.as_deref())?;
         match store::OxKvStore::builder()
             .with_store(backend)
             .with_prefix(store::ObjectPath::from(prefix))
-            .build_cached()
+            .build()
             .await
         {
             Ok(store) => Ok(Self {
-                inner: std::sync::Arc::new(futures::lock::Mutex::new(store.with_stale_ttl(ttl))),
+                inner: std::sync::Arc::new(futures::lock::Mutex::new(
+                    store::CachedOxKvStore::open_with_mode(store, mode)
+                        .await?
+                        .with_stale_ttl(ttl),
+                )),
             }),
             Err(e) => Err(e.into()),
         }
@@ -193,6 +227,58 @@ impl JsCachedOxKvStore {
         let store = self.inner.lock().await;
         match store.check_stale().await {
             Ok(stale) => Ok(JsValue::from(stale)),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Reports whether the full dataset is mirrored.
+    ///
+    /// Always true for eagerly opened handles; for background and lazy ones
+    /// it turns true once `warm` or enough `warmStep` calls complete the scan.
+    #[wasm_bindgen(
+        js_name = "isWarmed",
+        return_description = "true once every key is mirrored"
+    )]
+    pub async fn is_warmed(&self) -> bool {
+        let store = self.inner.lock().await;
+        store.is_warmed().await
+    }
+
+    /// Scans the whole store into the mirror, however many pages it takes.
+    ///
+    /// Converges background and lazy handles to the eager steady state.
+    /// # Errors
+    /// * `StoreError` - if the manifest, a WAL file, or the scan fails
+    #[wasm_bindgen(return_description = "Number of key records applied to the mirror")]
+    pub async fn warm(&self) -> Result<JsValue, JsValue> {
+        let store = self.inner.lock().await;
+        match store.warm().await {
+            Ok(applied) => {
+                let count = u32::try_from(applied)
+                    .map_err(|e| store::StoreError::Serialization(e.to_string()))?;
+                Ok(JsValue::from(count))
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Advances an explicitly driven scan by up to `pages` SST pages.
+    ///
+    /// Drive this from a timer to converge a background handle without
+    /// blocking creation; returns true once every key is mirrored.
+    /// # Errors
+    /// * `StoreError` - if the manifest, a WAL file, or the scan fails
+    #[wasm_bindgen(
+        js_name = "warmStep",
+        return_description = "true once every key is mirrored"
+    )]
+    pub async fn warm_step(
+        &self,
+        #[wasm_bindgen(param_description = "Maximum SST pages to scan in this step")] pages: u32,
+    ) -> Result<JsValue, JsValue> {
+        let store = self.inner.lock().await;
+        match store.warm_step(pages).await {
+            Ok(done) => Ok(JsValue::from(done)),
             Err(e) => Err(e.into()),
         }
     }
@@ -821,7 +907,7 @@ mod tests {
     }
 
     async fn new_cached() -> JsCachedOxKvStore {
-        JsCachedOxKvStore::create(None, None)
+        JsCachedOxKvStore::create(None, None, None)
             .await
             .expect("create LSM store")
     }
@@ -832,6 +918,18 @@ mod tests {
         JsCachedOxKvTx {
             inner: std::sync::Arc::new(futures::lock::Mutex::new(Some(tx))),
         }
+    }
+
+    #[wasm_bindgen_test]
+    async fn cached_lazy_warms_on_demand() {
+        let js_store = JsCachedOxKvStore::create(None, None, Some("lazy".to_string()))
+            .await
+            .expect("create lazy store");
+        assert!(!js_store.is_warmed().await);
+        ok(js_store.set_bytes("k", b"v").await);
+        assert_eq!(ok_bytes(js_store.get_bytes("k").await), Some(b"v".to_vec()));
+        assert!(ok(js_store.warm_step(16).await).as_bool().unwrap_or(false));
+        assert!(js_store.is_warmed().await);
     }
 
     #[wasm_bindgen_test]
@@ -911,14 +1009,14 @@ mod tests {
             return;
         }
         let prefix = Some("persist-smoke".to_string());
-        let js_store = JsCachedOxKvStore::create_persistent(prefix.clone(), None)
+        let js_store = JsCachedOxKvStore::create_persistent(prefix.clone(), None, None)
             .await
             .expect("open persistent store");
         ok(js_store.set_bytes("k", b"v").await);
         drop(js_store);
 
         // Reopen on the same prefix: OPFS files (not memory) serve the read.
-        let reopened = JsCachedOxKvStore::create_persistent(prefix, None)
+        let reopened = JsCachedOxKvStore::create_persistent(prefix, None, None)
             .await
             .expect("reopen persistent store");
         assert_eq!(ok_bytes(reopened.get_bytes("k").await), Some(b"v".to_vec()));
