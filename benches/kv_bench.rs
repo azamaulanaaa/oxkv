@@ -501,6 +501,14 @@ mod oxkv_bench {
         group.finish();
     }
 
+    /// In-place updates of a few keys inside a large store.
+    ///
+    /// Setup quiesces maintenance (force-flush, WAL GC, compaction drain) so
+    /// timed iterations measure update cost, not the populate backlog: after
+    /// a large durable populate the store otherwise carries pending L0s and
+    /// foldable L1s, and a single timed op can trip a multi-megabyte merge.
+    /// Steady-state maintenance that timed updates themselves generate is
+    /// still measured; only the setup backlog is drained.
     pub(crate) fn point_update(
         rt: &tokio::runtime::Runtime,
         c: &mut Criterion,
@@ -522,6 +530,15 @@ mod oxkv_bench {
                     rt.block_on(async {
                         let mut s = new_oxkv_store().await;
                         populate(&mut s, &keys).await;
+                        s.flush_mem_to_sst_force().await.expect("quiesce flush");
+                        s.gc_wal().await.expect("quiesce gc");
+                        for _ in 0..64 {
+                            if s.compact().await.expect("quiesce compact").is_none() {
+                                break;
+                            }
+                        }
+                        s.flush_mem_to_sst_force().await.expect("quiesce flush");
+                        s.gc_wal().await.expect("quiesce gc");
                         s
                     })
                 });

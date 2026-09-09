@@ -603,7 +603,7 @@ leave your machine:
 | `seq_delete/{backend}/{n}` | 1K, 100K (cap 100K) | deleting every key from a freshly built store (cap keeps per-iteration rebuilds sane) |
 | `random_get/{backend}/{n}` | 1K, 100K, 1M | scattered reads (prime-stride order); at 1M each iteration samples 10K gets out of a 1M-key store so depth is preserved without 1M GETs per iteration |
 | `page_fetch_100/{backend}/{n}` | 1K, 1M | one paginated range fetch of 100 entries from rotating start cursors |
-| `point_update/{backend}/{n}items_{m}changes` | 1K×{1,10}, 1M×{1,100,1000} | in-place updates of a few keys inside a large store |
+| `point_update/{backend}/{n}items_{m}changes` | 1K×{1,10}, 1M×{1,100,1000} | in-place updates of a few keys inside a large store (oxkv setup quiesced: force-flush, WAL GC, and compaction drain before timing, so iterations measure updates instead of the populate backlog) |
 | `tx_commit_batch_1000/{backend}` | 1K | committing a pre-staged 1,000-write transaction (staging is untimed, so this isolates durability cost) |
 | `concurrent_write/oxkv_mem/1024` | 1,024 writes (8 tasks × 128) | blind writes from spawned tasks sharing one store (multi-thread runtime): write-gate + group-commit throughput; store rebuilt per iteration in untimed setup |
 | `zipf_get/oxkv_mem/10000` | 10K keys, 2K reads/iter | end-to-end skewed reads (Zipf 1.07, fixed seed) over the SSTs from 50 forced flushes — background compaction folds those into roughly a dozen larger files, so the 320 KiB cache holds a mid-range fraction. Whole-SST admission with real parse costs: guards the `fetch_sst` wiring (bypass/invalidation regressions collapse this ratio while `cache_zipf` stays green). Hit ratio printed to stderr. |
