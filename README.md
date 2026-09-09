@@ -255,25 +255,37 @@ locks, so reentrant hook calls can deadlock.
 `save`/`load` materialize the whole snapshot in memory. For large stores,
 stream the same wire format instead:
 
-```rust,ignore
-use futures::{StreamExt, TryStreamExt};
-use oxkv::load_stream;
+```rust
+# #[tokio::main(flavor = "current_thread")]
+# async fn main() {
+use futures::StreamExt;
+use oxkv::{BTreeStore, GetSet, StoreExt, load_stream};
 
+# let store = BTreeStore::default();
+# store.set_bytes("hello", b"world").await.unwrap();
 // Serialize lazily: only one page of entries is held at a time.
 let mut chunks = store.save_stream();
-let mut file = std::fs::File::create("snapshot.oxkv")?;
+let mut bytes = Vec::new();
 while let Some(chunk) = chunks.next().await {
-    file.write_all(&chunk?)?;
+    bytes.extend_from_slice(&chunk.unwrap());
 }
 
 // Restore from any source of byte chunks — boundaries may split anywhere,
 // decoding is incremental and writes are staged in one transaction that is
 // committed only on success. Chunk errors fold into StoreError via Into.
-let file_stream = tokio_util::io::ReaderStream::new(
-    tokio::fs::File::open("snapshot.oxkv").await?,
+let dest = BTreeStore::default();
+let count = load_stream(
+    &dest,
+    futures::stream::iter(vec![Ok::<_, oxkv::StoreError>(bytes)]),
 )
-.map_err(|e| oxkv::StoreError::Other(e.to_string()));
-let count = load_stream(&store, file_stream).await?;
+.await
+.unwrap();
+assert_eq!(count, 1);
+assert_eq!(
+    dest.get_bytes("hello").await.unwrap().as_deref(),
+    Some(b"world".as_slice())
+);
+# }
 ```
 
 Every snapshot starts with an 8-byte header — magic `"OXKV"` plus a
@@ -289,7 +301,7 @@ independently.
 
 Enable the `otel` feature and wrap any backend:
 
-```rust,ignore
+```text
 use oxkv::{BTreeStore, OtelStore};
 
 let store = OtelStore::new(BTreeStore::default());
@@ -300,10 +312,10 @@ let store = OtelStore::new(BTreeStore::default());
 The crate depends on the OpenTelemetry **API** only — no SDK or exporter. Your
 application installs providers globally before the first store operation:
 
-```rust,ignore
-let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
-    .with_batch_exporter(opentelemetry_otlp::SpanExporter::builder().with_tonic().build()?)
-    .build();
+```text
+use opentelemetry_sdk::trace::SdkTracerProvider;
+
+let tracer_provider = SdkTracerProvider::builder().build();
 opentelemetry::global::set_tracer_provider(tracer_provider);
 // same idea for metrics via SdkMeterProvider / set_meter_provider
 ```
@@ -371,7 +383,7 @@ Hit/miss statistics are tracked with atomics shared across clones: `Cache::stats
 
 The cache is generic over the `Cache` trait, so native builds needing sharded concurrency can swap in `moka` (admission-filtered `TinyLFU` + segmented LRU) or a custom implementation via `build_with_cache`:
 
-```rust,ignore
+```text
 use std::sync::Arc;
 use oxkv::{MemStorage, OxKvStore, SstFile};
 

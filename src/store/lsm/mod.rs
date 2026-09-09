@@ -1930,17 +1930,28 @@ impl OxKvStoreBuilder {
     /// `moka::future::Cache` (native-only, `moka` feature), or any custom
     /// [`Cache`] implementation.
     ///
-    /// ```rust,ignore
+    /// ```rust
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() {
+    /// // Live only under `--all-features`: doctests cannot be `cfg`d out
+    /// // wholesale (stripping `main` breaks the build), so the `moka`
+    /// // setup hides inside a feature gate and this compiles to an empty
+    /// // `main` without it.
+    /// # #[cfg(all(feature = "oxkv", feature = "moka"))]
+    /// # {
+    /// # use std::sync::Arc;
+    /// # use oxkv::{MemStorage, OxKvStore, SstFile};
     /// let cache = moka::future::Cache::builder()
     ///     .max_capacity(256 * 1024 * 1024)
-    ///     .weigher(|_: &String, v: &Arc<SstFile>| {
-    ///         u32::try_from(v.size()).unwrap_or(u32::MAX)
-    ///     })
+    ///     .weigher(|_: &String, v: &Arc<SstFile>| u32::try_from(v.size()).unwrap_or(u32::MAX))
     ///     .build();
-    /// let store = OxKvStoreBuilder::new()
+    /// let store = OxKvStore::builder()
     ///     .with_store(Arc::new(MemStorage::new()))
     ///     .build_with_cache(cache)
-    ///     .await?;
+    ///     .await
+    ///     .unwrap();
+    /// # }
+    /// # }
     /// ```
     ///
     /// # Errors

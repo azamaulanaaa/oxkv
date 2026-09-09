@@ -31,7 +31,26 @@
 //! ```
 //!
 //! When no provider is installed (the default), all telemetry calls resolve to
-//! no-op implementations and the decorator is a thin pass-through.
+//! no-op implementations and the decorator is a thin pass-through. Install
+//! real SDK providers to export — this is a live doctest (this module only
+//! exists with the `otel` feature, and `opentelemetry_sdk` is a dev-dependency):
+//!
+//! ```rust
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() {
+//! use opentelemetry_sdk::trace::SdkTracerProvider;
+//! use oxkv::{BTreeStore, GetSet, OtelStore};
+//!
+//! opentelemetry::global::set_tracer_provider(SdkTracerProvider::builder().build());
+//!
+//! let store = OtelStore::new(BTreeStore::default());
+//! store.set_bytes("k", b"v").await.unwrap();
+//! assert_eq!(
+//!     store.get_bytes("k").await.unwrap().as_deref(),
+//!     Some(b"v".as_slice())
+//! );
+//! # }
+//! ```
 //!
 //! # What is recorded
 //!
