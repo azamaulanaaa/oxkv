@@ -672,13 +672,13 @@ wasm-pack test --node
 ## Benchmarking
 
 Criterion benchmarks live in [`benches/kv_bench.rs`](benches/kv_bench.rs) and
-cover `btree_mem` and `oxkv_mem` (LSM over in-memory `MemStorage` with `skip_probe(true)`) at 1K / 100K / 1M scales with a sampling strategy that keeps the full suite in minutes, not hours. `btree` is bench baseline only.
+cover `btree_mem`, `oxkv_mem` (LSM over in-memory `MemStorage` with `skip_probe(true)`), and `cached_mem` (same core via `build_cached`, read shapes only) at 1K / 100K / 1M scales with a sampling strategy that keeps the full suite in minutes, not hours. `btree` is bench baseline only.
 
 ```bash
 cargo bench --bench kv_bench                     # everything (tuned to minutes)
 cargo bench --bench kv_bench 1000                # quick sweep of the 1k groups
 cargo bench --bench kv_bench point_update        # just the changes matrix
-cargo bench --bench kv_bench 1000000items_100    # one specific cell of the matrix
+cargo bench --bench kv_bench random_get/cached_mem/1000/get  # one cached cell
 cargo bench --features oxkv --bench kv_bench       # include OxKv (MemStorage)
 ```
 
@@ -718,8 +718,8 @@ leave your machine:
 | --------- | ------- | ----------- |
 | `seq_insert/{backend}/{n}` | 1K, 100K | building a store from scratch — every key inserted sequentially (`oxkv` via blind `put_bytes` writes) |
 | `seq_delete/{backend}/{n}` | 1K, 100K (cap 100K) | deleting every key from a freshly built store (cap keeps per-iteration rebuilds sane) |
-| `random_get/{backend}/{n}` | 1K, 100K, 1M | scattered reads (prime-stride order); at 1M each iteration samples 10K gets out of a 1M-key store so depth is preserved without 1M GETs per iteration |
-| `page_fetch_100/{backend}/{n}` | 1K, 1M | one paginated range fetch of 100 entries from rotating start cursors |
+| `random_get/{backend}/{n}` | 1K, 100K, 1M | scattered reads (prime-stride order); at 1M each iteration samples 10K gets out of a 1M-key store so depth is preserved without 1M GETs per iteration; `cached_mem` reads serve from the mirror |
+| `page_fetch_100/{backend}/{n}` | 1K, 1M | one paginated range fetch of 100 entries from rotating start cursors; `cached_mem` scans the mirror |
 | `point_update/{backend}/{n}items_{m}changes` | 1K×{1,10}, 1M×{1,100,1000} | in-place updates of a few keys inside a large store (oxkv setup quiesced: force-flush, WAL GC, and compaction drain before timing, so iterations measure updates instead of the populate backlog) |
 | `tx_commit_batch_1000/{backend}` | 1K | committing a pre-staged 1,000-write transaction (staging is untimed, so this isolates durability cost) |
 | `concurrent_write/oxkv_mem/1024` | 1,024 writes (8 tasks × 128) | blind writes from spawned tasks sharing one store (multi-thread runtime): write-gate + group-commit throughput; store rebuilt per iteration in untimed setup |
@@ -746,7 +746,18 @@ Scale strategy (see `benches/kv_bench.rs` header): full-scan writes (`seq_insert
 
 Setup work (populating stores for read/update benchmarks, staging
 transactions) runs in untimed warmup or setup phases, so measured numbers
-count only the operation under test.
+count only the operation under test. `cached_mem` needs no extra warm step:
+the mirror fills synchronously on every write, so populating the store warms
+it. Write groups are not repeated for `cached_mem` — its writes share
+`oxkv_mem`'s durable path plus one B-tree insert each, which the other
+groups already cover.
+
+Indicative read numbers (one machine, release profile) put the mirror next
+to `btree_mem` instead of `oxkv_mem`: at 1K, `random_get` measures ~219 µs
+(4.6 M/s) against 160 µs for btree and 6.7 ms for oxkv, and `page_fetch_100`
+measures ~8.2 µs — on par with btree's 7.8 µs. At 1M depth, `random_get`
+samples 10K gets in ~14 ms (726 K/s) versus ~103 ms for oxkv (~7.5×) and
+~10 ms for btree. Re-run on your own hardware before citing.
 
 ### Runtime notes
 
