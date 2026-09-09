@@ -14,9 +14,46 @@ jobs:
     # Gate: both publish jobs wait for fmt/clippy/test and wasm tests.
     uses: ./.github/workflows/ci.yml
 
+  verify-publish:
+    name: Verify packaging (dry-run)
+    # Dry-run gate: both registries must verify clean before either
+    # real publish runs. If anything fails here, nothing goes live.
+    needs: checks
+    runs-on: ubuntu-latest
+    container:
+      image: rust:1
+    env:
+      CARGO_HOME: /usr/local/cargo
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify crate packaging
+        run: cargo publish --dry-run
+      - name: Add wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ${{ env.CARGO_HOME }}/bin/
+            ${{ env.CARGO_HOME }}/registry/index/
+            ${{ env.CARGO_HOME }}/registry/cache/
+            ${{ env.CARGO_HOME }}/git/db/
+            target/
+          key: ${{ runner.os }}-release-verify-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-release-verify-cargo-
+      - name: Install wasm-pack if missing
+        run: command -v wasm-pack >/dev/null 2>&1 || cargo install wasm-pack --locked
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Verify npm packaging
+        run: |
+          rm -rf pkg && wasm-pack build --target web --release --out-dir pkg
+          npm publish ./pkg --dry-run
+
   publish-crate:
     name: Publish to crates.io
-    needs: checks
+    needs: [checks, verify-publish]
     runs-on: ubuntu-latest
     container:
       image: rust:1
@@ -30,7 +67,8 @@ jobs:
 
   publish-npm:
     name: Publish WASM to npm
-    needs: checks
+    # Gated on the dry-run verification only — runs alongside publish-crate.
+    needs: [checks, verify-publish]
     runs-on: ubuntu-latest
     permissions:
       id-token: write
