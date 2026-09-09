@@ -120,3 +120,10 @@ pedantic = "deny"
 # and made every number meaningless for production.
 [profile.bench]
 inherits = "release"
+
+# docs.rs builds default features only unless told otherwise — that hid
+# every feature-gated item (e.g. OtelStore behind `otel`). Build all
+# features so the full API (minus wasm-only targets) is documented.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
