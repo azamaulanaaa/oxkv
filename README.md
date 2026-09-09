@@ -508,13 +508,22 @@ deleted file.
 
 When RAM is plentiful, `CachedOxKvStore` pairs the durable core with a
 `BTreeStore` holding every resolved key: reads serve from memory while
-writes keep WAL durability. Plain reads are always zero-I/O; the `*_checked`
-variants revalidate against a staleness bound first. Catch-up derives from
-the manifest version plus SST set (WAL appends replay incrementally, a new
-ownership epoch or a missed flush window rebuilds), and `ownership.json` is
-read only on suspected takeover. A write rejected with `Fenced` poisons the
-mirror — reads fail until `refresh` adopts the new owner. Both store types
-are `Clone`, so the mirror composes with `HookStore` and `OtelStore`.
+writes keep WAL durability. Plain reads are always zero-I/O once warmed;
+the `*_checked` variants revalidate against a staleness bound first.
+Catch-up derives from the manifest version plus SST set (WAL appends replay
+incrementally, a new ownership epoch or a missed flush window rebuilds),
+and `ownership.json` is read only on suspected takeover. A write rejected
+with `Fenced` poisons the mirror — reads fail until `refresh` adopts the
+new owner. Both store types are `Clone`, so the mirror composes with
+`HookStore` and `OtelStore`.
+
+How the mirror fills is a `WarmMode` chosen at open (`Eager` by default):
+`Background` returns immediately and converges through explicitly driven
+`warm`/`warm_step` scans (drive them from any task or timer), while `Lazy`
+skips scanning entirely and fills key-by-key on read misses — hot keys
+arrive first and untouched keys cost no RAM. Until warmed, point reads fall
+through to the core with fill and scans delegate wholly, so unwarmed
+handles stay correct; `is_warmed` reports convergence.
 
 ```rust
 # #[tokio::main(flavor = "current_thread")]
@@ -576,6 +585,15 @@ await hot.set("user1", { name: "Ada" });
 if (await hot.checkStale()) {
   await hot.refresh();
 }
+```
+
+Pass `"background"` or `"lazy"` as the third `create` argument for instant
+startup with later convergence (`warm`/`warmStep`, polled via `isWarmed`):
+
+```js
+const warming = await CachedOxKvStore.create("my-app", 1000, "background");
+await warming.set("user1", { name: "Ada" }); // served immediately
+const done = await warming.warmStep(16); // drive from a timer until true
 ```
 
 Build for WebAssembly:
