@@ -10,6 +10,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use super::blob::{encode_blob_pointer, get_blob, is_overflow, put_blob, try_decode_blob_pointer};
+use super::cached::CachedOxKvStore;
 use super::manifest::{Manifest, ManifestCache, SstMeta, cas_manifest, load_manifest};
 use super::merge::merge_sources;
 use super::ownership::{acquire_ownership, cas_backoff, read_ownership, sst_path, wal_path};
@@ -1332,6 +1333,43 @@ impl OxKvStoreBuilder {
             StoreError::Storage("OxKvStore requires a Storage via with_store()".to_string())
         })?;
         OxKvReader::open_with_cache(store, self.prefix, cache).await
+    }
+
+    /// Builds a write-through RAM mirror with the default SST cache.
+    ///
+    /// Acquires ownership like [`Self::build`], then warms every key into
+    /// memory via [`CachedOxKvStore::open`]. Reads serve from the mirror
+    /// while writes keep WAL durability; see the type docs for the
+    /// single-writer contract and the staleness knobs.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Storage` if the probe fails, `StoreError::Fenced`
+    /// if `ownership.json` CAS loses the race, or `StoreError` when the
+    /// warming scan fails.
+    pub async fn build_cached(self) -> Result<CachedOxKvStore> {
+        let inner = self.build().await?;
+        CachedOxKvStore::open(inner).await
+    }
+
+    /// Builds a write-through RAM mirror with a caller-supplied SST cache.
+    ///
+    /// See [`Self::build_cached`] for the ownership and warming semantics
+    /// and [`Self::build_with_cache`] for the cache choices. With a full
+    /// mirror the SST cache only serves maintenance reads, so it can stay
+    /// small.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Storage` if the probe fails, `StoreError::Fenced`
+    /// if `ownership.json` CAS loses the race, or `StoreError` when the
+    /// warming scan fails.
+    pub async fn build_cached_with_cache<C>(self, cache: C) -> Result<CachedOxKvStore<C>>
+    where
+        C: Cache<String, Arc<SstFile>>,
+    {
+        let inner = self.build_with_cache(cache).await?;
+        CachedOxKvStore::open(inner).await
     }
 
     /// Builds the store with the default SST cache (256 MB scan-resistant

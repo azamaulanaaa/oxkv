@@ -868,6 +868,47 @@ mod tests {
 
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn build_cached_warms_and_serves() {
+        let backend: Arc<dyn Storage> = Arc::new(MemStorage::new());
+        let seed = OxKvStore::builder()
+            .with_store(Arc::clone(&backend))
+            .with_prefix(ObjectPath::from("cached-builder"))
+            .skip_probe(true)
+            .build()
+            .await
+            .expect("seed");
+        seed.put_bytes("k", b"v").await.expect("put");
+        drop(seed);
+        let cached = OxKvStore::builder()
+            .with_store(Arc::clone(&backend))
+            .with_prefix(ObjectPath::from("cached-builder"))
+            .skip_probe(true)
+            .build_cached()
+            .await
+            .expect("build_cached");
+        assert_eq!(
+            cached.get_bytes("k").await.expect("get"),
+            Some(b"v".to_vec())
+        );
+        let small = LruCache::new(1024, |_: &String, v: &Arc<SstFile>| {
+            u32::try_from(v.size()).unwrap_or(u32::MAX)
+        });
+        let custom = OxKvStore::builder()
+            .with_store(backend)
+            .with_prefix(ObjectPath::from("cached-builder-custom"))
+            .skip_probe(true)
+            .build_cached_with_cache(small)
+            .await
+            .expect("build_cached_with_cache");
+        custom.put_bytes("j", b"w").await.expect("put");
+        assert_eq!(
+            custom.get_bytes("j").await.expect("get"),
+            Some(b"w".to_vec())
+        );
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn tx_reads_merge_staged_with_mirror() {
         let (writer, _) = writer("cached-tx-read").await;
         for key in ["a", "b", "c"] {
