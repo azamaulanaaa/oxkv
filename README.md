@@ -34,7 +34,7 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 | [`store::OtelStore`] | Feature-gated decorator adding OpenTelemetry traces and metrics to any store |
 | [`store::OxKvStore`] / [`store::OxKvStoreBuilder`] / [`store::OxKvTx`] | Feature-gated (`oxkv`, native + wasm) LSM generic over `Storage` + `Cache` (in-memory `MemStorage`; S3 via `oxkv-s3`); single-writer epoch fencing, WAL + SST + blob overflow |
 | [`store::OxKvReader`] / [`store::OxKvRoTx`] | Feature-gated (`oxkv`, native + wasm) read-only follower sharing the `Store` trait — opens without epoch CAS, follows writer WALs, writes rejected, empty-tx commit is a no-op |
-| [`store::CachedOxKvStore`] / [`store::CachedTx`] | Feature-gated (`oxkv`, native + wasm) write-through RAM mirror sharing the `Store` trait — zero-I/O reads, WAL durability, TTL-checked reads, `refresh`/`check_stale` catch-up, fencing poisons until refresh |
+| [`store::CachedOxKvStore`] / [`store::CachedTx`] / [`store::WarmMode`] | Feature-gated (`oxkv`, native + wasm) write-through RAM mirror sharing the `Store` trait — zero-I/O reads once warmed, `Eager`/`Background`/`Lazy` fill via `warm`/`warm_step`/`is_warmed`, WAL durability, TTL-checked reads, `refresh`/`check_stale` catch-up, fencing poisons until refresh |
 | [`store::StoreError::Fenced`] | Terminal fencing error — another owner acquired the epoch via `ownership.json` CAS |
 | [`store::StoreError::CasConflict`] | Conditional-write precondition failed — someone else won the CAS race; retryable unless fencing says otherwise |
 
@@ -508,7 +508,7 @@ deleted file.
 
 When RAM is plentiful, `CachedOxKvStore` pairs the durable core with a
 `BTreeStore` holding every resolved key: reads serve from memory while
-writes keep WAL durability. Plain reads are always zero-I/O once warmed;
+writes keep WAL durability. Plain reads are zero-I/O once warmed;
 the `*_checked` variants revalidate against a staleness bound first.
 Catch-up derives from the manifest version plus SST set (WAL appends replay
 incrementally, a new ownership epoch or a missed flush window rebuilds),
@@ -794,12 +794,13 @@ wasm-pack build --target web   # or nodejs, bundler, etc.
 
 ## Architecture
 
-- `src/wasm/` — manual wasm-bindgen wrappers (`mod` + `btree` + `oxkv`) for `BTreeStore` + `OxKvStore` (thread-safe JS-facing types; OXKV snapshot portable across all backends)
+- `src/wasm/` — manual wasm-bindgen wrappers (`mod` + `btree` + `oxkv` + `cached`) for `BTreeStore` + `OxKvStore` + `CachedOxKvStore` (thread-safe JS-facing types; OXKV snapshot portable across all backends)
 - `src/store/mod.rs` — core traits (`GetSet`, `Transaction`, `Store`, `GetSetExt`, `StoreExt`), error types (`StoreError::Fenced`, `StoreError::CasConflict`, `StoreError::NotModified`), and the `lock_ignore_poison` policy helper
 - `src/store/btree.rs` — in-memory B-tree backend (`btree`, test/bench + WASM baseline)
-- `src/store/lsm/mod.rs` — LSM facade (`oxkv`, native + wasm): re-exports `OxKvStore`/`OxKvTx`/`OxKvReader`/`SstFile`, shared `MemTable` types + WAL/GC tuning constants
+- `src/store/lsm/mod.rs` — LSM facade (`oxkv`, native + wasm): re-exports `OxKvStore`/`OxKvTx`/`OxKvReader`/`CachedOxKvStore`/`CachedTx`/`WarmMode`/`SstFile`, shared `MemTable` types + WAL/GC tuning constants
 - `src/store/lsm/store.rs` — single-writer `OxKvStore`/`OxKvStoreBuilder`: probe + epoch fencing, WAL gate + group commit, flush/GC/compaction
 - `src/store/lsm/tx.rs` — `OxKvTx` staged-overlay transactions (read-your-writes, durable only on commit)
+- `src/store/lsm/cached.rs` — `CachedOxKvStore`/`CachedTx` write-through RAM mirror (`Eager`/`Background`/`Lazy` fill, read-through misses, TTL-checked reads, fencing poison)
 - `src/store/lsm/reader.rs` — read-only `OxKvReader`/`OxKvRoTx` followers (no epoch CAS, WAL-following reads, stale-SST retry)
 - `src/store/lsm/read.rs` — shared point/scan lookup engine (manifest load, SST fetch, blob deref, newest-wins)
 - `src/store/lsm/merge.rs` — newest-wins merge algebra (dedup + tombstone suppression, lazy pull-merge scans)
