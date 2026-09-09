@@ -18,6 +18,44 @@ use super::{
     try_decode_blob_pointer,
 };
 
+#[must_use]
+fn decode_wal_records(data: &[u8]) -> Vec<(String, Option<Vec<u8>>)> {
+    let mut records = Vec::new();
+    let mut pos = 0usize;
+    while pos + 4 <= data.len() {
+        let klen =
+            u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+        if pos + 4 + klen + 4 > data.len() {
+            break;
+        }
+        let key = match std::str::from_utf8(&data[pos + 4..pos + 4 + klen]) {
+            Ok(key) => key.to_string(),
+            Err(_) => break,
+        };
+        let value_start = pos + 4 + klen;
+        let vlen = u32::from_le_bytes([
+            data[value_start],
+            data[value_start + 1],
+            data[value_start + 2],
+            data[value_start + 3],
+        ]) as usize;
+        if vlen == TOMBSTONE_VLEN as usize {
+            records.push((key, None));
+            pos = value_start + 4;
+        } else {
+            if value_start + 4 + vlen > data.len() {
+                break;
+            }
+            records.push((
+                key,
+                Some(data[value_start + 4..value_start + 4 + vlen].to_vec()),
+            ));
+            pos = value_start + 4 + vlen;
+        }
+    }
+    records
+}
+
 fn read_only_err() -> StoreError {
     StoreError::Other("read-only store: writes are rejected".to_string())
 }
@@ -37,6 +75,7 @@ pub struct OxKvReader<C = LruCache<String, Arc<SstFile>>> {
     manifest_cache: Arc<async_lock::Mutex<ManifestCache>>,
     sst_cache: C,
     overlay: MemTable,
+    replayed: Arc<async_lock::Mutex<std::collections::BTreeSet<String>>>,
 }
 
 impl<C> std::fmt::Debug for OxKvReader<C> {
@@ -88,6 +127,7 @@ where
             manifest_cache: Arc::new(async_lock::Mutex::new(ManifestCache::new())),
             sst_cache: cache,
             overlay: Arc::new(async_lock::RwLock::new(std::collections::BTreeMap::new())),
+            replayed: Arc::new(async_lock::Mutex::new(std::collections::BTreeSet::new())),
         };
         reader.replay_wal().await;
         Ok(reader)
@@ -146,47 +186,65 @@ where
             Ok(found) => found,
             Err(_) => (Arc::new(Manifest::empty(self.epoch)), String::new()),
         };
+        let mut replayed = self.replayed.lock().await;
+        let mut overlay = self.overlay.write().await;
         for wal_id in &manifest.wal {
             let path = ObjectPath::from(wal_id.as_str());
             let Ok(out) = self.inner.get(&path).await else {
                 continue;
             };
-            let mut overlay = self.overlay.write().await;
-            let mut pos = 0usize;
-            let data = out.bytes;
-            while pos + 4 <= data.len() {
-                let klen =
-                    u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
-                        as usize;
-                if pos + 4 + klen + 4 > data.len() {
-                    break;
-                }
-                let key = match std::str::from_utf8(&data[pos + 4..pos + 4 + klen]) {
-                    Ok(key) => key.to_string(),
-                    Err(_) => break,
-                };
-                let value_start = pos + 4 + klen;
-                let vlen = u32::from_le_bytes([
-                    data[value_start],
-                    data[value_start + 1],
-                    data[value_start + 2],
-                    data[value_start + 3],
-                ]) as usize;
-                if vlen == TOMBSTONE_VLEN as usize {
-                    overlay.insert(key, None);
-                    pos = value_start + 4;
-                } else {
-                    if value_start + 4 + vlen > data.len() {
-                        break;
-                    }
-                    overlay.insert(
-                        key,
-                        Some(data[value_start + 4..value_start + 4 + vlen].to_vec()),
-                    );
-                    pos = value_start + 4 + vlen;
-                }
+            for (key, value) in decode_wal_records(&out.bytes) {
+                overlay.insert(key, value);
             }
+            replayed.insert(wal_id.clone());
         }
+    }
+
+    /// Replays WAL files listed since the last call into the overlay.
+    ///
+    /// Called at the top of every read, so post-open writer batches become
+    /// visible without reopening. A fully collected WAL list means every
+    /// record is SST-covered, so the overlay and the id set are dropped to
+    /// keep a long-lived reader bounded to one WAL window.
+    async fn ensure_replayed(&self) -> Result<()> {
+        let (manifest, _etag) = load_manifest(
+            Arc::clone(&self.inner),
+            &self.prefix,
+            self.epoch,
+            &self.manifest_cache,
+            std::time::Duration::from_secs(1),
+        )
+        .await?;
+        if manifest.wal.is_empty() {
+            self.replayed.lock().await.clear();
+            self.overlay.write().await.clear();
+            return Ok(());
+        }
+        let missing: Vec<String> = {
+            let replayed = self.replayed.lock().await;
+            manifest
+                .wal
+                .iter()
+                .filter(|id| !replayed.contains(*id))
+                .cloned()
+                .collect()
+        };
+        for wal_id in missing {
+            let path = ObjectPath::from(wal_id.as_str());
+            let Ok(out) = self.inner.get(&path).await else {
+                continue;
+            };
+            let mut replayed = self.replayed.lock().await;
+            if replayed.contains(&wal_id) {
+                continue;
+            }
+            let mut overlay = self.overlay.write().await;
+            for (key, value) in decode_wal_records(&out.bytes) {
+                overlay.insert(key, value);
+            }
+            replayed.insert(wal_id);
+        }
+        Ok(())
     }
 
     async fn resolve_value(&self, raw: Vec<u8>) -> Result<Vec<u8>> {
@@ -253,6 +311,7 @@ where
     }
 
     async fn point_get(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        self.ensure_replayed().await?;
         {
             let overlay = self.overlay.read().await;
             if let Some(value) = overlay.get(key) {
@@ -325,6 +384,7 @@ where
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
+        self.ensure_replayed().await?;
         let (scan_start, scan_end) = match direction {
             Direction::Next => (cursor.0.as_deref(), cursor.1.as_deref()),
             Direction::Prev => (cursor.1.as_deref(), cursor.0.as_deref()),
@@ -625,5 +685,40 @@ mod tests {
             reopened.get_bytes("late").await.expect("get"),
             Some(b"3".to_vec())
         );
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn follows_post_open_writes() {
+        let (store, backend, prefix) = writer().await;
+        store.put_bytes("a", b"1").await.expect("put");
+        let reader = OxKvReader::open(Arc::clone(&backend), prefix)
+            .await
+            .expect("open");
+        store.put_bytes("b", b"2").await.expect("put");
+        store.delete("a").await.expect("delete");
+        assert_eq!(
+            reader.get_bytes("b").await.expect("get"),
+            Some(b"2".to_vec())
+        );
+        assert_eq!(reader.get_bytes("a").await.expect("get"), None);
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn overlay_cleared_after_wal_gc() {
+        let (store, backend, prefix) = writer().await;
+        store.put_bytes("k", b"v").await.expect("put");
+        let reader = OxKvReader::open(Arc::clone(&backend), prefix)
+            .await
+            .expect("open");
+        assert!(!reader.overlay.read().await.is_empty());
+        store.flush_mem_to_sst_force().await.expect("flush");
+        store.gc_wal().await.expect("gc");
+        assert_eq!(
+            reader.get_bytes("k").await.expect("get"),
+            Some(b"v".to_vec())
+        );
+        assert!(reader.overlay.read().await.is_empty());
     }
 }
