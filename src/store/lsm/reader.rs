@@ -13,9 +13,8 @@ use crate::store::storage::{ObjectPath, Storage};
 use crate::store::{Direction, GetSet, KeyValue, Result, Store, StoreError, Transaction};
 
 use super::{
-    Manifest, ManifestCache, MemTable, MergeSource, SstFile, decode_wal_records, get_blob,
-    is_not_found, load_manifest, merged_gets_bytes, pull_merge_next, read_ownership,
-    replay_listed_wals, try_decode_blob_pointer,
+    Manifest, ManifestCache, MemTable, ReadCtx, SstFile, decode_wal_records, filter_rows,
+    is_not_found, load_manifest, point_lookup, range_lookup, read_ownership, replay_listed_wals,
 };
 
 fn read_only_err() -> StoreError {
@@ -202,100 +201,36 @@ where
         Ok(())
     }
 
-    async fn resolve_value(&self, raw: Vec<u8>) -> Result<Vec<u8>> {
-        if let Some(ptr) = try_decode_blob_pointer(&raw) {
-            let blob_path = ObjectPath::from(ptr.blob.as_str());
-            let bytes = get_blob(Arc::clone(&self.inner), &blob_path).await?;
-            if bytes.len() != ptr.len {
-                return Err(StoreError::Storage(format!(
-                    "blob len mismatch for {}: expected {}, got {}",
-                    blob_path,
-                    ptr.len,
-                    bytes.len()
-                )));
-            }
-            let crc = crc32fast::hash(&bytes);
-            if crc != ptr.crc {
-                return Err(StoreError::Storage(format!(
-                    "blob crc mismatch for {}: expected {}, got {}",
-                    blob_path, ptr.crc, crc
-                )));
-            }
-            Ok(bytes)
-        } else {
-            Ok(raw)
-        }
-    }
-
-    async fn read_sst(&self, id: &str) -> Result<Arc<SstFile>> {
-        let path = ObjectPath::from(id);
-        let out = self
-            .inner
-            .get(&path)
-            .await
-            .map_err(|e| StoreError::Storage(format!("get sst {id} failed: {e}")))?;
-        let sst = Arc::new(SstFile::parse(out.bytes)?);
-        sst.verify_file_crc()?;
-        Ok(sst)
-    }
-
-    async fn fetch_sst(&self, id: &str) -> Result<Arc<SstFile>> {
-        if let Some(cached) = self.sst_cache.get(&id.to_string()).await {
-            return Ok(cached);
-        }
-        let sst = self.read_sst(id).await?;
-        self.sst_cache
-            .insert(id.to_string(), Arc::clone(&sst))
-            .await;
-        Ok(sst)
-    }
-
     /// Reads `key` via the replay overlay → SSTs (newest first) → blob deref.
+    ///
+    /// Restarts once against a fresh manifest when an SST read hits `not found`.
     ///
     /// # Errors
     ///
     /// Returns `StoreError` on I/O or CRC failure.
     pub async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        match self.point_get(key).await {
+        self.ensure_replayed().await?;
+        let staged = self.overlay.read().await.get(key).cloned();
+        match point_lookup(&self.read_ctx(), staged, key).await {
             Err(e) if is_not_found(&e) => {
                 self.manifest_cache.lock().await.clear();
-                self.point_get(key).await
+                self.ensure_replayed().await?;
+                let staged = self.overlay.read().await.get(key).cloned();
+                point_lookup(&self.read_ctx(), staged, key).await
             }
             other => other,
         }
     }
 
-    async fn point_get(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        self.ensure_replayed().await?;
-        {
-            let overlay = self.overlay.read().await;
-            if let Some(value) = overlay.get(key) {
-                return match value {
-                    Some(raw) => Ok(Some(self.resolve_value(raw.clone()).await?)),
-                    None => Ok(None),
-                };
-            }
+    #[must_use]
+    fn read_ctx(&self) -> ReadCtx<'_, C> {
+        ReadCtx {
+            inner: &self.inner,
+            prefix: &self.prefix,
+            epoch: self.epoch,
+            manifest_cache: &self.manifest_cache,
+            sst_cache: &self.sst_cache,
         }
-        let (manifest, _etag) = load_manifest(
-            Arc::clone(&self.inner),
-            &self.prefix,
-            self.epoch,
-            &self.manifest_cache,
-            std::time::Duration::from_secs(1),
-        )
-        .await?;
-        for meta in manifest.sst.iter().rev() {
-            if key < meta.min_key.as_str() || key > meta.max_key.as_str() {
-                continue;
-            }
-            let sst = self.fetch_sst(&meta.id).await?;
-            match sst.get_option(key)? {
-                Some(Some(raw)) => return Ok(Some(self.resolve_value(raw).await?)),
-                Some(None) => return Ok(None),
-                None => {}
-            }
-        }
-        Ok(None)
     }
 
     /// Checks existence via [`Self::get_bytes`].
@@ -320,127 +255,31 @@ where
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
-        match self
-            .range_scan(limit, direction, (cursor.0.clone(), cursor.1.clone()))
-            .await
+        self.ensure_replayed().await?;
+        let layers = vec![{
+            let overlay = self.overlay.read().await;
+            filter_rows(&overlay, direction, &cursor)
+        }];
+        match range_lookup(
+            &self.read_ctx(),
+            layers,
+            limit,
+            direction,
+            (cursor.0.clone(), cursor.1.clone()),
+        )
+        .await
         {
             Err(e) if is_not_found(&e) => {
                 self.manifest_cache.lock().await.clear();
-                self.range_scan(limit, direction, cursor).await
+                self.ensure_replayed().await?;
+                let layers = vec![{
+                    let overlay = self.overlay.read().await;
+                    filter_rows(&overlay, direction, &cursor)
+                }];
+                range_lookup(&self.read_ctx(), layers, limit, direction, cursor).await
             }
             other => other,
         }
-    }
-
-    #[allow(clippy::too_many_lines)]
-    async fn range_scan(
-        &self,
-        limit: Option<u32>,
-        direction: Direction,
-        cursor: (Option<String>, Option<String>),
-    ) -> Result<Vec<KeyValue>> {
-        self.ensure_replayed().await?;
-        let (scan_start, scan_end) = match direction {
-            Direction::Next => (cursor.0.as_deref(), cursor.1.as_deref()),
-            Direction::Prev => (cursor.1.as_deref(), cursor.0.as_deref()),
-        };
-        if direction == Direction::Prev && cursor.0.is_none() {
-            return Ok(Vec::new());
-        }
-        let overlay_rows: Vec<(String, Option<Vec<u8>>)> = {
-            let overlay = self.overlay.read().await;
-            let rows: Vec<(String, Option<Vec<u8>>)> = if scan_start.is_none() && scan_end.is_none()
-            {
-                overlay
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect()
-            } else {
-                overlay
-                    .iter()
-                    .filter(|(k, _)| {
-                        if let Some(lo) = scan_start
-                            && k.as_str() < lo
-                        {
-                            return false;
-                        }
-                        if let Some(hi) = scan_end
-                            && k.as_str() > hi
-                        {
-                            return false;
-                        }
-                        true
-                    })
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect()
-            };
-            rows
-        };
-        let (manifest, _etag) = load_manifest(
-            Arc::clone(&self.inner),
-            &self.prefix,
-            self.epoch,
-            &self.manifest_cache,
-            std::time::Duration::from_secs(1),
-        )
-        .await?;
-        if direction == Direction::Next {
-            let mut files: Vec<Arc<SstFile>> = Vec::new();
-            for meta in manifest.sst.iter().rev() {
-                let overlaps = {
-                    let min = meta.min_key.as_str();
-                    let max = meta.max_key.as_str();
-                    let after_lower = scan_start.is_none_or(|s| max >= s);
-                    let before_upper = scan_end.is_none_or(|e| min <= e);
-                    after_lower && before_upper
-                };
-                if !overlaps {
-                    continue;
-                }
-                files.push(self.fetch_sst(&meta.id).await?);
-            }
-            let mut pull: Vec<MergeSource<'_>> = Vec::with_capacity(files.len() + 1);
-            pull.push(MergeSource::Mem(overlay_rows.into_iter()));
-            for file in &files {
-                pull.push(MergeSource::File(file.scan_iter(scan_start, scan_end)));
-            }
-            let merged = pull_merge_next(&mut pull, limit.map(|l| l as usize))?;
-            let mut out = Vec::with_capacity(merged.len());
-            for (key, raw) in merged {
-                out.push(KeyValue {
-                    key,
-                    value: self.resolve_value(raw).await?,
-                });
-            }
-            return Ok(out);
-        }
-        let mut sources = vec![overlay_rows];
-        for meta in manifest.sst.iter().rev() {
-            let overlaps = {
-                let min = meta.min_key.as_str();
-                let max = meta.max_key.as_str();
-                let after_lower = scan_start.is_none_or(|s| max >= s);
-                let before_upper = scan_end.is_none_or(|e| min <= e);
-                after_lower && before_upper
-            };
-            if !overlaps {
-                continue;
-            }
-            let sst = self.read_sst(&meta.id).await?;
-            let scan = sst.scan_with_tombstones(scan_start, scan_end, None)?;
-            let mut resolved: Vec<(String, Option<Vec<u8>>)> = Vec::with_capacity(scan.len());
-            for (key, value) in scan {
-                match value {
-                    Some(raw) => {
-                        let val = self.resolve_value(raw).await?;
-                        resolved.push((key, Some(val)));
-                    }
-                    None => resolved.push((key, None)),
-                }
-            }
-            sources.push(resolved);
-        }
-        Ok(merged_gets_bytes(sources, limit, direction, cursor))
     }
 }
 

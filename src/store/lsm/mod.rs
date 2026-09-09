@@ -20,6 +20,7 @@ mod manifest;
 mod merge;
 mod ownership;
 mod probe;
+mod read;
 mod reader;
 mod sst;
 mod wal;
@@ -28,9 +29,12 @@ pub(crate) use blob::{
     encode_blob_pointer, get_blob, is_overflow, put_blob, try_decode_blob_pointer,
 };
 pub(crate) use manifest::{Manifest, ManifestCache, SstMeta, cas_manifest, load_manifest};
-pub(crate) use merge::{MergeSource, merge_sources, merged_gets_bytes, pull_merge_next};
+pub(crate) use merge::merge_sources;
 pub(crate) use ownership::{acquire_ownership, cas_backoff, read_ownership, sst_path, wal_path};
 pub(crate) use probe::probe_store;
+pub(crate) use read::{
+    ReadCtx, filter_rows, is_not_found, point_lookup, range_lookup, resolve_value,
+};
 pub use reader::{OxKvReader, OxKvRoTx};
 /// Parsed SST file; name it to weigh a custom [`Cache`] (see [`SstFile::size`]).
 pub use sst::SstFile;
@@ -56,11 +60,6 @@ type WalBuffer = Arc<async_lock::Mutex<Vec<(String, Option<Vec<u8>>)>>>;
 /// A counter (not wall time): `std::time` clocks panic on `wasm32`, and
 /// fencing safety comes from the monotonic epoch, not session uniqueness.
 static SESSION_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-#[must_use]
-fn is_not_found(err: &StoreError) -> bool {
-    matches!(err, StoreError::Storage(msg) if msg.contains("not found"))
-}
 
 /// WAL entries that trigger force-flush + GC maintenance.
 ///
@@ -508,31 +507,6 @@ where
         }
     }
 
-    async fn resolve_value(&self, raw: Vec<u8>) -> Result<Vec<u8>> {
-        if let Some(ptr) = try_decode_blob_pointer(&raw) {
-            let blob_path = ObjectPath::from(ptr.blob.as_str());
-            let bytes = get_blob(Arc::clone(&self.inner), &blob_path).await?;
-            if bytes.len() != ptr.len {
-                return Err(StoreError::Storage(format!(
-                    "blob len mismatch for {}: expected {}, got {}",
-                    blob_path,
-                    ptr.len,
-                    bytes.len()
-                )));
-            }
-            let crc = crc32fast::hash(&bytes);
-            if crc != ptr.crc {
-                return Err(StoreError::Storage(format!(
-                    "blob crc mismatch for {}: expected {}, got {}",
-                    blob_path, ptr.crc, crc
-                )));
-            }
-            Ok(bytes)
-        } else {
-            Ok(raw)
-        }
-    }
-
     /// Reads and parses `id` straight from storage, bypassing the SST cache.
     ///
     /// Window scans (`gets`) use this so a wide range never evicts hot
@@ -570,45 +544,26 @@ where
     ///
     /// Returns `StoreError` on I/O or CRC failure.
     pub async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        match self.point_get(key).await {
+        let staged = self.mem.read().await.get(key).cloned();
+        match point_lookup(&self.read_ctx(), staged, key).await {
             Err(e) if is_not_found(&e) => {
                 self.manifest_cache.lock().await.clear();
-                self.point_get(key).await
+                let staged = self.mem.read().await.get(key).cloned();
+                point_lookup(&self.read_ctx(), staged, key).await
             }
             other => other,
         }
     }
 
-    async fn point_get(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        {
-            let mem = self.mem.read().await;
-            if let Some(val) = mem.get(key) {
-                match val {
-                    Some(v) => return Ok(Some(self.resolve_value(v.clone()).await?)),
-                    None => return Ok(None),
-                }
-            }
+    #[must_use]
+    fn read_ctx(&self) -> ReadCtx<'_, C> {
+        ReadCtx {
+            inner: &self.inner,
+            prefix: &self.prefix,
+            epoch: self.epoch,
+            manifest_cache: &self.manifest_cache,
+            sst_cache: &self.sst_cache,
         }
-        let (manifest, _etag) = load_manifest(
-            Arc::clone(&self.inner),
-            &self.prefix,
-            self.epoch,
-            &self.manifest_cache,
-            std::time::Duration::from_secs(1),
-        )
-        .await?;
-        for meta in manifest.sst.iter().rev() {
-            if key < meta.min_key.as_str() || key > meta.max_key.as_str() {
-                continue;
-            }
-            let sst = self.fetch_sst(&meta.id).await?;
-            match sst.get_option(key)? {
-                Some(Some(raw)) => return Ok(Some(self.resolve_value(raw).await?)),
-                Some(None) => return Ok(None),
-                None => {}
-            }
-        }
-        Ok(None)
     }
 
     /// Checks existence via [`Self::get_bytes`].
@@ -633,130 +588,29 @@ where
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
-        match self
-            .range_scan(limit, direction, (cursor.0.clone(), cursor.1.clone()))
-            .await
+        let layers = vec![{
+            let mem = self.mem.read().await;
+            filter_rows(&mem, direction, &cursor)
+        }];
+        match range_lookup(
+            &self.read_ctx(),
+            layers,
+            limit,
+            direction,
+            (cursor.0.clone(), cursor.1.clone()),
+        )
+        .await
         {
             Err(e) if is_not_found(&e) => {
                 self.manifest_cache.lock().await.clear();
-                self.range_scan(limit, direction, cursor).await
+                let layers = vec![{
+                    let mem = self.mem.read().await;
+                    filter_rows(&mem, direction, &cursor)
+                }];
+                range_lookup(&self.read_ctx(), layers, limit, direction, cursor).await
             }
             other => other,
         }
-    }
-
-    #[allow(clippy::too_many_lines)]
-    async fn range_scan(
-        &self,
-        limit: Option<u32>,
-        direction: Direction,
-        cursor: (Option<String>, Option<String>),
-    ) -> Result<Vec<KeyValue>> {
-        // Normalize cursor to [lower, upper] for range filtering; Prev stores
-        // upper in cursor.0 and lower in cursor.1.
-        let (scan_start, scan_end) = match direction {
-            Direction::Next => (cursor.0.as_deref(), cursor.1.as_deref()),
-            Direction::Prev => (cursor.1.as_deref(), cursor.0.as_deref()),
-        };
-        if direction == Direction::Prev && cursor.0.is_none() {
-            return Ok(Vec::new());
-        }
-        let mem_rows: Vec<(String, Option<Vec<u8>>)> = {
-            let mem = self.mem.read().await;
-            // Filter MemTable by range upfront — page_fetch_100 at LARGE would
-            // otherwise clone 1M entries to return 100.
-            let mem_vec: Vec<(String, Option<Vec<u8>>)> =
-                if scan_start.is_none() && scan_end.is_none() {
-                    mem.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-                } else {
-                    mem.iter()
-                        .filter(|(k, _)| {
-                            if let Some(lo) = scan_start
-                                && k.as_str() < lo
-                            {
-                                return false;
-                            }
-                            if let Some(hi) = scan_end
-                                && k.as_str() > hi
-                            {
-                                return false;
-                            }
-                            true
-                        })
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect()
-                };
-            mem_vec
-        };
-        let (manifest, _etag) = load_manifest(
-            Arc::clone(&self.inner),
-            &self.prefix,
-            self.epoch,
-            &self.manifest_cache,
-            std::time::Duration::from_secs(1),
-        )
-        .await?;
-        if direction == Direction::Next {
-            let mut files: Vec<Arc<SstFile>> = Vec::new();
-            for meta in manifest.sst.iter().rev() {
-                let overlaps = {
-                    let min = meta.min_key.as_str();
-                    let max = meta.max_key.as_str();
-                    let after_lower = scan_start.is_none_or(|s| max >= s);
-                    let before_upper = scan_end.is_none_or(|e| min <= e);
-                    after_lower && before_upper
-                };
-                if !overlaps {
-                    continue;
-                }
-                // Admit scans to the SST cache: rotating pages reuse the same
-                // files, and S3-FIFO absorbs one-hit entries without evicting
-                // hot point lookups (zipf_get guards the ratio).
-                files.push(self.fetch_sst(&meta.id).await?);
-            }
-            let mut pull: Vec<MergeSource<'_>> = Vec::with_capacity(files.len() + 1);
-            pull.push(MergeSource::Mem(mem_rows.into_iter()));
-            for file in &files {
-                pull.push(MergeSource::File(file.scan_iter(scan_start, scan_end)));
-            }
-            let merged = pull_merge_next(&mut pull, limit.map(|l| l as usize))?;
-            let mut out = Vec::with_capacity(merged.len());
-            for (key, raw) in merged {
-                out.push(KeyValue {
-                    key,
-                    value: self.resolve_value(raw).await?,
-                });
-            }
-            return Ok(out);
-        }
-        let mut sources = vec![mem_rows];
-        for meta in manifest.sst.iter().rev() {
-            let overlaps = {
-                let min = meta.min_key.as_str();
-                let max = meta.max_key.as_str();
-                let after_lower = scan_start.is_none_or(|s| max >= s);
-                let before_upper = scan_end.is_none_or(|e| min <= e);
-                after_lower && before_upper
-            };
-            if !overlaps {
-                continue;
-            }
-            // Bypass the SST cache: scans must not evict hot entries.
-            let sst = self.read_sst(&meta.id).await?;
-            let scan = sst.scan_with_tombstones(scan_start, scan_end, None)?;
-            let mut resolved: Vec<(String, Option<Vec<u8>>)> = Vec::with_capacity(scan.len());
-            for (key, value) in scan {
-                match value {
-                    Some(raw) => {
-                        let val = self.resolve_value(raw).await?;
-                        resolved.push((key, Some(val)));
-                    }
-                    None => resolved.push((key, None)),
-                }
-            }
-            sources.push(resolved);
-        }
-        Ok(merged_gets_bytes(sources, limit, direction, cursor))
     }
 
     /// Registers a pinned reader at `version` for watermark.
@@ -1275,230 +1129,15 @@ impl<C> OxKvTx<C>
 where
     C: Cache<String, Arc<SstFile>>,
 {
-    async fn resolve_value(&self, raw: Vec<u8>) -> Result<Vec<u8>> {
-        if let Some(ptr) = try_decode_blob_pointer(&raw) {
-            let blob_path = ObjectPath::from(ptr.blob.as_str());
-            let bytes = get_blob(Arc::clone(&self.inner), &blob_path).await?;
-            if bytes.len() != ptr.len {
-                return Err(StoreError::Storage(format!(
-                    "blob len mismatch for {}: expected {}, got {}",
-                    blob_path,
-                    ptr.len,
-                    bytes.len()
-                )));
-            }
-            let crc = crc32fast::hash(&bytes);
-            if crc != ptr.crc {
-                return Err(StoreError::Storage(format!(
-                    "blob crc mismatch for {}: expected {}, got {}",
-                    blob_path, ptr.crc, crc
-                )));
-            }
-            Ok(bytes)
-        } else {
-            Ok(raw)
+    #[must_use]
+    fn read_ctx(&self) -> ReadCtx<'_, C> {
+        ReadCtx {
+            inner: &self.inner,
+            prefix: &self.prefix,
+            epoch: self.epoch,
+            manifest_cache: &self.manifest_cache,
+            sst_cache: &self.sst_cache,
         }
-    }
-
-    /// Reads and parses `id` straight from storage, bypassing the SST cache.
-    ///
-    /// Window scans (`gets`) use this so a wide range never evicts hot
-    /// point-lookup entries.
-    async fn read_sst(&self, id: &str) -> Result<Arc<SstFile>> {
-        let path = ObjectPath::from(id);
-        let out = self
-            .inner
-            .get(&path)
-            .await
-            .map_err(|e| StoreError::Storage(format!("get sst {id} failed: {e}")))?;
-        let sst = Arc::new(SstFile::parse(out.bytes)?);
-        sst.verify_file_crc()?;
-        Ok(sst)
-    }
-
-    /// Cache-through SST read for point lookups.
-    async fn fetch_sst(&self, id: &str) -> Result<Arc<SstFile>> {
-        if let Some(cached) = self.sst_cache.get(&id.to_string()).await {
-            return Ok(cached);
-        }
-        let sst = self.read_sst(id).await?;
-        self.sst_cache
-            .insert(id.to_string(), Arc::clone(&sst))
-            .await;
-        Ok(sst)
-    }
-
-    async fn point_get(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        let staged = lock_ignore_poison(&self.overlay).get(key).cloned();
-        if let Some(v) = staged {
-            return match v {
-                Some(raw) => Ok(Some(self.resolve_value(raw).await?)),
-                None => Ok(None),
-            };
-        }
-        {
-            let mem = self.mem.read().await;
-            if let Some(v) = mem.get(key) {
-                return match v {
-                    Some(raw) => Ok(Some(self.resolve_value(raw.clone()).await?)),
-                    None => Ok(None),
-                };
-            }
-        }
-        let (manifest, _etag) = load_manifest(
-            Arc::clone(&self.inner),
-            &self.prefix,
-            self.epoch,
-            &self.manifest_cache,
-            std::time::Duration::from_secs(1),
-        )
-        .await?;
-        for meta in manifest.sst.iter().rev() {
-            if key < meta.min_key.as_str() || key > meta.max_key.as_str() {
-                continue;
-            }
-            let sst = self.fetch_sst(&meta.id).await?;
-            match sst.get_option(key)? {
-                Some(Some(raw)) => return Ok(Some(self.resolve_value(raw).await?)),
-                Some(None) => return Ok(None),
-                None => {}
-            }
-        }
-        Ok(None)
-    }
-
-    #[allow(clippy::too_many_lines)]
-    async fn range_scan(
-        &self,
-        limit: Option<u32>,
-        direction: Direction,
-        cursor: (Option<String>, Option<String>),
-    ) -> Result<Vec<KeyValue>> {
-        let (scan_start, scan_end) = match direction {
-            Direction::Next => (cursor.0.as_deref(), cursor.1.as_deref()),
-            Direction::Prev => (cursor.1.as_deref(), cursor.0.as_deref()),
-        };
-        if direction == Direction::Prev && cursor.0.is_none() {
-            return Ok(Vec::new());
-        }
-        let overlay_vec: Vec<(String, Option<Vec<u8>>)> = {
-            let overlay_guard = lock_ignore_poison(&self.overlay);
-            if scan_start.is_none() && scan_end.is_none() {
-                overlay_guard
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect()
-            } else {
-                overlay_guard
-                    .iter()
-                    .filter(|(k, _)| {
-                        if let Some(lo) = scan_start
-                            && k.as_str() < lo
-                        {
-                            return false;
-                        }
-                        if let Some(hi) = scan_end
-                            && k.as_str() > hi
-                        {
-                            return false;
-                        }
-                        true
-                    })
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect()
-            }
-        };
-        let mem_rows: Vec<(String, Option<Vec<u8>>)> = {
-            let mem = self.mem.read().await;
-            let mem_vec: Vec<(String, Option<Vec<u8>>)> =
-                if scan_start.is_none() && scan_end.is_none() {
-                    mem.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-                } else {
-                    mem.iter()
-                        .filter(|(k, _)| {
-                            if let Some(lo) = scan_start
-                                && k.as_str() < lo
-                            {
-                                return false;
-                            }
-                            if let Some(hi) = scan_end
-                                && k.as_str() > hi
-                            {
-                                return false;
-                            }
-                            true
-                        })
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect()
-                };
-            mem_vec
-        };
-        let (manifest, _etag) = load_manifest(
-            Arc::clone(&self.inner),
-            &self.prefix,
-            self.epoch,
-            &self.manifest_cache,
-            std::time::Duration::from_secs(1),
-        )
-        .await?;
-        if direction == Direction::Next {
-            let mut files: Vec<Arc<SstFile>> = Vec::new();
-            for meta in manifest.sst.iter().rev() {
-                let overlaps = {
-                    let min = meta.min_key.as_str();
-                    let max = meta.max_key.as_str();
-                    let after_lower = scan_start.is_none_or(|s| max >= s);
-                    let before_upper = scan_end.is_none_or(|e| min <= e);
-                    after_lower && before_upper
-                };
-                if !overlaps {
-                    continue;
-                }
-                files.push(self.fetch_sst(&meta.id).await?);
-            }
-            let mut pull: Vec<MergeSource<'_>> = Vec::with_capacity(files.len() + 2);
-            pull.push(MergeSource::Mem(overlay_vec.into_iter()));
-            pull.push(MergeSource::Mem(mem_rows.into_iter()));
-            for file in &files {
-                pull.push(MergeSource::File(file.scan_iter(scan_start, scan_end)));
-            }
-            let merged = pull_merge_next(&mut pull, limit.map(|l| l as usize))?;
-            let mut out = Vec::with_capacity(merged.len());
-            for (key, raw) in merged {
-                out.push(KeyValue {
-                    key,
-                    value: self.resolve_value(raw).await?,
-                });
-            }
-            return Ok(out);
-        }
-        let mut sources = vec![overlay_vec, mem_rows];
-        for meta in manifest.sst.iter().rev() {
-            let overlaps = {
-                let min = meta.min_key.as_str();
-                let max = meta.max_key.as_str();
-                let after_lower = scan_start.is_none_or(|s| max >= s);
-                let before_upper = scan_end.is_none_or(|e| min <= e);
-                after_lower && before_upper
-            };
-            if !overlaps {
-                continue;
-            }
-            let sst = self.read_sst(&meta.id).await?;
-            let scan = sst.scan_with_tombstones(scan_start, scan_end, None)?;
-            let mut resolved: Vec<(String, Option<Vec<u8>>)> = Vec::with_capacity(scan.len());
-            for (key, value) in scan {
-                match value {
-                    Some(raw) => {
-                        let val = self.resolve_value(raw).await?;
-                        resolved.push((key, Some(val)));
-                    }
-                    None => resolved.push((key, None)),
-                }
-            }
-            sources.push(resolved);
-        }
-        Ok(merged_gets_bytes(sources, limit, direction, cursor))
     }
 
     /// Store view sharing all mutable state, for running maintenance
@@ -1689,10 +1328,19 @@ where
     C: Cache<String, Arc<SstFile>>,
 {
     async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        match self.point_get(key).await {
+        let staged = lock_ignore_poison(&self.overlay).get(key).cloned();
+        if let Some(hit) = staged {
+            return match hit {
+                Some(raw) => Ok(Some(resolve_value(&self.read_ctx(), raw).await?)),
+                None => Ok(None),
+            };
+        }
+        let staged = self.mem.read().await.get(key).cloned();
+        match point_lookup(&self.read_ctx(), staged, key).await {
             Err(e) if is_not_found(&e) => {
                 self.manifest_cache.lock().await.clear();
-                self.point_get(key).await
+                let staged = self.mem.read().await.get(key).cloned();
+                point_lookup(&self.read_ctx(), staged, key).await
             }
             other => other,
         }
@@ -1727,13 +1375,41 @@ where
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
-        match self
-            .range_scan(limit, direction, (cursor.0.clone(), cursor.1.clone()))
-            .await
+        let overlay_rows = {
+            let overlay = lock_ignore_poison(&self.overlay);
+            filter_rows(&overlay, direction, &cursor)
+        };
+        let mem_rows = {
+            let mem = self.mem.read().await;
+            filter_rows(&mem, direction, &cursor)
+        };
+        match range_lookup(
+            &self.read_ctx(),
+            vec![overlay_rows, mem_rows],
+            limit,
+            direction,
+            (cursor.0.clone(), cursor.1.clone()),
+        )
+        .await
         {
             Err(e) if is_not_found(&e) => {
                 self.manifest_cache.lock().await.clear();
-                self.range_scan(limit, direction, cursor).await
+                let overlay_rows = {
+                    let overlay = lock_ignore_poison(&self.overlay);
+                    filter_rows(&overlay, direction, &cursor)
+                };
+                let mem_rows = {
+                    let mem = self.mem.read().await;
+                    filter_rows(&mem, direction, &cursor)
+                };
+                range_lookup(
+                    &self.read_ctx(),
+                    vec![overlay_rows, mem_rows],
+                    limit,
+                    direction,
+                    cursor,
+                )
+                .await
             }
             other => other,
         }
