@@ -27,7 +27,7 @@
 //! // operation (SDK crates are application dependencies).
 //! // opentelemetry_sdk::trace::SdkTracerProvider ... global::set_tracer_provider(...)
 //!
-//! let mut store = OtelStore::new(BTreeStore::default());
+//! let store = OtelStore::new(BTreeStore::default());
 //! ```
 //!
 //! When no provider is installed (the default), all telemetry calls resolve to
@@ -68,7 +68,7 @@
 //! async fn main() {
 //!     // No SDK installed here: spans and metrics are silently discarded,
 //!     // while the store behaves exactly like the wrapped BTreeStore.
-//!     let mut store = OtelStore::new(BTreeStore::default());
+//!     let store = OtelStore::new(BTreeStore::default());
 //!
 //!     store.set("greeting", &serde_json::json!({ "hello": "world" }))
 //!         .await
@@ -286,7 +286,7 @@ fn no_annotation<T>(_: &mut BoxedSpan, _: &T) {}
 /// use oxkv::{BTreeStore, GetSet, OtelStore};
 ///
 /// # #[tokio::main(flavor = "current_thread")] async fn main() {
-/// let mut store = OtelStore::new(BTreeStore::default());
+/// let store = OtelStore::new(BTreeStore::default());
 /// assert_eq!(store.get_bytes("k").await.unwrap(), None);
 /// # }
 /// ```

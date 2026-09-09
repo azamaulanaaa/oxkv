@@ -292,7 +292,7 @@ Enable the `otel` feature and wrap any backend:
 ```rust,ignore
 use oxkv::{BTreeStore, OtelStore};
 
-let mut store = OtelStore::new(BTreeStore::default());
+let store = OtelStore::new(BTreeStore::default());
 // every operation below now emits spans + metrics; without an SDK installed
 // everything resolves to no-ops and the store behaves as a passthrough
 ```
