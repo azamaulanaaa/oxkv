@@ -13,48 +13,10 @@ use crate::store::storage::{ObjectPath, Storage};
 use crate::store::{Direction, GetSet, KeyValue, Result, Store, StoreError, Transaction};
 
 use super::{
-    Manifest, ManifestCache, MemTable, MergeSource, SstFile, TOMBSTONE_VLEN, get_blob,
+    Manifest, ManifestCache, MemTable, MergeSource, SstFile, decode_wal_records, get_blob,
     is_not_found, load_manifest, merged_gets_bytes, pull_merge_next, read_ownership,
-    try_decode_blob_pointer,
+    replay_listed_wals, try_decode_blob_pointer,
 };
-
-#[must_use]
-fn decode_wal_records(data: &[u8]) -> Vec<(String, Option<Vec<u8>>)> {
-    let mut records = Vec::new();
-    let mut pos = 0usize;
-    while pos + 4 <= data.len() {
-        let klen =
-            u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
-        if pos + 4 + klen + 4 > data.len() {
-            break;
-        }
-        let key = match std::str::from_utf8(&data[pos + 4..pos + 4 + klen]) {
-            Ok(key) => key.to_string(),
-            Err(_) => break,
-        };
-        let value_start = pos + 4 + klen;
-        let vlen = u32::from_le_bytes([
-            data[value_start],
-            data[value_start + 1],
-            data[value_start + 2],
-            data[value_start + 3],
-        ]) as usize;
-        if vlen == TOMBSTONE_VLEN as usize {
-            records.push((key, None));
-            pos = value_start + 4;
-        } else {
-            if value_start + 4 + vlen > data.len() {
-                break;
-            }
-            records.push((
-                key,
-                Some(data[value_start + 4..value_start + 4 + vlen].to_vec()),
-            ));
-            pos = value_start + 4 + vlen;
-        }
-    }
-    records
-}
 
 fn read_only_err() -> StoreError {
     StoreError::Other("read-only store: writes are rejected".to_string())
@@ -186,18 +148,11 @@ where
             Ok(found) => found,
             Err(_) => (Arc::new(Manifest::empty(self.epoch)), String::new()),
         };
-        let mut replayed = self.replayed.lock().await;
-        let mut overlay = self.overlay.write().await;
-        for wal_id in &manifest.wal {
-            let path = ObjectPath::from(wal_id.as_str());
-            let Ok(out) = self.inner.get(&path).await else {
-                continue;
-            };
-            for (key, value) in decode_wal_records(&out.bytes) {
-                overlay.insert(key, value);
-            }
-            replayed.insert(wal_id.clone());
-        }
+        replay_listed_wals(&self.inner, &manifest.wal, &self.overlay).await;
+        self.replayed
+            .lock()
+            .await
+            .extend(manifest.wal.iter().cloned());
     }
 
     /// Replays WAL files listed since the last call into the overlay.

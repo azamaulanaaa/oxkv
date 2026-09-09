@@ -21,6 +21,7 @@ mod ownership;
 mod probe;
 mod reader;
 mod sst;
+mod wal;
 
 pub(crate) use blob::{
     encode_blob_pointer, get_blob, is_overflow, put_blob, try_decode_blob_pointer,
@@ -32,6 +33,7 @@ pub use reader::{OxKvReader, OxKvRoTx};
 /// Parsed SST file; name it to weigh a custom [`Cache`] (see [`SstFile::size`]).
 pub use sst::SstFile;
 pub(crate) use sst::{DEFAULT_BLOCK_SIZE, TOMBSTONE_VLEN, build_sst};
+pub(crate) use wal::{decode_wal_records, replay_listed_wals};
 
 // Path helpers referenced only by unit tests in this module.
 #[cfg(test)]
@@ -2103,48 +2105,7 @@ impl OxKvStoreBuilder {
                 Ok(v) => v,
                 Err(_) => (Arc::new(Manifest::empty(s3store.epoch)), String::new()),
             };
-            for wal_id in &manifest.wal {
-                let path = ObjectPath::from(wal_id.clone());
-                let Ok(out) = s3store.inner.get(&path).await else {
-                    continue;
-                };
-                let data = out.bytes;
-                let mut pos = 0usize;
-                let mut mem = s3store.mem.write().await;
-                while pos + 4 <= data.len() {
-                    let klen = u32::from_le_bytes([
-                        data[pos],
-                        data[pos + 1],
-                        data[pos + 2],
-                        data[pos + 3],
-                    ]) as usize;
-                    if pos + 4 + klen + 4 > data.len() {
-                        break;
-                    }
-                    let key = match std::str::from_utf8(&data[pos + 4..pos + 4 + klen]) {
-                        Ok(k) => k.to_string(),
-                        Err(_) => break,
-                    };
-                    let v_start = pos + 4 + klen;
-                    let vlen = u32::from_le_bytes([
-                        data[v_start],
-                        data[v_start + 1],
-                        data[v_start + 2],
-                        data[v_start + 3],
-                    ]) as usize;
-                    if vlen == TOMBSTONE_VLEN as usize {
-                        mem.insert(key, None);
-                        pos = v_start + 4;
-                    } else {
-                        if v_start + 4 + vlen > data.len() {
-                            break;
-                        }
-                        let val = data[v_start + 4..v_start + 4 + vlen].to_vec();
-                        mem.insert(key, Some(val));
-                        pos = v_start + 4 + vlen;
-                    }
-                }
-            }
+            replay_listed_wals(&s3store.inner, &manifest.wal, &s3store.mem).await;
             let cur_epoch = s3store.epoch;
             let wal_prefix = format!("e{cur_epoch:06}/wal/");
             let wal_count = manifest
