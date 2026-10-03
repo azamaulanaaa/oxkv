@@ -17,6 +17,8 @@ use crate::store::{Result, StoreError};
 
 /// SST magic bytes `OXKV`.
 pub(crate) const SST_MAGIC: [u8; 4] = *b"OXKV";
+/// Bytes after the JSON footer: 4-byte magic + 4-byte version.
+const SST_TRAILER_LEN: usize = 8;
 
 /// SST format version.
 pub(crate) const SST_VERSION: u32 = 1;
@@ -253,7 +255,7 @@ impl SstFile {
         if data.len() < 12 {
             return Err(StoreError::Storage("sst too small".to_string()));
         }
-        let magic_offset = data.len() - 8;
+        let magic_offset = data.len() - SST_TRAILER_LEN;
         if data[magic_offset..magic_offset + 4] != SST_MAGIC {
             return Err(StoreError::Storage("sst bad magic".to_string()));
         }
@@ -275,8 +277,13 @@ impl SstFile {
             data[footer_len_offset + 2],
             data[footer_len_offset + 3],
         ]) as usize;
-        let footer_start = footer_len_offset - footer_len;
-        if footer_start > data.len() {
+        // `footer_len` comes from the object, so it can exceed the offset: a
+        // plain subtraction underflows (panics under overflow checks) before
+        // the bounds check below could run.
+        let Some(footer_start) = footer_len_offset.checked_sub(footer_len) else {
+            return Err(StoreError::Storage("sst footer out of bounds".to_string()));
+        };
+        if footer_start + footer_len != footer_len_offset || footer_start > data.len() {
             return Err(StoreError::Storage("sst footer out of bounds".to_string()));
         }
         let footer_bytes = &data[footer_start..footer_len_offset];
@@ -314,10 +321,20 @@ impl SstFile {
         }
         let bits = &self.footer.bloom_bits;
         let k = self.footer.bloom_k;
+        // `bloom_m` and `bloom_bits` are deserialized independently from a
+        // remote object, so the implied width can exceed the buffer. Every
+        // other footer field is bounds-checked; this one is not, and it is on
+        // the hot read path.
+        if m > bits.len().saturating_mul(8) {
+            return false;
+        }
         for i in 0..k {
             let h = Bloom::hash(key, i) % m as u64;
             let bit = h as usize;
-            if bits[bit / 8] & (1 << (bit % 8)) == 0 {
+            if !bits
+                .get(bit / 8)
+                .is_some_and(|byte| byte & (1 << (bit % 8)) != 0)
+            {
                 return false;
             }
         }
@@ -891,11 +908,98 @@ mod tests {
         assert_eq!(scan[0].1, Vec::<u8>::new());
     }
 
+    /// A corrupt footer length must be an error, never a panic. Regression:
+    /// `footer_len_offset - footer_len` underflowed before the bounds check,
+    /// so a garbage length panicked under overflow checks — on the one path
+    /// that is supposed to tolerate corrupt objects.
     #[test]
-    fn sst_from_values_helper() {
-        let values = sample_values();
-        let data = build_sst_from_values(&values, 1024).unwrap();
+    fn parse_rejects_footer_length_past_the_offset() {
+        let data = build_sst(&sample_entries(), 1024).unwrap();
+        let magic_offset = data.len() - SST_TRAILER_LEN;
+        let footer_len_offset = magic_offset - 4;
+        let mut bad = data.clone();
+        bad[footer_len_offset..footer_len_offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(
+            SstFile::parse(bad).is_err(),
+            "footer length beyond the offset must be rejected"
+        );
+        // And a length that lands exactly one byte before the offset.
+        let mut bad = data;
+        let overshoot = u32::try_from(footer_len_offset + 1).unwrap();
+        bad[footer_len_offset..footer_len_offset + 4].copy_from_slice(&overshoot.to_le_bytes());
+        assert!(SstFile::parse(bad).is_err());
+    }
+
+    /// Truncated objects must be errors, not partial parses. Raw storage bytes
+    /// go straight into `SstFile::parse`, so a partially uploaded SST lands
+    /// here.
+    #[test]
+    fn parse_rejects_truncated_object() {
+        let data = build_sst(&sample_entries(), 1024).unwrap();
+        for cut in [1usize, 8, 32, data.len() / 2, data.len() - 1] {
+            assert!(
+                SstFile::parse(data[..data.len() - cut].to_vec()).is_err(),
+                "truncating {cut} bytes must be rejected"
+            );
+        }
+    }
+
+    /// The per-read file CRC gate must actually reject a corrupted block.
+    /// Only `get` was covered before, so the gate every read calls had zero
+    /// negative coverage.
+    #[test]
+    fn verify_file_crc_detects_block_corruption() {
+        let entries = sample_entries();
+        let data = build_sst(&entries, 64).unwrap();
+        let sst = SstFile::parse(data.clone()).unwrap();
+        sst.verify_file_crc().expect("untouched file passes");
+        for offset in [8usize, data.len() / 3, data.len() - SST_TRAILER_LEN - 8] {
+            let mut bad = data.clone();
+            bad[offset] ^= 0xFF;
+            let err = SstFile::parse(bad)
+                .and_then(|s| s.verify_file_crc())
+                .expect_err("corrupted byte must fail the file crc");
+            assert!(!err.to_string().is_empty());
+        }
+    }
+
+    /// A footer claiming more bloom bits than it carries must not index out of
+    /// bounds — `bloom_m` and `bloom_bits` deserialize independently.
+    #[test]
+    fn may_contain_rejects_oversized_bloom_width() {
+        let data = build_sst(&sample_entries(), 1024).unwrap();
         let sst = SstFile::parse(data).unwrap();
-        assert_eq!(sst.get("a").unwrap(), Some(b"val-a".to_vec()));
+        let mut footer = sst.footer.clone();
+        footer.bloom_m = u64::try_from(footer.bloom_bits.len() * 8 + 64).unwrap();
+        let mut skewed = SstFile {
+            data: sst.data.clone(),
+            footer,
+            footer_offset: sst.footer_offset,
+        };
+        assert!(!skewed.may_contain("a"), "must not read past bloom_bits");
+        // Sanity: the unskewed footer still answers.
+        skewed = SstFile::parse(sst.data.clone()).unwrap();
+        assert!(skewed.may_contain("a"));
+    }
+
+    /// Bloom behaviour that can actually fail: present keys must be reported,
+    /// and absent keys must mostly be rejected (not always — false positives
+    /// are allowed). The old test asserted only positives, so a `check` that
+    /// always returned `true` passed it.
+    #[test]
+    fn bloom_rejects_most_absent_keys() {
+        let entries = sample_entries();
+        let data = build_sst(&entries, 1024).unwrap();
+        let sst = SstFile::parse(data).unwrap();
+        for key in entries.keys() {
+            assert!(sst.may_contain(key), "{key} is present");
+        }
+        let absent_hits = (0..200)
+            .filter(|i| sst.may_contain(&format!("absent-{i}")))
+            .count();
+        assert!(
+            absent_hits < 40,
+            "bloom accepted {absent_hits}/200 absent keys — filter is not working"
+        );
     }
 }
