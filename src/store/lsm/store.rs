@@ -11,7 +11,7 @@ use async_trait::async_trait;
 
 use super::blob::{encode_blob_pointer, get_blob, is_overflow, put_blob, try_decode_blob_pointer};
 use super::cached::CachedOxKvStore;
-use super::manifest::{Manifest, ManifestCache, SstMeta, cas_manifest, load_manifest};
+use super::manifest::{ManifestCache, SstMeta, cas_manifest, load_manifest};
 use super::merge::merge_sources;
 use super::ownership::{acquire_ownership, cas_backoff, read_ownership, sst_path, wal_path};
 use super::probe::probe_store;
@@ -1572,31 +1572,43 @@ impl OxKvStoreBuilder {
             pending: Arc::new(std::sync::Mutex::new(Vec::new())),
             sst_cache: cache,
         };
-        // WAL replay for restart/f fencing — make not-yet-SSTed WAL visible
+        // WAL replay for restart/fencing — make not-yet-SSTed WAL visible
         {
-            let (manifest, _etag) = match load_manifest(
+            let (manifest, _etag) = load_manifest(
                 Arc::clone(&s3store.inner),
                 &s3store.prefix,
                 s3store.epoch,
                 &s3store.manifest_cache,
                 std::time::Duration::from_secs(1),
             )
-            .await
-            {
-                Ok(v) => v,
-                Err(_) => (Arc::new(Manifest::empty(s3store.epoch)), String::new()),
-            };
-            replay_listed_wals(&s3store.inner, &manifest.wal, &s3store.mem).await;
+            .await?;
+            replay_listed_wals(
+                &s3store.inner,
+                &s3store.prefix,
+                s3store.epoch,
+                &s3store.manifest_cache,
+                &manifest.wal,
+                &s3store.mem,
+            )
+            .await?;
             let cur_epoch = s3store.epoch;
             let wal_prefix = format!("e{cur_epoch:06}/wal/");
-            let wal_count = manifest
-                .wal
-                .iter()
-                .filter(|id| id.starts_with(&wal_prefix))
-                .count() as u64;
+            // High-water mark, not a tally: a sequence burned by a failed
+            // append leaves an unlisted object, so counting the listed WALs
+            // can hand a live sequence to the next write.
+            let mut max_wal = 0u64;
+            for id in &manifest.wal {
+                if let Some(num) = id
+                    .strip_prefix(&wal_prefix)
+                    .and_then(|rest| rest.strip_suffix(".log"))
+                    .and_then(|num| num.parse::<u64>().ok())
+                {
+                    max_wal = max_wal.max(num + 1);
+                }
+            }
             s3store
                 .wal_seq
-                .store(wal_count, std::sync::atomic::Ordering::SeqCst);
+                .store(max_wal, std::sync::atomic::Ordering::SeqCst);
             let sst_prefix = format!("e{cur_epoch:06}/sst/");
             let mut max_sst: u64 = 0;
             for meta in &manifest.sst {

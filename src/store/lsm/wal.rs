@@ -4,10 +4,14 @@
 //! decoder and the loop applying every listed WAL file to a table.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use super::MemTable;
 use super::TOMBSTONE_VLEN;
+use super::manifest::{ManifestCache, load_manifest};
+use super::read::is_not_found;
 use crate::store::storage::{ObjectPath, Storage};
+use crate::store::{Result, StoreError};
 
 /// Decodes length-prefixed WAL records (`[u32 key len][key][u32 value len][value]`).
 ///
@@ -53,23 +57,69 @@ pub(crate) fn decode_wal_records(data: &[u8]) -> Vec<(String, Option<Vec<u8>>)> 
 
 /// Applies every listed WAL file to `table`, newest file winning per key.
 ///
-/// Best-effort: missing files are skipped so a concurrent `gc_wal` cannot
-/// fail the caller.
+/// A listed WAL that is *gone* means the caller's listing is stale — a
+/// concurrent `gc_wal` already folded those records into an SST — so the
+/// listing is refreshed and replay retried against it. Any other read error
+/// is surfaced: silently skipping a transient failure would leave the
+/// `MemTable` missing committed records, which the next flush then writes
+/// into an SST as if it were complete.
+///
+/// # Errors
+///
+/// Returns `StoreError` when a listed WAL is still absent after one refresh,
+/// or when its read fails for any reason other than absence.
 pub(crate) async fn replay_listed_wals(
     inner: &Arc<dyn Storage>,
+    prefix: &ObjectPath,
+    epoch: u64,
+    manifest_cache: &Arc<async_lock::Mutex<ManifestCache>>,
     wal_ids: &[String],
     table: &MemTable,
-) {
-    let mut guard = table.write().await;
-    for wal_id in wal_ids {
-        let path = ObjectPath::from(wal_id.as_str());
-        let Ok(out) = inner.get(&path).await else {
-            continue;
-        };
-        for (key, value) in decode_wal_records(&out.bytes) {
-            guard.insert(key, value);
+) -> Result<()> {
+    let mut ids = wal_ids.to_vec();
+    for attempt in 0..2 {
+        let mut missing: Vec<String> = Vec::new();
+        {
+            let mut guard = table.write().await;
+            for wal_id in &ids {
+                let path = ObjectPath::from(wal_id.as_str());
+                match inner.get(&path).await {
+                    Ok(out) => {
+                        for (key, value) in decode_wal_records(&out.bytes) {
+                            guard.insert(key, value);
+                        }
+                    }
+                    Err(e) if is_not_found(&e) => missing.push(wal_id.clone()),
+                    Err(e) => {
+                        return Err(StoreError::Storage(format!(
+                            "read wal {wal_id} failed: {e}"
+                        )));
+                    }
+                }
+            }
         }
+        if missing.is_empty() {
+            return Ok(());
+        }
+        if attempt == 1 {
+            return Err(StoreError::Storage(format!(
+                "wal listed in manifest but absent from storage: {}",
+                missing.join(", ")
+            )));
+        }
+        // Refresh: `gc_wal` cleared these ids, so their records live in an SST.
+        manifest_cache.lock().await.clear();
+        let (manifest, _etag) = load_manifest(
+            Arc::clone(inner),
+            prefix,
+            epoch,
+            manifest_cache,
+            Duration::from_secs(0),
+        )
+        .await?;
+        ids.clone_from(&manifest.wal);
     }
+    Ok(())
 }
 
 #[cfg(test)]

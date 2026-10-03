@@ -13,8 +13,8 @@ use crate::store::storage::{ObjectPath, Storage};
 use crate::store::{Direction, GetSet, KeyValue, Result, Store, StoreError, Transaction};
 
 use super::{
-    Manifest, ManifestCache, MemTable, ReadCtx, SstFile, decode_wal_records, filter_rows,
-    is_not_found, load_manifest, point_lookup, range_lookup, read_ownership, replay_listed_wals,
+    ManifestCache, MemTable, ReadCtx, SstFile, decode_wal_records, filter_rows, is_not_found,
+    load_manifest, point_lookup, range_lookup, read_ownership, replay_listed_wals,
 };
 
 fn read_only_err() -> StoreError {
@@ -90,7 +90,7 @@ where
             overlay: Arc::new(async_lock::RwLock::new(std::collections::BTreeMap::new())),
             replayed: Arc::new(async_lock::Mutex::new(std::collections::BTreeSet::new())),
         };
-        reader.replay_wal().await;
+        reader.replay_wal().await?;
         Ok(reader)
     }
 
@@ -132,26 +132,32 @@ where
 
     /// Replays every listed WAL file into the replay overlay.
     ///
-    /// Best-effort like the writer startup path: missing files are skipped so
-    /// a concurrent `gc_wal` cannot fail the open.
-    async fn replay_wal(&self) {
-        let (manifest, _etag) = match load_manifest(
+    /// Errors propagate: silently replaying an incomplete set would leave the
+    /// reader answering pre-GC state forever while the writer reports
+    /// otherwise.
+    async fn replay_wal(&self) -> Result<()> {
+        let (manifest, _etag) = load_manifest(
             Arc::clone(&self.inner),
             &self.prefix,
             self.epoch,
             &self.manifest_cache,
             std::time::Duration::from_secs(1),
         )
-        .await
-        {
-            Ok(found) => found,
-            Err(_) => (Arc::new(Manifest::empty(self.epoch)), String::new()),
-        };
-        replay_listed_wals(&self.inner, &manifest.wal, &self.overlay).await;
+        .await?;
+        replay_listed_wals(
+            &self.inner,
+            &self.prefix,
+            self.epoch,
+            &self.manifest_cache,
+            &manifest.wal,
+            &self.overlay,
+        )
+        .await?;
         self.replayed
             .lock()
             .await
             .extend(manifest.wal.iter().cloned());
+        Ok(())
     }
 
     /// Replays WAL files listed since the last call into the overlay.
@@ -185,8 +191,20 @@ where
         };
         for wal_id in missing {
             let path = ObjectPath::from(wal_id.as_str());
-            let Ok(out) = self.inner.get(&path).await else {
-                continue;
+            // A vanished WAL is the `gc_wal` race: its records are SST-covered
+            // and the manifest no longer lists it, so drop it from the set.
+            // Any other failure must surface instead of diverging silently.
+            let out = match self.inner.get(&path).await {
+                Ok(out) => out,
+                Err(e) if is_not_found(&e) => {
+                    self.replayed.lock().await.insert(wal_id);
+                    continue;
+                }
+                Err(e) => {
+                    return Err(StoreError::Storage(format!(
+                        "read wal {wal_id} failed: {e}"
+                    )));
+                }
             };
             let mut replayed = self.replayed.lock().await;
             if replayed.contains(&wal_id) {
