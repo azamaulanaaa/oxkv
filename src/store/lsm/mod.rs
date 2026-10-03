@@ -79,6 +79,7 @@ pub(crate) fn new_in_memory() -> Arc<dyn Storage> {
 
 #[cfg(test)]
 mod tests {
+    use super::blob::encode_blob_pointer;
     use super::ownership::{acquire_ownership, sst_path, wal_path};
     use super::probe::probe_store;
     use super::sst::DEFAULT_BLOCK_SIZE;
@@ -1227,5 +1228,58 @@ mod tests {
             .unwrap();
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].key, "a");
+    }
+
+    /// A user value shaped exactly like a blob pointer is user data, not a pointer.
+    /// Regression: `try_decode_blob_pointer` used to accept any matching JSON
+    /// object, so storing this value made the key permanently unreadable.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn blob_pointer_shaped_user_value_round_trips() {
+        let s3 = OxKvStore::builder()
+            .with_store(new_in_memory())
+            .skip_probe(true)
+            .build()
+            .await
+            .unwrap();
+        for payload in [
+            &br#"{"blob":"nope","len":1,"crc":7}"#[..],
+            &br#"{"crc":7,"len":1,"blob":"nope"}"#[..],
+            &br#"{"blob":"x","len":1,"crc":2,"data":"user"}"#[..],
+        ] {
+            s3.set_bytes("k", payload).await.unwrap();
+            assert_eq!(
+                s3.get_bytes("k").await.unwrap().as_deref(),
+                Some(payload),
+                "user value must not be mistaken for a blob pointer"
+            );
+            // ...and after it has round-tripped through an SST as well.
+            s3.flush_mem_to_sst_force().await.unwrap().unwrap();
+            assert_eq!(
+                s3.get_bytes("k").await.unwrap().as_deref(),
+                Some(payload),
+                "pointer shape must stay inert across the SST"
+            );
+        }
+    }
+
+    /// Real overflow still spills and dereferences through the tag.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn blob_pointer_tag_still_spills_and_dereferences() {
+        let s3 = OxKvStore::builder()
+            .with_store(new_in_memory())
+            .skip_probe(true)
+            .build()
+            .await
+            .unwrap();
+        let large = vec![b'x'; DEFAULT_BLOCK_SIZE];
+        s3.stage_set("large", &large).await;
+        s3.flush().await.unwrap();
+        s3.flush_mem_to_sst_force().await.unwrap().unwrap();
+        assert_eq!(s3.get_bytes("large").await.unwrap(), Some(large));
+        let encoded = encode_blob_pointer(&ObjectPath::from("e000001/blob/deadbeef"), 5, 9);
+        assert!(try_decode_blob_pointer(&encoded).is_some());
+        assert!(try_decode_blob_pointer(br#"{"blob":"x","len":1,"crc":2}"#).is_none());
     }
 }

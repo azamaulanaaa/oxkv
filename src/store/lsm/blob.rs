@@ -49,7 +49,17 @@ pub(crate) fn blob_path(prefix: &ObjectPath, epoch: u64, hash: &str) -> ObjectPa
     epoch_prefix(prefix, epoch).child("blob").child(hash)
 }
 
-/// Encodes a blob pointer as JSON bytes for inline SST value.
+/// Prefix marking a value as a blob pointer rather than user data.
+///
+/// The pointer is JSON so it stays inspectable with `GET`, but it is *not*
+/// valid JSON on its own: the tag is a non-JSON byte prefix, so no user
+/// value — including a JSON object that happens to have `blob`/`len`/`crc`
+/// fields — can ever be mistaken for a pointer. Without this, any user
+/// document of that shape became permanently unreadable: `resolve_value`
+/// dereferenced it, the blob GET 404'd, and the key errored forever.
+const BLOB_POINTER_TAG: &[u8] = b"\x00oxkv-blob-v1:";
+
+/// Encodes a blob pointer as tagged bytes for inline SST value.
 #[must_use]
 pub(crate) fn encode_blob_pointer(blob: &ObjectPath, len: usize, crc: u32) -> Vec<u8> {
     let ptr = BlobPointer {
@@ -57,18 +67,19 @@ pub(crate) fn encode_blob_pointer(blob: &ObjectPath, len: usize, crc: u32) -> Ve
         len,
         crc,
     };
-    serde_json::to_vec(&ptr).expect("blob pointer serialize")
+    let mut out = Vec::with_capacity(BLOB_POINTER_TAG.len() + 48);
+    out.extend_from_slice(BLOB_POINTER_TAG);
+    out.extend_from_slice(&serde_json::to_vec(&ptr).expect("blob pointer serialize"));
+    out
 }
 
-/// Tries to decode `value` as `BlobPointer`; `None` if not a pointer.
+/// Tries to decode `value` as a [`BlobPointer`]; `None` if not a pointer.
+///
+/// Any value without the exact tag is user data and is returned as-is.
 #[must_use]
 pub(crate) fn try_decode_blob_pointer(value: &[u8]) -> Option<BlobPointer> {
-    // Fast-reject: blob pointers are JSON objects `{"blob":...}`; most values
-    // are not JSON at all. Avoid serde parse for the common case.
-    if value.len() < 10 || value.first() != Some(&b'{') {
-        return None;
-    }
-    serde_json::from_slice(value).ok()
+    let json = value.strip_prefix(BLOB_POINTER_TAG)?;
+    serde_json::from_slice(json).ok()
 }
 
 /// Puts `value` to `e{epoch}/blob/{hash}` via `If-None-Match` and returns the path.
