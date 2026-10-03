@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use super::blob::{encode_blob_pointer, get_blob, is_overflow, put_blob, try_decode_blob_pointer};
+use super::blob::{encode_blob_pointer, is_overflow, put_blob};
 #[cfg(feature = "btree")]
 use super::cached::CachedOxKvStore;
 use super::manifest::{ManifestCache, SstMeta, cas_manifest, load_manifest};
@@ -19,7 +19,8 @@ use super::ownership::{
 };
 use super::probe::probe_store;
 use super::read::{
-    ReadCtx, fetch_sst, filter_rows, point_lookup, range_lookup, retry_once_not_found,
+    ReadCtx, fetch_sst, filter_rows, point_lookup, range_lookup, resolve_value,
+    retry_once_not_found,
 };
 use super::reader::OxKvReader;
 use super::sst::{DEFAULT_BLOCK_SIZE, SstFile, TOMBSTONE_VLEN, build_sst};
@@ -944,13 +945,10 @@ where
             for (k, v) in scan {
                 match v {
                     Some(raw) => {
-                        // Resolve blob pointers if any (L0 may contain pointers).
-                        let val = if let Some(ptr) = try_decode_blob_pointer(&raw) {
-                            let blob_path = ObjectPath::from(ptr.blob.as_str());
-                            get_blob(Arc::clone(&self.inner), &blob_path).await?
-                        } else {
-                            raw
-                        };
+                        // Same verification as the read path (`resolve_value`):
+                        // dereferencing here without it would inline a corrupt
+                        // blob into L1 and make the corruption permanent.
+                        let val = resolve_value(&self.read_ctx(), raw).await?;
                         resolved.push((k, Some(val)));
                     }
                     None => resolved.push((k, None)),
