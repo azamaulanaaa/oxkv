@@ -1464,4 +1464,76 @@ mod tests {
             );
         }
     }
+
+    /// The manifest SST list is ordered oldest-first by write sequence, and
+    /// every read walks it in reverse — so list position *is* recency.
+    /// Regression: compaction re-sorted the list by `min_key`, which can place
+    /// a newer file ahead of older data and serve stale values.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn manifest_sst_list_stays_ordered_by_write_sequence() {
+        let inner = new_in_memory();
+        let s = OxKvStore::builder()
+            .with_store(Arc::clone(&inner))
+            .with_prefix(ObjectPath::from("oxkv-seq-order"))
+            .with_session("sess-seq-order")
+            .skip_probe(true)
+            .build()
+            .await
+            .unwrap();
+        let read_manifest = || async {
+            let out = inner
+                .get(&ObjectPath::from("oxkv-seq-order").child("manifest.json"))
+                .await
+                .expect("manifest readable");
+            serde_json::from_slice::<Manifest>(&out.bytes).expect("manifest parses")
+        };
+
+        // Disjoint key ranges, so each compaction produces a non-overlapping L1
+        // that is *retained* by the next one. That is the case where the list
+        // order actually carries information: after L1_MERGE_COUNT files,
+        // compaction folds the smallest adjacent pair and rebuilds the list.
+        let mut saw_multi_file_list = false;
+        for round in 0..(L1_MERGE_COUNT + 2) {
+            for i in 0..4 {
+                s.put_bytes(&format!("r{round:02}k{i}"), b"v1")
+                    .await
+                    .unwrap();
+                s.flush_mem_to_sst_force().await.unwrap();
+            }
+            s.compact().await.unwrap();
+            let m = read_manifest().await;
+            if m.sst.len() > 1 {
+                saw_multi_file_list = true;
+            }
+            assert!(
+                m.sst.windows(2).all(|w| w[0].seq <= w[1].seq),
+                "sst list not oldest-first by seq: {:?}",
+                m.sst
+                    .iter()
+                    .map(|x| (x.id.as_str(), x.seq, x.level, x.min_key.as_str()))
+                    .collect::<Vec<_>>()
+            );
+        }
+        assert!(
+            saw_multi_file_list,
+            "compaction never retained more than one file; test proves nothing"
+        );
+
+        // Newest value still wins through whatever order survived.
+        for round in 0..(L1_MERGE_COUNT + 2) {
+            s.put_bytes(&format!("r{round:02}k0"), b"v2").await.unwrap();
+        }
+        s.flush_mem_to_sst_force().await.unwrap();
+        for round in 0..(L1_MERGE_COUNT + 2) {
+            assert_eq!(
+                s.get_bytes(&format!("r{round:02}k0"))
+                    .await
+                    .unwrap()
+                    .as_deref(),
+                Some(&b"v2"[..]),
+                "r{round:02}k0"
+            );
+        }
+    }
 }

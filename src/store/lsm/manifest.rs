@@ -14,10 +14,20 @@ use crate::store::storage::{GetOptions, ObjectPath, ObjectVersion, PutMode, Stor
 use crate::store::{Result, StoreError, now_millis};
 
 /// Metadata for one SST file recorded in the manifest.
+///
+/// Entries are listed oldest-first; every read path walks the list in reverse
+/// and stops at the first hit, so list position *is* recency. `seq` is what
+/// makes that position recoverable — sorting by key range destroys it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SstMeta {
     /// Object id, e.g. `e000007/sst/L0/000000123.sst`.
     pub id: String,
+    /// Monotonic write order within the epoch; higher is newer.
+    ///
+    /// Defaults to 0 for manifests written before this field existed, which
+    /// leaves their relative order exactly as stored.
+    #[serde(default)]
+    pub seq: u64,
     /// Level `0` (overlapping) or `1` (non-overlapping).
     pub level: u8,
     /// Minimum key (inclusive).
@@ -313,6 +323,7 @@ mod tests {
             wal: vec![],
             sst: vec![SstMeta {
                 id: "e000007/sst/L0/000000001.sst".to_string(),
+                seq: 1,
                 level: 0,
                 min_key: "a".to_string(),
                 max_key: "z".to_string(),

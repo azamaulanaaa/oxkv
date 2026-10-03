@@ -634,6 +634,7 @@ where
         }
         let sst_meta = SstMeta {
             id: sst_id.clone(),
+            seq,
             level: 0,
             min_key: sst_entries.keys().next().cloned().unwrap_or_default(),
             max_key: sst_entries.keys().next_back().cloned().unwrap_or_default(),
@@ -1134,6 +1135,7 @@ where
                 .collect();
             let new_meta = SstMeta {
                 id: l1_id.clone(),
+                seq,
                 level: 1,
                 min_key: final_entries.keys().next().cloned().unwrap_or_default(),
                 max_key: final_entries
@@ -1144,8 +1146,11 @@ where
                 size: sst_bytes.len() as u64,
             };
             new_sst_list.push(new_meta.clone());
-            // Keep L1 non-overlapping sorted by min_key for future.
-            new_sst_list.sort_by(|a, b| a.min_key.cmp(&b.min_key));
+            // Oldest-first by write sequence, never by key range: the read
+            // paths walk this list in reverse and stop at the first hit, so
+            // list position is recency. Sorting by `min_key` let a fresh L0
+            // file land ahead of older L1 data and serve stale values.
+            new_sst_list.sort_by_key(|m| m.seq);
             manifest.sst = new_sst_list;
             manifest.version = manifest.version.wrapping_add(1);
             let etag_opt = if etag.is_empty() { None } else { Some(etag) };
