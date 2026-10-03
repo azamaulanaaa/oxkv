@@ -1653,4 +1653,90 @@ mod tests {
             .expect("value must have spilled to its own object");
         assert_eq!(stored.bytes, large);
     }
+
+    /// `seq` orders the manifest SST list, and the manifest is prefix-scoped
+    /// and inherited across an epoch takeover — so `seq` must be a prefix-wide
+    /// high-water mark, not per-epoch.
+    ///
+    /// Regression: `sst_seq` was rebuilt from this epoch's SSTs only, so after a
+    /// takeover the new epoch's SSTs got *lower* seqs than inherited old-epoch
+    /// SSTs. `compact_inner`'s `sort_by_key(seq)` then produced
+    /// `[e1/seq4, e2/seq4, e1/seq9]` — the oldest data listed last, inverting
+    /// the "list position == recency" invariant every read depends on.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn sst_seq_is_prefix_wide_across_an_epoch_takeover() {
+        let backend = new_in_memory();
+        let p = ObjectPath::from("seq-epoch");
+        let mk = |backend: Arc<dyn Storage>, p: ObjectPath| async move {
+            OxKvStore::builder()
+                .with_store(backend)
+                .with_prefix(p)
+                .skip_probe(true)
+                .build()
+                .await
+                .unwrap()
+        };
+        let epoch_of = |id: &str| -> u64 {
+            id.split('/')
+                .nth(1)
+                .unwrap()
+                .trim_start_matches('e')
+                .parse()
+                .unwrap()
+        };
+
+        // Epoch 1: burn sequences so its retained L1s carry high seqs. Keys
+        // "a*" never overlap epoch 2's "x*", so these L1s are retained.
+        let a = mk(std::sync::Arc::clone(&backend), p.clone()).await;
+        for i in 0..8 {
+            a.set_bytes(&format!("a{i}"), b"old").await.unwrap();
+            a.flush_mem_to_sst_force().await.unwrap().unwrap();
+        }
+        a.compact().await.unwrap();
+        // Drop epoch-1 WALs so the epoch-2 open does not replay them into its
+        // memtable — otherwise its first flush overlaps epoch 1's range, the
+        // L1s legitimately merge, and the ordering question stays hidden.
+        a.gc_wal().await.unwrap();
+        drop(a);
+
+        // Takeover: `sst_seq` restarts at 0 unless it is rebuilt prefix-wide.
+        let b = mk(std::sync::Arc::clone(&backend), p.clone()).await;
+        for i in 0..4 {
+            b.set_bytes(&format!("x{i}"), b"new").await.unwrap();
+            b.flush_mem_to_sst_force().await.unwrap().unwrap();
+        }
+        b.compact().await.unwrap();
+
+        let out = backend
+            .get(&p.child("manifest.json"))
+            .await
+            .expect("manifest");
+        let m: Manifest = serde_json::from_slice(&out.bytes).unwrap();
+        assert!(m.sst.len() > 1, "expected a mixed list, got {:?}", m.sst);
+        let epochs: Vec<u64> = m.sst.iter().map(|s| epoch_of(&s.id)).collect();
+        assert!(
+            epochs.windows(2).all(|w| w[0] <= w[1]),
+            "epoch order inverted in the sst list: {epochs:?} — reads walk this \
+             list in reverse as newest-first, so the oldest file must come first"
+        );
+        // And the seqs themselves must be strictly ascending with the list.
+        assert!(
+            m.sst.windows(2).all(|w| w[0].seq < w[1].seq),
+            "seq not monotonic across epochs: {:?}",
+            m.sst
+                .iter()
+                .map(|s| (s.id.as_str(), s.seq))
+                .collect::<Vec<_>>()
+        );
+        // Data written by the current epoch must still read back.
+        assert_eq!(
+            b.get_bytes("x0").await.unwrap().as_deref(),
+            Some(&b"new"[..])
+        );
+        assert_eq!(
+            b.get_bytes("a0").await.unwrap().as_deref(),
+            Some(&b"old"[..])
+        );
+    }
 }

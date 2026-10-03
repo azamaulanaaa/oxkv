@@ -1573,16 +1573,22 @@ impl OxKvStoreBuilder {
             s3store
                 .wal_seq
                 .store(max_wal, std::sync::atomic::Ordering::SeqCst);
-            let sst_prefix = format!("{}/sst/", format_epoch(cur_epoch));
+            // High-water mark across the WHOLE prefix, not just this epoch.
+            // The manifest is prefix-scoped and carries SSTs forward across an
+            // epoch takeover, but `seq` is a globally monotonic ordering key:
+            // `compact_inner` sorts the list by it, and every read walks that
+            // list in reverse as if position == recency. Restarting the counter
+            // per epoch would make a new epoch's seq collide with an inherited
+            // old-epoch seq and invert recency on the next compaction.
             let mut max_sst: u64 = 0;
             for meta in &manifest.sst {
-                if meta.id.starts_with(&sst_prefix)
+                if meta.id.contains("/sst/")
                     && let Some(fname) = meta.id.rsplit('/').next()
-                    && let Some(num) = fname
+                    && let Some(s) = fname
                         .strip_suffix(".sst")
                         .and_then(|s| s.parse::<u64>().ok())
                 {
-                    max_sst = max_sst.max(num + 1);
+                    max_sst = max_sst.max(s + 1);
                 }
             }
             s3store
