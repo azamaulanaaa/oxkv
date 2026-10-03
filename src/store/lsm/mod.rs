@@ -12,7 +12,7 @@ mod manifest;
 mod merge;
 mod ownership;
 mod probe;
-mod read;
+pub(crate) mod read;
 mod reader;
 mod sst;
 mod store;
@@ -24,7 +24,9 @@ pub(crate) use blob::{get_blob, try_decode_blob_pointer};
 pub use cached::{CachedOxKvStore, CachedTx, WarmMode};
 pub(crate) use manifest::{Manifest, ManifestCache, load_manifest};
 pub(crate) use ownership::read_ownership;
-pub(crate) use read::{ReadCtx, filter_rows, is_not_found, point_lookup, range_lookup};
+pub(crate) use read::{
+    ReadCtx, filter_rows, is_not_found, point_lookup, range_lookup, retry_once_not_found,
+};
 pub use reader::{OxKvReader, OxKvRoTx};
 /// Parsed SST file; name it to weigh a custom [`crate::store::Cache`] (see [`SstFile::size`]).
 pub use sst::SstFile;

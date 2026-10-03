@@ -15,6 +15,7 @@ use crate::store::{Direction, GetSet, KeyValue, Result, Store, StoreError, Trans
 use super::{
     ManifestCache, MemTable, ReadCtx, SstFile, decode_wal_records, filter_rows, is_not_found,
     load_manifest, point_lookup, range_lookup, read_ownership, replay_listed_wals,
+    retry_once_not_found,
 };
 
 fn read_only_err() -> StoreError {
@@ -228,16 +229,12 @@ where
     /// Returns `StoreError` on I/O or CRC failure.
     pub async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
         self.ensure_replayed().await?;
-        let staged = self.overlay.read().await.get(key).cloned();
-        match point_lookup(&self.read_ctx(), staged, key).await {
-            Err(e) if is_not_found(&e) => {
-                self.manifest_cache.lock().await.clear();
-                self.ensure_replayed().await?;
-                let staged = self.overlay.read().await.get(key).cloned();
-                point_lookup(&self.read_ctx(), staged, key).await
-            }
-            other => other,
-        }
+        retry_once_not_found(&self.manifest_cache, || async move {
+            self.ensure_replayed().await?;
+            let staged = self.overlay.read().await.get(key).cloned();
+            point_lookup(&self.read_ctx(), staged, key).await
+        })
+        .await
     }
 
     #[must_use]
@@ -273,31 +270,17 @@ where
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
-        self.ensure_replayed().await?;
-        let layers = vec![{
-            let overlay = self.overlay.read().await;
-            filter_rows(&overlay, direction, &cursor)
-        }];
-        match range_lookup(
-            &self.read_ctx(),
-            layers,
-            limit,
-            direction,
-            (cursor.0.clone(), cursor.1.clone()),
-        )
-        .await
-        {
-            Err(e) if is_not_found(&e) => {
-                self.manifest_cache.lock().await.clear();
+        let cursor = cursor.clone();
+        retry_once_not_found(&self.manifest_cache, || {
+            let cursor2 = cursor.clone();
+            async move {
                 self.ensure_replayed().await?;
-                let layers = vec![{
-                    let overlay = self.overlay.read().await;
-                    filter_rows(&overlay, direction, &cursor)
-                }];
-                range_lookup(&self.read_ctx(), layers, limit, direction, cursor).await
+                let overlay = self.overlay.read().await;
+                let layers = vec![filter_rows(&overlay, direction, &cursor2)];
+                range_lookup(&self.read_ctx(), layers, limit, direction, cursor2).await
             }
-            other => other,
-        }
+        })
+        .await
     }
 }
 

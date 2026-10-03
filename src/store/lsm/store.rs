@@ -16,7 +16,9 @@ use super::manifest::{ManifestCache, SstMeta, cas_manifest, load_manifest};
 use super::merge::merge_sources;
 use super::ownership::{acquire_ownership, cas_backoff, read_ownership, sst_path, wal_path};
 use super::probe::probe_store;
-use super::read::{ReadCtx, filter_rows, is_not_found, point_lookup, range_lookup};
+use super::read::{
+    ReadCtx, fetch_sst, filter_rows, point_lookup, range_lookup, retry_once_not_found,
+};
 use super::reader::OxKvReader;
 use super::sst::{DEFAULT_BLOCK_SIZE, SstFile, TOMBSTONE_VLEN, build_sst};
 use super::tx::OxKvTx;
@@ -169,7 +171,7 @@ where
 
     /// Stages `set` into `MemTable` + WAL buffer (commit = mem).
     ///
-    /// Does not hit storage — use [`Self::flush`] or [`Self::commit_durable_set`] for RPO=0.
+    /// Does not hit storage — use [`Self::flush`] for RPO=0.
     pub async fn stage_set(&self, key: &str, value: &[u8]) {
         self.mem
             .write()
@@ -185,11 +187,6 @@ where
     pub async fn stage_delete(&self, key: &str) {
         self.mem.write().await.insert(key.to_string(), None);
         self.wal_buffer.lock().await.push((key.to_string(), None));
-    }
-
-    /// Reads from `MemTable` (hot path, no S3).
-    pub async fn mem_get(&self, key: &str) -> Option<Option<Vec<u8>>> {
-        self.mem.read().await.get(key).cloned()
     }
 }
 
@@ -498,16 +495,6 @@ where
         let _ = self.gc_wal_inner().await;
     }
 
-    /// Convenience: stage + flush (RPO=0) — mirrors `commit_durable`.
-    ///
-    /// # Errors
-    ///
-    /// Propagates `StoreError` from [`Self::flush`].
-    pub async fn commit_durable_set(&self, key: &str, value: &[u8]) -> Result<()> {
-        self.stage_set(key, value).await;
-        self.flush().await
-    }
-
     /// Flushes `MemTable` to `L0` SST if above `32 MiB` or `force`.
     ///
     /// # Errors
@@ -674,34 +661,6 @@ where
         }
     }
 
-    /// Reads and parses `id` straight from storage, bypassing the SST cache.
-    ///
-    /// Window scans (`gets`) use this so a wide range never evicts hot
-    /// point-lookup entries.
-    async fn read_sst(&self, id: &str) -> Result<Arc<SstFile>> {
-        let path = ObjectPath::from(id);
-        let out = self
-            .inner
-            .get(&path)
-            .await
-            .map_err(|e| StoreError::Storage(format!("get sst {id} failed: {e}")))?;
-        let sst = Arc::new(SstFile::parse(out.bytes)?);
-        sst.verify_file_crc()?;
-        Ok(sst)
-    }
-
-    /// Cache-through SST read for point lookups.
-    async fn fetch_sst(&self, id: &str) -> Result<Arc<SstFile>> {
-        if let Some(cached) = self.sst_cache.get(&id.to_string()).await {
-            return Ok(cached);
-        }
-        let sst = self.read_sst(id).await?;
-        self.sst_cache
-            .insert(id.to_string(), Arc::clone(&sst))
-            .await;
-        Ok(sst)
-    }
-
     /// Reads `key` via `MemTable` → SSTs (newest first) → blob deref.
     ///
     /// Restarts once against a fresh manifest when an SST or blob read hits
@@ -711,15 +670,11 @@ where
     ///
     /// Returns `StoreError` on I/O or CRC failure.
     pub async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        let staged = self.mem.read().await.get(key).cloned();
-        match point_lookup(&self.read_ctx(), staged, key).await {
-            Err(e) if is_not_found(&e) => {
-                self.manifest_cache.lock().await.clear();
-                let staged = self.mem.read().await.get(key).cloned();
-                point_lookup(&self.read_ctx(), staged, key).await
-            }
-            other => other,
-        }
+        retry_once_not_found(&self.manifest_cache, || {
+            let staged = async { self.mem.read().await.get(key).cloned() };
+            async move { point_lookup(&self.read_ctx(), staged.await, key).await }
+        })
+        .await
     }
 
     #[must_use]
@@ -755,29 +710,24 @@ where
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
-        let layers = vec![{
-            let mem = self.mem.read().await;
-            filter_rows(&mem, direction, &cursor)
-        }];
-        match range_lookup(
-            &self.read_ctx(),
-            layers,
-            limit,
-            direction,
-            (cursor.0.clone(), cursor.1.clone()),
-        )
-        .await
-        {
-            Err(e) if is_not_found(&e) => {
-                self.manifest_cache.lock().await.clear();
-                let layers = vec![{
-                    let mem = self.mem.read().await;
-                    filter_rows(&mem, direction, &cursor)
-                }];
-                range_lookup(&self.read_ctx(), layers, limit, direction, cursor).await
+        retry_once_not_found(&self.manifest_cache, || {
+            let layers = async {
+                let mem = self.mem.read().await;
+                vec![filter_rows(&mem, direction, &cursor)]
+            };
+            let cursor2 = cursor.clone();
+            async move {
+                range_lookup(
+                    &self.read_ctx(),
+                    layers.await,
+                    limit,
+                    direction,
+                    cursor2,
+                )
+                .await
             }
-            other => other,
-        }
+        })
+        .await
     }
 
     /// Registers a pinned reader at `version` for watermark.
@@ -987,7 +937,7 @@ where
         // Read all overlapping SSTs via heap merge (newest wins, tombstones suppressed in final L1 except needed).
         let mut sources: Vec<Vec<(String, Option<Vec<u8>>)>> = Vec::new();
         for meta in l0_metas.iter().rev().chain(l1_overlapping.iter().rev()) {
-            let sst = self.fetch_sst(&meta.id).await?;
+            let sst = fetch_sst(&self.read_ctx(), &meta.id).await?;
             let scan = sst.scan_with_tombstones(None, None, None)?;
             let mut resolved: Vec<(String, Option<Vec<u8>>)> = Vec::with_capacity(scan.len());
             for (k, v) in scan {

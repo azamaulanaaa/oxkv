@@ -8,7 +8,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use super::manifest::ManifestCache;
-use super::read::{ReadCtx, filter_rows, is_not_found, point_lookup, range_lookup, resolve_value};
+use super::read::{
+    ReadCtx, filter_rows, point_lookup, range_lookup, resolve_value, retry_once_not_found,
+};
 use super::store::OxKvStore;
 use super::store::PendingWrite;
 use super::{MemTable, WalBuffer};
@@ -62,15 +64,11 @@ where
                 None => Ok(None),
             };
         }
-        let staged = self.mem.read().await.get(key).cloned();
-        match point_lookup(&self.read_ctx(), staged, key).await {
-            Err(e) if is_not_found(&e) => {
-                self.manifest_cache.lock().await.clear();
-                let staged = self.mem.read().await.get(key).cloned();
-                point_lookup(&self.read_ctx(), staged, key).await
-            }
-            other => other,
-        }
+        retry_once_not_found(&self.manifest_cache, || {
+            let staged = async { self.mem.read().await.get(key).cloned() };
+            async move { point_lookup(&self.read_ctx(), staged.await, key).await }
+        })
+        .await
     }
 
     async fn has(&self, key: &str) -> Result<bool> {
@@ -102,44 +100,14 @@ where
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
-        let overlay_rows = {
-            let overlay = lock_ignore_poison(&self.overlay);
-            filter_rows(&overlay, direction, &cursor)
-        };
-        let mem_rows = {
-            let mem = self.mem.read().await;
-            filter_rows(&mem, direction, &cursor)
-        };
-        match range_lookup(
-            &self.read_ctx(),
-            vec![overlay_rows, mem_rows],
-            limit,
-            direction,
-            (cursor.0.clone(), cursor.1.clone()),
-        )
-        .await
-        {
-            Err(e) if is_not_found(&e) => {
-                self.manifest_cache.lock().await.clear();
-                let overlay_rows = {
-                    let overlay = lock_ignore_poison(&self.overlay);
-                    filter_rows(&overlay, direction, &cursor)
-                };
-                let mem_rows = {
-                    let mem = self.mem.read().await;
-                    filter_rows(&mem, direction, &cursor)
-                };
-                range_lookup(
-                    &self.read_ctx(),
-                    vec![overlay_rows, mem_rows],
-                    limit,
-                    direction,
-                    cursor,
-                )
-                .await
+        retry_once_not_found(&self.manifest_cache, || {
+            let layers = self.snapshot_layers(direction, &cursor);
+            let cursor2 = cursor.clone();
+            async move {
+                range_lookup(&self.read_ctx(), layers.await, limit, direction, cursor2).await
             }
-            other => other,
-        }
+        })
+        .await
     }
 }
 
@@ -179,6 +147,23 @@ impl<C> OxKvTx<C>
 where
     C: Cache<String, Arc<SstFile>>,
 {
+    /// Newest-layer rows for a scan: transaction overlay over `MemTable`.
+    async fn snapshot_layers(
+        &self,
+        direction: Direction,
+        cursor: &(Option<String>, Option<String>),
+    ) -> Vec<Vec<(String, Option<Vec<u8>>)>> {
+        let overlay_rows = {
+            let overlay = lock_ignore_poison(&self.overlay);
+            filter_rows(&overlay, direction, cursor)
+        };
+        let mem_rows = {
+            let mem = self.mem.read().await;
+            filter_rows(&mem, direction, cursor)
+        };
+        vec![overlay_rows, mem_rows]
+    }
+
     #[must_use]
     fn read_ctx(&self) -> ReadCtx<'_, C> {
         ReadCtx {

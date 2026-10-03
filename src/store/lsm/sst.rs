@@ -1,7 +1,6 @@
 //! SST (Sorted String Table) builder and reader for `OxKvStore` — L0.
 #![allow(unreachable_pub, missing_docs)]
 #![allow(clippy::pedantic, clippy::all)]
-#![allow(dead_code)]
 //!
 //! Fixed `32 KiB` blocks, `CRC32` per block, `bloom` filter, footer index.
 
@@ -95,19 +94,6 @@ impl Bloom {
             let bit = h as usize;
             self.bits[bit / 8] |= 1 << (bit % 8);
         }
-    }
-
-    /// Checks membership (may false-positive).
-    #[must_use]
-    pub(crate) fn check(&self, key: &str) -> bool {
-        for i in 0..self.k {
-            let h = Self::hash(key, i) % self.m as u64;
-            let bit = h as usize;
-            if self.bits[bit / 8] & (1 << (bit % 8)) == 0 {
-                return false;
-            }
-        }
-        true
     }
 
     /// Returns bits for serialization.
@@ -222,7 +208,8 @@ pub fn build_sst(
     Ok(out)
 }
 
-/// Convenience for `BTreeMap<String, Vec<u8>>` (no tombstones) — used by tests.
+/// Convenience for `BTreeMap<String, Vec<u8>>` (no tombstones). Tests only.
+#[cfg(test)]
 pub(crate) fn build_sst_from_values(
     entries: &BTreeMap<String, Vec<u8>>,
     block_size: usize,
@@ -296,15 +283,11 @@ impl SstFile {
         })
     }
 
-    /// Returns footer.
+    /// File size in bytes, used as the cache weight (`moka` weigher).
+    ///
+    /// The only part of [`SstFile`] that is public API: the engine
+    /// constructs files itself, so everything else is crate-internal.
     #[must_use]
-    pub(crate) fn footer(&self) -> &SstFooter {
-        &self.footer
-    }
-
-    /// Weighted cache size in bytes (for `moka` weigher).
-    #[must_use]
-    /// File size in bytes, used as the cache weight.
     pub fn size(&self) -> usize {
         self.data.len()
     }
@@ -411,7 +394,9 @@ impl SstFile {
     }
 
     /// Point lookup: returns value if present (`None` for missing or tombstone).
-    /// Empty `Some(vec![])` is a valid empty value, not tombstone.
+    /// Empty `Some(vec![])` is a valid empty value, not tombstone. Tests
+    /// only; the read path uses `get_option`, which reports tombstones.
+    #[cfg(test)]
     pub(crate) fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
         if !self.may_contain(key) {
             return Ok(None);
@@ -464,6 +449,7 @@ impl SstFile {
     /// Range scan: returns sorted KVs in `[start, end]` inclusive, honoring
     /// direction. `limit` caps results. Tombstones are omitted; empty values
     /// are returned.
+    #[cfg(test)]
     pub fn scan(
         &self,
         start: Option<&str>,
@@ -544,7 +530,7 @@ impl SstFile {
 
     /// Range scan including tombstones: returns `(key, Option<value>)` where
     /// `None` is tombstone.
-    pub fn scan_with_tombstones(
+    pub(crate) fn scan_with_tombstones(
         &self,
         start: Option<&str>,
         end: Option<&str>,
@@ -625,10 +611,14 @@ impl SstFile {
     /// Yields `(key, value)` with `None` marking tombstones; blocks outside
     /// the range are skipped via the footer index and entries decode on pull,
     /// so a capped consumer never pays for the unread tail. Truncation ends
-    /// the stream, matching [`SstFile::scan`]; encoding errors surface as
-    /// `Err` items and terminate iteration on the next pull.
+    /// the stream, matching `scan`; encoding errors surface as `Err` items
+    /// and terminate iteration on the next pull.
     #[must_use]
-    pub fn scan_iter<'a>(&'a self, start: Option<&'a str>, end: Option<&'a str>) -> SstScan<'a> {
+    pub(crate) fn scan_iter<'a>(
+        &'a self,
+        start: Option<&'a str>,
+        end: Option<&'a str>,
+    ) -> SstScan<'a> {
         SstScan {
             file: self,
             start,
@@ -641,7 +631,7 @@ impl SstFile {
     }
 
     /// Verifies file-level `CRC` (`u64`).
-    pub fn verify_file_crc(&self) -> Result<()> {
+    pub(crate) fn verify_file_crc(&self) -> Result<()> {
         let mut hasher = crc32fast::Hasher::new();
         for meta in &self.footer.index {
             let bytes = self.block_bytes(meta)?;
@@ -1001,5 +991,20 @@ mod tests {
             absent_hits < 40,
             "bloom accepted {absent_hits}/200 absent keys — filter is not working"
         );
+    }
+
+    /// The no-tombstone convenience builder round-trips through the reader.
+    #[test]
+    fn sst_from_values_helper() {
+        let values = sample_values();
+        let data = build_sst_from_values(&values, 1024).unwrap();
+        let sst = SstFile::parse(data).unwrap();
+        for (k, v) in &values {
+            assert_eq!(sst.get(k).unwrap().as_deref(), Some(&v[..]), "{k}");
+        }
+        let scan = sst.scan(None, None, None).unwrap();
+        assert_eq!(scan.len(), values.len());
+        assert_eq!(scan[0].0, "a");
+        assert_eq!(scan[0].1, b"val-a".to_vec());
     }
 }

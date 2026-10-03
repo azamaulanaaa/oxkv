@@ -94,8 +94,6 @@ struct CachedState {
     poisoned: Option<String>,
     /// Full dataset mirrored: reads serve from memory alone.
     warmed: bool,
-    /// Explicitly driven scan in progress.
-    warming: bool,
     /// Resume cursor for an explicitly driven scan.
     warm_cursor: Option<String>,
     /// Keys already scanned by the driven scan, for the final diff.
@@ -226,7 +224,7 @@ where
                 last_check_ms: 0,
                 poisoned: None,
                 warmed: false,
-                warming: false,
+
                 warm_cursor: None,
                 scanned_keys: BTreeSet::new(),
             })),
@@ -486,7 +484,6 @@ where
         {
             let mut state = self.state.lock().await;
             state.warmed = false;
-            state.warming = false;
             state.warm_cursor = None;
             state.scanned_keys.clear();
         }
@@ -566,7 +563,7 @@ where
                 state = self.state.lock().await;
             }
             state.warm_cursor = last;
-            state.warming = true;
+
             drop(state);
             pages += 1;
             if short {
@@ -612,7 +609,7 @@ where
         let mut state = self.state.lock().await;
         observe_manifest(&mut state, manifest);
         state.warm_cursor = None;
-        state.warming = false;
+
         state.warmed = true;
         Ok(())
     }

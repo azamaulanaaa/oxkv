@@ -91,7 +91,14 @@ pub(crate) async fn resolve_value<C>(ctx: &ReadCtx<'_, C>, raw: Vec<u8>) -> Resu
     }
 }
 
-async fn read_sst<C>(ctx: &ReadCtx<'_, C>, id: &str) -> Result<Arc<SstFile>> {
+/// Reads and parses `id` straight from storage, bypassing the SST cache.
+///
+/// Window scans (`gets`) use this so a wide range never evicts hot
+/// point-lookup entries.
+pub(crate) async fn read_sst<C>(ctx: &ReadCtx<'_, C>, id: &str) -> Result<Arc<SstFile>>
+where
+    C: Cache<String, Arc<SstFile>>,
+{
     let path = ObjectPath::from(id);
     let out = ctx
         .inner
@@ -103,7 +110,8 @@ async fn read_sst<C>(ctx: &ReadCtx<'_, C>, id: &str) -> Result<Arc<SstFile>> {
     Ok(sst)
 }
 
-async fn fetch_sst<C>(ctx: &ReadCtx<'_, C>, id: &str) -> Result<Arc<SstFile>>
+/// Cache-through SST read for point lookups.
+pub(crate) async fn fetch_sst<C>(ctx: &ReadCtx<'_, C>, id: &str) -> Result<Arc<SstFile>>
 where
     C: Cache<String, Arc<SstFile>>,
 {
@@ -113,6 +121,28 @@ where
     let sst = read_sst(ctx, id).await?;
     ctx.sst_cache.insert(id.to_string(), Arc::clone(&sst)).await;
     Ok(sst)
+}
+
+/// Runs `op`, and on a stale-manifest `not found` clears the manifest cache
+/// and runs it once more against a fresh manifest.
+///
+/// The snapshot a lookup takes can predate a compaction that deleted a file
+/// it listed. Six call sites used to spell this out by hand.
+pub(crate) async fn retry_once_not_found<T, F, Fut>(
+    manifest_cache: &Arc<async_lock::Mutex<ManifestCache>>,
+    mut op: F,
+) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    match op().await {
+        Err(e) if is_not_found(&e) => {
+            manifest_cache.lock().await.clear();
+            op().await
+        }
+        other => other,
+    }
 }
 
 /// Reads `key` via an optional staged hit, then SSTs newest-first.
