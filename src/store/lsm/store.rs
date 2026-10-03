@@ -465,7 +465,7 @@ where
     /// Flushes buffered WAL ops to `e{epoch}/wal/{seq:08}.log` via
     /// `PutMode::Create` (`If-None-Match:"*"`), then gates on ownership.
     ///
-    /// Implements `commit_durable` RPO=0. Takes [`Self::write_gate`], so these
+    /// Implements `commit_durable` RPO=0. Takes the writer gate, so these
     /// records land in program order relative to every other durable write.
     ///
     /// # Errors
