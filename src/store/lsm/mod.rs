@@ -1540,4 +1540,117 @@ mod tests {
             );
         }
     }
+
+    /// Corrupting the blob object must surface as an error, not a silent
+    /// short or empty value. These are the only checks on spilled values, and
+    /// they had no coverage at all.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn blob_length_mismatch_surfaces_an_error() {
+        let backend = new_in_memory();
+        let s3 = OxKvStore::builder()
+            .with_store(Arc::clone(&backend))
+            .skip_probe(true)
+            .build()
+            .await
+            .unwrap();
+        let large = vec![b'x'; DEFAULT_BLOCK_SIZE];
+        s3.stage_set("large", &large).await;
+        s3.flush().await.unwrap();
+        s3.flush_mem_to_sst_force().await.unwrap().unwrap();
+        assert_eq!(
+            s3.get_bytes("large").await.unwrap().as_deref(),
+            Some(&large[..])
+        );
+
+        // Truncate the spilled object in place.
+        let hash = super::blob::blob_hash(&large);
+        let path = super::blob::blob_path(s3.prefix(), s3.epoch(), &hash);
+        let current = backend.get(&path).await.expect("blob object");
+        backend.delete(&path).await.ok();
+        backend
+            .put_opts(
+                &path,
+                current.bytes[..current.bytes.len() - 1].to_vec(),
+                PutMode::Create,
+            )
+            .await
+            .expect("truncated blob must be writable");
+
+        let err = s3
+            .get_bytes("large")
+            .await
+            .expect_err("short blob must not read back");
+        assert!(
+            err.to_string().contains("blob len mismatch"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Same, for a same-length corruption: only the CRC can catch it.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn blob_crc_mismatch_surfaces_an_error() {
+        let backend = new_in_memory();
+        let s3 = OxKvStore::builder()
+            .with_store(Arc::clone(&backend))
+            .skip_probe(true)
+            .build()
+            .await
+            .unwrap();
+        let large = vec![b'x'; DEFAULT_BLOCK_SIZE];
+        s3.stage_set("large", &large).await;
+        s3.flush().await.unwrap();
+        s3.flush_mem_to_sst_force().await.unwrap().unwrap();
+        assert_eq!(
+            s3.get_bytes("large").await.unwrap().as_deref(),
+            Some(&large[..])
+        );
+
+        // Same length, different bytes: length check passes, CRC must not.
+        let hash = super::blob::blob_hash(&large);
+        let path = super::blob::blob_path(s3.prefix(), s3.epoch(), &hash);
+        let mut tampered = large.clone();
+        tampered[0] = b'y';
+        backend.delete(&path).await.ok();
+        backend
+            .put_opts(&path, tampered, PutMode::Create)
+            .await
+            .expect("tampered blob must be writable");
+
+        let err = s3
+            .get_bytes("large")
+            .await
+            .expect_err("corrupted blob must not read back");
+        assert!(
+            err.to_string().contains("blob crc mismatch"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A spilled value must actually be spilled — a regression that inlined
+    /// it would pass every round-trip assertion.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn oversized_value_really_spills_to_a_blob_object() {
+        let backend = new_in_memory();
+        let s3 = OxKvStore::builder()
+            .with_store(Arc::clone(&backend))
+            .skip_probe(true)
+            .build()
+            .await
+            .unwrap();
+        let large = vec![b'x'; DEFAULT_BLOCK_SIZE];
+        s3.stage_set("large", &large).await;
+        s3.flush().await.unwrap();
+        s3.flush_mem_to_sst_force().await.unwrap().unwrap();
+
+        let hash = super::blob::blob_hash(&large);
+        let path = super::blob::blob_path(s3.prefix(), s3.epoch(), &hash);
+        let stored = backend
+            .get(&path)
+            .await
+            .expect("value must have spilled to its own object");
+        assert_eq!(stored.bytes, large);
+    }
 }

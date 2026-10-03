@@ -14,7 +14,9 @@ use super::blob::{encode_blob_pointer, get_blob, is_overflow, put_blob, try_deco
 use super::cached::CachedOxKvStore;
 use super::manifest::{ManifestCache, SstMeta, cas_manifest, load_manifest};
 use super::merge::merge_sources;
-use super::ownership::{acquire_ownership, cas_backoff, read_ownership, sst_path, wal_path};
+use super::ownership::{
+    acquire_ownership, cas_backoff, format_epoch, read_ownership, sst_path, wal_path,
+};
 use super::probe::probe_store;
 use super::read::{
     ReadCtx, fetch_sst, filter_rows, point_lookup, range_lookup, retry_once_not_found,
@@ -1554,7 +1556,7 @@ impl OxKvStoreBuilder {
             )
             .await?;
             let cur_epoch = s3store.epoch;
-            let wal_prefix = format!("e{cur_epoch:06}/wal/");
+            let wal_prefix = format!("{}/wal/", format_epoch(cur_epoch));
             // High-water mark, not a tally: a sequence burned by a failed
             // append leaves an unlisted object, so counting the listed WALs
             // can hand a live sequence to the next write.
@@ -1571,7 +1573,7 @@ impl OxKvStoreBuilder {
             s3store
                 .wal_seq
                 .store(max_wal, std::sync::atomic::Ordering::SeqCst);
-            let sst_prefix = format!("e{cur_epoch:06}/sst/");
+            let sst_prefix = format!("{}/sst/", format_epoch(cur_epoch));
             let mut max_sst: u64 = 0;
             for meta in &manifest.sst {
                 if meta.id.starts_with(&sst_prefix)

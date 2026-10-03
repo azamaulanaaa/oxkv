@@ -895,8 +895,11 @@ impl<T: GetSet> GetSetExt for T {}
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use super::{
+        Direction, GetSet, GetSetExt, SNAPSHOT_HEADER_LEN, StoreError, StoreExt, load_stream,
+    };
+    use futures::stream;
 
-    use super::{Direction, GetSet, GetSetExt};
     /// `limit = 0` means zero rows. Regression: the loop tested the limit
     /// *after* each push, so `Some(0)` returned one row — and since this is a
     /// `GetSet` default method, every backend was affected.
@@ -959,5 +962,63 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// The public UTF-8 error variants were never constructed by any test, so
+    /// their `#[from]` conversions and `PartialEq` arms were untested.
+    #[test]
+    fn utf8_error_variants_round_trip() {
+        let invalid = vec![0xFF_u8, 0xFE];
+        let invalid: &[u8] = &invalid;
+        let owned = String::from_utf8(vec![0xFF, 0xFE]).expect_err("invalid utf8");
+        let e: StoreError = owned.into();
+        assert!(matches!(e, StoreError::Utf8(_)), "got {e:?}");
+        assert!(e.to_string().starts_with("UTF-8 error:"));
+        let same: StoreError = String::from_utf8(vec![0xFF, 0xFE]).unwrap_err().into();
+        assert_eq!(e, same, "same cause must compare equal");
+        let other: StoreError = String::from_utf8(vec![0xFF]).unwrap_err().into();
+        assert_ne!(e, other, "different causes must not compare equal");
+
+        let borrowed = std::str::from_utf8(invalid).expect_err("invalid utf8");
+        let e: StoreError = borrowed.into();
+        assert!(matches!(e, StoreError::Utf8Slice(_)), "got {e:?}");
+        let same: StoreError = std::str::from_utf8(invalid).unwrap_err().into();
+        assert_eq!(e, same);
+        // The two UTF-8 variants are distinct and never compare equal.
+        let owned: StoreError = String::from_utf8(vec![0xFF]).unwrap_err().into();
+        assert_ne!(e, owned);
+    }
+
+    /// A chunk-level failure must surface *as that error*, not as some
+    /// unrelated failure that happens to also be an `Err`.
+    #[tokio::test]
+    async fn load_stream_propagates_the_chunk_error_identity() {
+        let store = crate::store::BTreeStore::default();
+        let injected = StoreError::Storage("injected chunk failure".to_string());
+        let err = load_stream(&store, stream::iter([Err::<Vec<u8>, _>(injected.clone())]))
+            .await
+            .expect_err("chunk error must propagate");
+        assert_eq!(err, injected);
+        // An empty store saves exactly the snapshot header: nothing committed.
+        let saved = store.save().await.unwrap();
+        assert!(
+            saved.len() <= SNAPSHOT_HEADER_LEN,
+            "a failed load must not commit"
+        );
+    }
+
+    /// A malformed payload is rejected outright, with nothing committed.
+    #[tokio::test]
+    async fn load_stream_rejects_a_malformed_payload() {
+        let store = crate::store::BTreeStore::default();
+        let err = store
+            .load(b"not a snapshot at all")
+            .await
+            .expect_err("garbage");
+        assert!(
+            !err.to_string().is_empty(),
+            "malformed payload must report why"
+        );
+        assert!(!store.has("k").await.unwrap());
     }
 }

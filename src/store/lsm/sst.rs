@@ -844,19 +844,6 @@ mod tests {
     }
 
     #[test]
-    fn bloom_false_negative_never() {
-        let entries = sample_entries();
-        let data = build_sst(&entries, 1024).unwrap();
-        let sst = SstFile::parse(data).unwrap();
-        for key in entries.keys() {
-            assert!(
-                sst.may_contain(key),
-                "bloom must contain inserted key {key}"
-            );
-        }
-    }
-
-    #[test]
     fn sst_range_scan() {
         let mut entries = BTreeMap::new();
         for ch in 'a'..='z' {

@@ -101,7 +101,9 @@ pub(crate) async fn acquire_ownership(
         Err(e) => return Err(StoreError::Storage(format!("get ownership failed: {e}"))),
     };
 
-    let next_epoch = existing.as_ref().map_or(1, |r| r.epoch + 1);
+    // `saturating_add`, not `+ 1`: at `u64::MAX` the plain add panics under
+    // overflow checks instead of reporting an unusable epoch.
+    let next_epoch = existing.as_ref().map_or(1, |r| r.epoch.saturating_add(1));
     let new_rec = OwnershipRecord {
         epoch: next_epoch,
         owner_session: session.to_string(),
@@ -140,5 +142,133 @@ pub(crate) async fn read_ownership(
         }
         Err(e) if e.to_string().contains("not found") => Ok(None),
         Err(e) => Err(StoreError::Storage(format!("get ownership failed: {e}"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::storage::{MemStorage, PutMode};
+
+    fn backend() -> Arc<dyn Storage> {
+        Arc::new(MemStorage::new())
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn epoch_and_path_formatting_contract() {
+        assert_eq!(format_epoch(1), "e000001");
+        assert_eq!(format_epoch(1_000_000), "e1000000");
+        let p = ObjectPath::from("p");
+        assert_eq!(
+            wal_path(&p, 1_000_000, 5).as_str(),
+            "p/e1000000/wal/00000005.log"
+        );
+        assert_eq!(
+            sst_path(&p, 1_000_000, 1, 5).as_str(),
+            "p/e1000000/sst/L1/000000005.sst"
+        );
+        assert_eq!(
+            wal_path(&ObjectPath::default(), 7, 0).as_str(),
+            "e000007/wal/00000000.log"
+        );
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn cas_backoff_grows_and_stays_capped() {
+        assert!(cas_backoff(0) < cas_backoff(1));
+        assert!(cas_backoff(1) < cas_backoff(3));
+        // Jitter can reorder equal bases, so compare the documented ceiling.
+        assert!(cas_backoff(3) <= std::time::Duration::from_secs(1));
+        assert!(cas_backoff(30) <= std::time::Duration::from_millis(1020));
+    }
+
+    /// A corrupt `ownership.json` must be reported, never silently treated as
+    /// "no owner" — that would let a second writer take over a live prefix.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn corrupt_ownership_record_is_reported() {
+        let store = backend();
+        let p = ObjectPath::from("corrupt");
+        store
+            .put_opts(&ownership_path(&p), b"not json".to_vec(), PutMode::Create)
+            .await
+            .unwrap();
+        let err = acquire_ownership(Arc::clone(&store), &p, "a")
+            .await
+            .expect_err("acquire must not succeed on a corrupt record");
+        assert!(
+            err.to_string().contains("corrupt ownership.json"),
+            "unexpected error: {err}"
+        );
+        let err = read_ownership(Arc::clone(&store), &p)
+            .await
+            .expect_err("read must not succeed on a corrupt record");
+        assert!(
+            err.to_string().contains("corrupt ownership.json"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A second acquire takes ownership, and the previous holder is fenced.
+    ///
+    /// This is the guarantee fencing rests on: the epoch bump is what makes a
+    /// superseded writer discover it is no longer the owner.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn acquiring_twice_fences_the_first_holder() {
+        let store = backend();
+        let p = ObjectPath::from("race");
+        let first = acquire_ownership(Arc::clone(&store), &p, "a")
+            .await
+            .unwrap();
+        let second = acquire_ownership(Arc::clone(&store), &p, "b")
+            .await
+            .unwrap();
+        assert_eq!(second.epoch, first.epoch + 1);
+        let current = read_ownership(Arc::clone(&store), &p)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.owner_session, "b");
+        assert_ne!(
+            (current.epoch, current.owner_session.clone()),
+            (first.epoch, "a".to_string()),
+            "the superseded holder must no longer match ownership"
+        );
+    }
+
+    /// Epochs are monotonic; the bump at `u64::MAX` must not panic under
+    /// overflow checks.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn epoch_is_monotonic_and_bump_saturates() {
+        let store = backend();
+        let p = ObjectPath::from("mono");
+        let first = acquire_ownership(Arc::clone(&store), &p, "a")
+            .await
+            .unwrap();
+        let second = acquire_ownership(Arc::clone(&store), &p, "b")
+            .await
+            .unwrap();
+        assert_eq!(second.epoch, first.epoch + 1);
+
+        // Park the record at u64::MAX and confirm the next acquire reports a
+        // fencing/CAS failure rather than panicking on `+ 1`.
+        let payload = serde_json::to_vec(&OwnershipRecord {
+            epoch: u64::MAX,
+            owner_session: "z".to_string(),
+            lease_expiry_ms: None,
+            manifest_etag: None,
+        })
+        .unwrap();
+        store.delete(&ownership_path(&p)).await.unwrap();
+        store
+            .put_opts(&ownership_path(&p), payload, PutMode::Create)
+            .await
+            .unwrap();
+        let next = acquire_ownership(store, &p, "c").await.unwrap();
+        assert_eq!(next.epoch, u64::MAX, "bump must saturate, not wrap");
     }
 }
