@@ -1282,4 +1282,186 @@ mod tests {
         assert!(try_decode_blob_pointer(&encoded).is_some());
         assert!(try_decode_blob_pointer(br#"{"blob":"x","len":1,"crc":2}"#).is_none());
     }
+
+    /// A staged write that happens-before a durable write must win after a
+    /// restart. Regression: the WAL sequence was allocated at flush time, so a
+    /// later `put_bytes` could take the *lower* sequence and win the replay.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn staged_write_before_durable_write_survives_restart() {
+        let backend = new_in_memory();
+        let s3 = OxKvStore::builder()
+            .with_store(Arc::clone(&backend))
+            .skip_probe(true)
+            .build()
+            .await
+            .unwrap();
+        s3.stage_set("k", b"v1").await;
+        s3.put_bytes("k", b"v2").await.unwrap();
+        s3.flush().await.unwrap();
+        assert_eq!(
+            s3.get_bytes("k").await.unwrap().as_deref(),
+            Some(&b"v2"[..])
+        );
+        drop(s3);
+
+        let reopened = OxKvStore::builder()
+            .with_store(backend)
+            .skip_probe(true)
+            .build()
+            .await
+            .unwrap();
+        // `put_bytes` happened last, so `v2` is the durable truth.
+        assert_eq!(
+            reopened.get_bytes("k").await.unwrap().as_deref(),
+            Some(&b"v2"[..]),
+            "acknowledged write must not be reverted by replay"
+        );
+    }
+
+    /// Same ordering rule across a delete: a staged write before the delete
+    /// must not resurrect the key, and a staged delete before a later put must
+    /// not erase it.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn staged_ops_order_against_deletes_across_restart() {
+        let backend = new_in_memory();
+        let s3 = OxKvStore::builder()
+            .with_store(Arc::clone(&backend))
+            .skip_probe(true)
+            .build()
+            .await
+            .unwrap();
+        s3.put_bytes("gone", b"1").await.unwrap();
+        // Staged first, deleted second: the delete wins.
+        s3.stage_set("gone", b"2").await;
+        assert!(s3.delete("gone").await.unwrap());
+        // Deleted first, put second: the put wins.
+        s3.put_bytes("back", b"1").await.unwrap();
+        assert!(s3.delete("back").await.unwrap());
+        s3.stage_set("back", b"2").await;
+        s3.flush().await.unwrap();
+        drop(s3);
+
+        let reopened = OxKvStore::builder()
+            .with_store(backend)
+            .skip_probe(true)
+            .build()
+            .await
+            .unwrap();
+        assert_eq!(reopened.get_bytes("gone").await.unwrap(), None);
+        assert_eq!(
+            reopened.get_bytes("back").await.unwrap().as_deref(),
+            Some(&b"2"[..])
+        );
+    }
+
+    /// A transaction commit happens-after anything staged on the store, so
+    /// the staged record must take the lower WAL sequence.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn staged_write_before_tx_commit_survives_restart() {
+        let backend = new_in_memory();
+        let s3 = OxKvStore::builder()
+            .with_store(Arc::clone(&backend))
+            .skip_probe(true)
+            .build()
+            .await
+            .unwrap();
+        s3.stage_set("k", b"staged").await;
+        let tx = s3.begin_tx().unwrap();
+        tx.set_bytes("k", b"tx").await.unwrap();
+        tx.commit().await.unwrap();
+        drop(s3);
+
+        let reopened = OxKvStore::builder()
+            .with_store(backend)
+            .skip_probe(true)
+            .build()
+            .await
+            .unwrap();
+        assert_eq!(
+            reopened.get_bytes("k").await.unwrap().as_deref(),
+            Some(&b"tx"[..]),
+            "tx commit happened last and must win the replay"
+        );
+    }
+
+    /// A key rewritten while a flush is in flight keeps its newer value:
+    /// the flush may only drop the exact snapshot it wrote.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn flush_keeps_newer_write_that_overlapped_the_snapshot() {
+        let s3 = OxKvStore::builder()
+            .with_store(new_in_memory())
+            .skip_probe(true)
+            .build()
+            .await
+            .unwrap();
+        s3.set_bytes("k", b"old").await.unwrap();
+        // Force-flush writes `old` to an SST, then the snapshot is dropped.
+        s3.flush_mem_to_sst_force().await.unwrap().unwrap();
+        s3.set_bytes("k", b"new").await.unwrap();
+        // A second flush must not discard `new` while writing `old`'s snapshot.
+        s3.flush_mem_to_sst_force().await.unwrap().unwrap();
+        assert_eq!(
+            s3.get_bytes("k").await.unwrap().as_deref(),
+            Some(&b"new"[..])
+        );
+    }
+
+    /// Every queued write is durable once `put_bytes` returns Ok — including
+    /// the ones past `MAX_GROUP_WRITES` that a leader's capped batch skipped.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn group_commit_never_acknowledges_another_batches_write() {
+        let backend = new_in_memory();
+        let s3 = std::sync::Arc::new(
+            OxKvStore::builder()
+                .with_store(Arc::clone(&backend))
+                .skip_probe(true)
+                .build()
+                .await
+                .unwrap(),
+        );
+        // More writers than one capped batch can hold, all racing the same gate.
+        let total = MAX_GROUP_WRITES + 40;
+        let mut handles = Vec::new();
+        for i in 0..total {
+            let s3 = std::sync::Arc::clone(&s3);
+            handles.push(tokio::spawn(async move {
+                s3.put_bytes(&format!("k{i:04}"), format!("v{i}").as_bytes())
+                    .await
+            }));
+        }
+        for (i, h) in handles.into_iter().enumerate() {
+            h.await
+                .unwrap()
+                .unwrap_or_else(|e| panic!("write {i} failed: {e}"));
+        }
+        // Every acknowledged write must be readable, in-memory and after restart.
+        for i in 0..total {
+            let key = format!("k{i:04}");
+            assert_eq!(
+                s3.get_bytes(&key).await.unwrap().as_deref(),
+                Some(format!("v{i}").as_bytes()),
+                "{key} acknowledged but not visible"
+            );
+        }
+        drop(s3);
+        let reopened = OxKvStore::builder()
+            .with_store(backend)
+            .skip_probe(true)
+            .build()
+            .await
+            .unwrap();
+        for i in 0..total {
+            let key = format!("k{i:04}");
+            assert_eq!(
+                reopened.get_bytes(&key).await.unwrap().as_deref(),
+                Some(format!("v{i}").as_bytes()),
+                "{key} acknowledged but lost on restart"
+            );
+        }
+    }
 }

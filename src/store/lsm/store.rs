@@ -35,11 +35,16 @@ use crate::store::{
 /// own write; the leader concatenates `encoded` buffers verbatim into a
 /// single WAL file that replays with no format changes.
 pub(crate) struct PendingWrite {
+    id: u64,
     key: String,
     value: Vec<u8>,
     encoded: Vec<u8>,
     responder: futures::channel::oneshot::Sender<Result<()>>,
 }
+
+/// Process-wide id for [`PendingWrite`], so a group-commit leader can tell
+/// whether the batch it drained actually contained its own write.
+static PENDING_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Storage-backed LSM store (probe + fencing + WAL gate + SST).
 pub struct OxKvStore<C = LruCache<String, Arc<SstFile>>> {
@@ -55,10 +60,12 @@ pub struct OxKvStore<C = LruCache<String, Arc<SstFile>>> {
     /// Pinned reader versions for WAL GC watermark.
     /// `BTreeMap<version, count>` — `min_key` is the watermark.
     pub(crate) readers: Arc<async_lock::Mutex<std::collections::BTreeMap<u64, usize>>>,
-    /// Fair gate serializing the durable write paths (`put_bytes` and tx
-    /// `commit`): concurrent writers queue here instead of CAS-retry-storming
+    /// Fair gate serializing every durable write path (`flush`,
+    /// `flush_mem_to_sst*`, `gc_wal`, `compact`, `put_bytes`, `delete` and
+    /// tx `commit`): concurrent writers queue here instead of CAS-retry-storming
     /// the manifest. Always acquired outermost, never while holding
-    /// `manifest_cache`, so lock ordering stays acyclic.
+    /// `manifest_cache`, so lock ordering stays acyclic. It is what makes WAL
+    /// sequence allocation order equal program order.
     pub(crate) write_gate: Arc<async_lock::Mutex<()>>,
     /// Staged blind writes awaiting group commit. Whoever acquires
     /// `write_gate` drains the queue (capped by [`MAX_GROUP_WRITES`]) into
@@ -87,21 +94,7 @@ where
     C: Cache<String, Arc<SstFile>>,
 {
     fn clone(&self) -> Self {
-        Self {
-            inner: Arc::clone(&self.inner),
-            prefix: self.prefix.clone(),
-            epoch: self.epoch,
-            session: self.session.clone(),
-            mem: Arc::clone(&self.mem),
-            wal_seq: Arc::clone(&self.wal_seq),
-            wal_buffer: Arc::clone(&self.wal_buffer),
-            sst_seq: Arc::clone(&self.sst_seq),
-            manifest_cache: Arc::clone(&self.manifest_cache),
-            readers: Arc::clone(&self.readers),
-            write_gate: Arc::clone(&self.write_gate),
-            pending: Arc::clone(&self.pending),
-            sst_cache: self.sst_cache.clone(),
-        }
+        Self::clone_shared(self)
     }
 }
 
@@ -197,51 +190,191 @@ where
     pub async fn mem_get(&self, key: &str) -> Option<Option<Vec<u8>>> {
         self.mem.read().await.get(key).cloned()
     }
+}
 
-    /// Flushes buffered WAL ops to `e{epoch}/wal/{seq:08}.log` via
-    /// `PutMode::Create` (`If-None-Match:"*"`), then gates on ownership.
-    ///
-    /// Implements `commit_durable` RPO=0.
-    ///
-    /// # Errors
-    ///
-    /// Returns `StoreError::Storage` on `PUT` failure and `StoreError::Fenced`
-    /// if `ownership.json` no longer names this epoch/session after the `PUT`.
-    pub async fn flush(&self) -> Result<()> {
-        let ops: Vec<(String, Option<Vec<u8>>)> = {
-            let mut buf = self.wal_buffer.lock().await;
-            if buf.is_empty() {
-                return Ok(());
+/// Read access to the writer state shared by [`OxKvStore`] and [`OxKvTx`].
+///
+/// Implemented for both so [`OxKvStore::clone_shared`] has a single field list
+/// instead of a hand-maintained copy per concrete type.
+pub(crate) trait WriterStateRef<C> {
+    fn inner(&self) -> &Arc<dyn Storage>;
+    fn prefix(&self) -> &ObjectPath;
+    fn epoch(&self) -> u64;
+    fn session(&self) -> &str;
+    fn mem(&self) -> &MemTable;
+    fn wal_seq(&self) -> &Arc<std::sync::atomic::AtomicU64>;
+    fn wal_buffer(&self) -> &WalBuffer;
+    fn sst_seq(&self) -> &Arc<std::sync::atomic::AtomicU64>;
+    fn manifest_cache(&self) -> &Arc<async_lock::Mutex<ManifestCache>>;
+    fn readers(&self) -> &Arc<async_lock::Mutex<std::collections::BTreeMap<u64, usize>>>;
+    fn write_gate(&self) -> &Arc<async_lock::Mutex<()>>;
+    fn pending(&self) -> &Arc<std::sync::Mutex<Vec<PendingWrite>>>;
+    fn sst_cache(&self) -> &C;
+}
+
+macro_rules! impl_writer_state_ref {
+    ($ty:ty, $c:ty) => {
+        impl<C> WriterStateRef<$c> for $ty {
+            fn inner(&self) -> &Arc<dyn Storage> {
+                &self.inner
             }
-            std::mem::take(&mut *buf)
-        };
+            fn prefix(&self) -> &ObjectPath {
+                &self.prefix
+            }
+            fn epoch(&self) -> u64 {
+                self.epoch
+            }
+            fn session(&self) -> &str {
+                &self.session
+            }
+            fn mem(&self) -> &MemTable {
+                &self.mem
+            }
+            fn wal_seq(&self) -> &Arc<std::sync::atomic::AtomicU64> {
+                &self.wal_seq
+            }
+            fn wal_buffer(&self) -> &WalBuffer {
+                &self.wal_buffer
+            }
+            fn sst_seq(&self) -> &Arc<std::sync::atomic::AtomicU64> {
+                &self.sst_seq
+            }
+            fn manifest_cache(&self) -> &Arc<async_lock::Mutex<ManifestCache>> {
+                &self.manifest_cache
+            }
+            fn readers(&self) -> &Arc<async_lock::Mutex<std::collections::BTreeMap<u64, usize>>> {
+                &self.readers
+            }
+            fn write_gate(&self) -> &Arc<async_lock::Mutex<()>> {
+                &self.write_gate
+            }
+            fn pending(&self) -> &Arc<std::sync::Mutex<Vec<PendingWrite>>> {
+                &self.pending
+            }
+            fn sst_cache(&self) -> &C {
+                &self.sst_cache
+            }
+        }
+    };
+}
 
-        let mut payload_buf = Vec::new();
-        for (key, value) in &ops {
+impl_writer_state_ref!(OxKvStore<C>, C);
+impl_writer_state_ref!(OxKvTx<C>, C);
+
+impl<C> OxKvStore<C>
+where
+    C: Cache<String, Arc<SstFile>>,
+{
+    /// Copies every piece of writer state, whatever the source shape.
+    ///
+    /// The single place the writer-state field list is written down: `Clone`,
+    /// `begin_tx` and the transaction's maintenance view all route through it,
+    /// so adding a field cannot leave one of the three initializers stale.
+    pub(crate) fn clone_shared<S: WriterStateRef<C>>(src: &S) -> Self {
+        Self {
+            inner: Arc::clone(src.inner()),
+            prefix: src.prefix().clone(),
+            epoch: src.epoch(),
+            session: src.session().to_string(),
+            mem: Arc::clone(src.mem()),
+            wal_seq: Arc::clone(src.wal_seq()),
+            wal_buffer: Arc::clone(src.wal_buffer()),
+            sst_seq: Arc::clone(src.sst_seq()),
+            manifest_cache: Arc::clone(src.manifest_cache()),
+            readers: Arc::clone(src.readers()),
+            write_gate: Arc::clone(src.write_gate()),
+            pending: Arc::clone(src.pending()),
+            sst_cache: src.sst_cache().clone(),
+        }
+    }
+
+    /// Encodes ops into the framed WAL record format.
+    pub(crate) fn encode_ops(ops: &[(String, Option<Vec<u8>>)]) -> Result<Vec<u8>> {
+        let mut buf = Vec::new();
+        for (key, value) in ops {
             if let Some(val) = value {
-                crate::store::encode_record(&mut payload_buf, key, val)
+                crate::store::encode_record(&mut buf, key, val)
                     .map_err(|e| StoreError::Storage(format!("encode wal: {e}")))?;
             } else {
                 let klen = u32::try_from(key.len())
                     .map_err(|e| StoreError::Storage(format!("key too long: {e}")))?;
-                payload_buf.extend_from_slice(&klen.to_le_bytes());
-                payload_buf.extend_from_slice(key.as_bytes());
-                payload_buf.extend_from_slice(&TOMBSTONE_VLEN.to_le_bytes());
+                buf.extend_from_slice(&klen.to_le_bytes());
+                buf.extend_from_slice(key.as_bytes());
+                buf.extend_from_slice(&TOMBSTONE_VLEN.to_le_bytes());
             }
         }
+        Ok(buf)
+    }
 
+    async fn apply_mem(&self, updates: &[(String, Option<Vec<u8>>)]) {
+        if updates.is_empty() {
+            return;
+        }
+        let mut mem = self.mem.write().await;
+        for (key, value) in updates {
+            mem.insert(key.clone(), value.clone());
+        }
+    }
+
+    /// Best-effort maintenance after a durable write.
+    ///
+    /// Never fails the write it follows — these are threshold-driven and must
+    /// not turn an acknowledged write into an error.
+    async fn maintain_after_write(&self, wal_len: usize) {
+        let _ = self.flush_mem_to_sst_inner(false).await;
+        let _ = self.compact_inner().await;
+        self.maintain_wal(wal_len).await;
+    }
+
+    /// Appends one WAL record and lists it in the manifest.
+    ///
+    /// The single durable-append path: store flush, group commit, delete and
+    /// tx commit all route through here, so fencing and the manifest CAS
+    /// discipline cannot drift apart between hand-copied versions.
+    ///
+    /// Caller must hold [`Self::write_gate`] — that is what makes the
+    /// sequence allocated here reflect program order.
+    ///
+    /// `mem_updates` is applied to the `MemTable` once the record is durable;
+    /// pass an empty slice when the records are already in the `MemTable`
+    /// (staged writes).
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Storage` on `PUT`/CAS failure, `StoreError::Fenced`
+    /// if ownership moved, or an error if this sequence already holds
+    /// different bytes.
+    pub(crate) async fn append_wal_locked(
+        &self,
+        payload: Vec<u8>,
+        mem_updates: &[(String, Option<Vec<u8>>)],
+    ) -> Result<()> {
         let seq = self
             .wal_seq
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let path = wal_path(&self.prefix, self.epoch, seq);
 
-        let put_res = self
+        match self
             .inner
-            .put_opts(&path, payload_buf, PutMode::Create)
-            .await;
-
-        match put_res {
-            Ok(_) | Err(StoreError::CasConflict(_)) => {}
+            .put_opts(&path, payload.clone(), PutMode::Create)
+            .await
+        {
+            Ok(_) => {}
+            // `Create` lost: either an idempotent retry of our own record, or a
+            // burned sequence reused by a restarted writer. Only the first is
+            // safe, so verify the bytes rather than assuming them.
+            Err(StoreError::CasConflict(_)) => {
+                let existing = self
+                    .inner
+                    .get(&path)
+                    .await
+                    .map_err(|e| StoreError::Storage(format!("read back wal failed: {e}")))?;
+                if existing.bytes != payload {
+                    return Err(StoreError::Storage(format!(
+                        "wal sequence {seq} already holds different bytes; refusing to overwrite"
+                    )));
+                }
+            }
             Err(e) => return Err(StoreError::Storage(format!("put wal failed: {e}"))),
         }
 
@@ -274,6 +407,8 @@ where
             // Owned copy for mutation; readers share the cached `Arc`.
             let mut manifest = (*manifest).clone();
             if manifest.wal.iter().any(|w| w == &wal_id) {
+                self.apply_mem(mem_updates).await;
+                self.maintain_after_write(manifest.wal.len()).await;
                 return Ok(());
             }
             manifest.wal.push(wal_id.clone());
@@ -283,7 +418,8 @@ where
                 Ok(new_etag) => {
                     let wal_len = manifest.wal.len();
                     self.manifest_cache.lock().await.update(manifest, new_etag);
-                    self.maintain_wal(wal_len).await;
+                    self.apply_mem(mem_updates).await;
+                    self.maintain_after_write(wal_len).await;
                     return Ok(());
                 }
                 Err(StoreError::CasConflict(detail)) => {
@@ -293,8 +429,7 @@ where
                             "wal manifest CAS conflict after retries: {detail}"
                         )));
                     }
-                    let backoff = cas_backoff(attempt);
-                    sleep(backoff).await;
+                    sleep(cas_backoff(attempt)).await;
                 }
                 Err(e) => return Err(e),
             }
@@ -302,16 +437,64 @@ where
         Ok(())
     }
 
+    /// Drains ops staged through `stage_set` into one durable WAL record.
+    ///
+    /// Every durable write path runs this *before* allocating its own WAL
+    /// sequence, so a `stage_set` that happened-before a `put_bytes` gets the
+    /// lower sequence and wins on replay. Allocating the sequence at flush time
+    /// instead let an acknowledged write be reverted by a restart, and let a
+    /// staged write resurrect a deleted key.
+    ///
+    /// Caller must hold [`Self::write_gate`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError` on `PUT`/ownership/manifest failure.
+    pub(crate) async fn drain_staged_locked(&self) -> Result<()> {
+        let ops: Vec<(String, Option<Vec<u8>>)> = {
+            let mut buf = self.wal_buffer.lock().await;
+            std::mem::take(&mut *buf)
+        };
+        if ops.is_empty() {
+            return Ok(());
+        }
+        // Staged ops are already in the `MemTable`; no mem updates needed.
+        self.append_wal_locked(Self::encode_ops(&ops)?, &[]).await
+    }
+
+    /// Flushes buffered WAL ops to `e{epoch}/wal/{seq:08}.log` via
+    /// `PutMode::Create` (`If-None-Match:"*"`), then gates on ownership.
+    ///
+    /// Implements `commit_durable` RPO=0. Takes [`Self::write_gate`], so these
+    /// records land in program order relative to every other durable write.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::Storage` on `PUT` failure and `StoreError::Fenced`
+    /// if `ownership.json` no longer names this epoch/session after the `PUT`.
+    pub async fn flush(&self) -> Result<()> {
+        let _gate = self.write_gate.lock().await;
+        self.drain_staged_locked().await
+    }
+
     /// Best-effort WAL maintenance after a manifest CAS carrying `wal_len`
     /// entries: force-flush an SST and GC covered WALs once the list reaches
     /// `WAL_MAINTENANCE_COUNT`, keeping per-write manifest cost flat.
     /// Failures are swallowed (fencing/conflicts/reader pins).
+    ///
+    /// Caller must hold [`Self::write_gate`].
     async fn maintain_wal(&self, wal_len: usize) {
         if wal_len < WAL_MAINTENANCE_COUNT {
             return;
         }
-        let _ = self.flush_mem_to_sst_force().await;
-        let _ = self.gc_wal().await;
+        // GC is only safe once the flush it depends on has succeeded: the
+        // records it would delete live in that SST and nowhere else. Swallowing
+        // the flush error and deleting anyway lost acknowledged writes.
+        match self.flush_mem_to_sst_inner(true).await {
+            Ok(_) => {}
+            Err(_) => return,
+        }
+        let _ = self.gc_wal_inner().await;
     }
 
     /// Convenience: stage + flush (RPO=0) — mirrors `commit_durable`.
@@ -331,6 +514,7 @@ where
     /// Returns `StoreError::Storage` on `PUT`/`CAS` failure or `StoreError::Fenced`
     /// if `ownership` no longer matches.
     pub async fn flush_mem_to_sst(&self) -> Result<Option<SstMeta>> {
+        let _gate = self.write_gate.lock().await;
         self.flush_mem_to_sst_inner(false).await
     }
 
@@ -340,11 +524,31 @@ where
     ///
     /// Same as [`Self::flush_mem_to_sst`].
     pub async fn flush_mem_to_sst_force(&self) -> Result<Option<SstMeta>> {
+        let _gate = self.write_gate.lock().await;
         self.flush_mem_to_sst_inner(true).await
     }
 
+    /// Drops the `MemTable` entries that were just made durable in an SST.
+    ///
+    /// Compare-and-remove, not unconditional: a key rewritten between the
+    /// snapshot and this point holds a *newer* value that is not in the SST,
+    /// and removing it would silently drop an acknowledged write. An entry
+    /// whose value still matches the snapshot is safe to drop, including when
+    /// a newer write happened to store the same bytes.
+    async fn discard_flushed(
+        &self,
+        snapshot: &std::collections::BTreeMap<String, Option<Vec<u8>>>,
+    ) {
+        let mut mem = self.mem.write().await;
+        for (key, value) in snapshot {
+            if mem.get(key) == Some(value) {
+                mem.remove(key);
+            }
+        }
+    }
+
     #[allow(clippy::too_many_lines)]
-    async fn flush_mem_to_sst_inner(&self, force: bool) -> Result<Option<SstMeta>> {
+    pub(crate) async fn flush_mem_to_sst_inner(&self, force: bool) -> Result<Option<SstMeta>> {
         let snapshot: std::collections::BTreeMap<String, Option<Vec<u8>>> = {
             let mem = self.mem.read().await;
             if mem.is_empty() {
@@ -425,12 +629,7 @@ where
         let mut manifest = (*manifest).clone();
         if manifest.sst.iter().any(|m| m.id == sst_id) {
             let existing = manifest.sst.iter().find(|m| m.id == sst_id).cloned();
-            {
-                let mut mem = self.mem.write().await;
-                for key in snapshot.keys() {
-                    mem.remove(key);
-                }
-            }
+            self.discard_flushed(&snapshot).await;
             return Ok(existing);
         }
         let sst_meta = SstMeta {
@@ -446,12 +645,7 @@ where
         match cas_manifest(Arc::clone(&self.inner), &self.prefix, &manifest, etag_opt).await {
             Ok(new_etag) => {
                 self.manifest_cache.lock().await.update(manifest, new_etag);
-                {
-                    let mut mem = self.mem.write().await;
-                    for key in snapshot.keys() {
-                        mem.remove(key);
-                    }
-                }
+                self.discard_flushed(&snapshot).await;
                 Ok(Some(sst_meta))
             }
             Err(StoreError::CasConflict(detail)) => {
@@ -467,10 +661,7 @@ where
                 )
                 .await?;
                 if reloaded.sst.iter().any(|m| m.id == sst_id) {
-                    let mut mem = self.mem.write().await;
-                    for key in snapshot.keys() {
-                        mem.remove(key);
-                    }
+                    self.discard_flushed(&snapshot).await;
                     return Ok(reloaded.sst.iter().find(|m| m.id == sst_id).cloned());
                 }
                 Err(StoreError::Storage(format!(
@@ -639,6 +830,11 @@ where
     ///
     /// Returns `StoreError` on `GET`/`CAS`/`DELETE` failure.
     pub async fn gc_wal(&self) -> Result<usize> {
+        let _gate = self.write_gate.lock().await;
+        self.gc_wal_inner().await
+    }
+
+    pub(crate) async fn gc_wal_inner(&self) -> Result<usize> {
         let min_version = self.min_reader_version().await;
         for _ in 0..4 {
             let (manifest, etag) = load_manifest(
@@ -700,6 +896,13 @@ where
     /// Returns `StoreError` on I/O or `Fenced`.
     #[allow(clippy::too_many_lines)]
     pub async fn compact(&self) -> Result<Option<SstMeta>> {
+        let _gate = self.write_gate.lock().await;
+        self.compact_inner().await
+    }
+
+    /// Caller must hold [`Self::write_gate`].
+    #[allow(clippy::too_many_lines)]
+    pub(crate) async fn compact_inner(&self) -> Result<Option<SstMeta>> {
         // Load manifest and check trigger.
         let (manifest_snapshot, _) = load_manifest(
             Arc::clone(&self.inner),
@@ -972,97 +1175,24 @@ where
     /// application, then the usual maintenance. Shared fate: every entry
     /// succeeds or fails together, exactly as sequential `put_bytes` calls
     /// would if the process crashed between them.
+    ///
+    /// Caller must hold [`Self::write_gate`].
     async fn persist_batch(&self, batch: &[PendingWrite]) -> Result<()> {
         if batch.is_empty() {
             return Ok(());
         }
-        // Atomic: flush the whole batch before mutating MemTable
+        // Anything staged earlier belongs ahead of this batch in the WAL.
+        self.drain_staged_locked().await?;
+        // Atomic: write the whole batch before mutating MemTable
         let mut payload_buf = Vec::new();
         for entry in batch {
             payload_buf.extend_from_slice(&entry.encoded);
         }
-        let seq = self
-            .wal_seq
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let path = wal_path(&self.prefix, self.epoch, seq);
-        let put_res = self
-            .inner
-            .put_opts(&path, payload_buf, PutMode::Create)
-            .await;
-        match put_res {
-            Ok(_) | Err(StoreError::CasConflict(_)) => {}
-            Err(e) => return Err(StoreError::Storage(format!("put wal failed: {e}"))),
-        }
-        let cur = read_ownership(Arc::clone(&self.inner), &self.prefix).await?;
-        match cur {
-            Some(rec) if rec.epoch == self.epoch && rec.owner_session == self.session => {}
-            Some(rec) => {
-                return Err(StoreError::Fenced(format!(
-                    "fenced: epoch {} session {} superseded by epoch {} session {}",
-                    self.epoch, self.session, rec.epoch, rec.owner_session
-                )));
-            }
-            None => {
-                return Err(StoreError::Fenced(
-                    "fenced: ownership missing after wal put".to_string(),
-                ));
-            }
-        }
-        let wal_id = path.to_string();
-        for attempt in 0..4 {
-            let (manifest, etag) = load_manifest(
-                Arc::clone(&self.inner),
-                &self.prefix,
-                self.epoch,
-                &self.manifest_cache,
-                std::time::Duration::from_secs(1),
-            )
-            .await?;
-            // Owned copy for mutation; readers share the cached `Arc`.
-            let mut manifest = (*manifest).clone();
-            if manifest.wal.iter().any(|w| w == &wal_id) {
-                {
-                    let mut mem = self.mem.write().await;
-                    for entry in batch {
-                        mem.insert(entry.key.clone(), Some(entry.value.clone()));
-                    }
-                }
-                let _ = self.flush_mem_to_sst().await;
-                let _ = self.compact().await;
-                return Ok(());
-            }
-            manifest.wal.push(wal_id.clone());
-            manifest.version = manifest.version.wrapping_add(1);
-            let etag_opt = if etag.is_empty() { None } else { Some(etag) };
-            match cas_manifest(Arc::clone(&self.inner), &self.prefix, &manifest, etag_opt).await {
-                Ok(new_etag) => {
-                    let wal_len = manifest.wal.len();
-                    self.manifest_cache.lock().await.update(manifest, new_etag);
-                    {
-                        let mut mem = self.mem.write().await;
-                        for entry in batch {
-                            mem.insert(entry.key.clone(), Some(entry.value.clone()));
-                        }
-                    }
-                    let _ = self.flush_mem_to_sst().await;
-                    let _ = self.compact().await;
-                    self.maintain_wal(wal_len).await;
-                    return Ok(());
-                }
-                Err(StoreError::CasConflict(detail)) => {
-                    self.manifest_cache.lock().await.clear();
-                    if attempt == 3 {
-                        return Err(StoreError::Storage(format!(
-                            "wal manifest CAS conflict after retries: {detail}"
-                        )));
-                    }
-                    let backoff = cas_backoff(attempt);
-                    sleep(backoff).await;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(())
+        let updates: Vec<(String, Option<Vec<u8>>)> = batch
+            .iter()
+            .map(|e| (e.key.clone(), Some(e.value.clone())))
+            .collect();
+        self.append_wal_locked(payload_buf, &updates).await
     }
 }
 
@@ -1085,83 +1215,13 @@ where
         if !existed {
             return Ok(false);
         }
+        let _gate = self.write_gate.lock().await;
+        // Anything staged earlier belongs ahead of this tombstone in the WAL.
+        self.drain_staged_locked().await?;
         // Atomic: encode tombstone and flush WAL before mutating MemTable
-        let mut payload_buf = Vec::new();
-        let klen = u32::try_from(key.len())
-            .map_err(|e| StoreError::Storage(format!("key too long: {e}")))?;
-        payload_buf.extend_from_slice(&klen.to_le_bytes());
-        payload_buf.extend_from_slice(key.as_bytes());
-        payload_buf.extend_from_slice(&TOMBSTONE_VLEN.to_le_bytes());
-        let seq = self
-            .wal_seq
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let path = wal_path(&self.prefix, self.epoch, seq);
-        let put_res = self
-            .inner
-            .put_opts(&path, payload_buf, PutMode::Create)
-            .await;
-        match put_res {
-            Ok(_) | Err(StoreError::CasConflict(_)) => {}
-            Err(e) => return Err(StoreError::Storage(format!("put wal failed: {e}"))),
-        }
-        let cur = read_ownership(Arc::clone(&self.inner), &self.prefix).await?;
-        match cur {
-            Some(rec) if rec.epoch == self.epoch && rec.owner_session == self.session => {}
-            Some(rec) => {
-                return Err(StoreError::Fenced(format!(
-                    "fenced: epoch {} session {} superseded by epoch {} session {}",
-                    self.epoch, self.session, rec.epoch, rec.owner_session
-                )));
-            }
-            None => {
-                return Err(StoreError::Fenced(
-                    "fenced: ownership missing after wal put".to_string(),
-                ));
-            }
-        }
-        let wal_id = path.to_string();
-        for attempt in 0..4 {
-            let (manifest, etag) = load_manifest(
-                Arc::clone(&self.inner),
-                &self.prefix,
-                self.epoch,
-                &self.manifest_cache,
-                std::time::Duration::from_secs(1),
-            )
+        let payload_buf = OxKvStore::<C>::encode_ops(&[(key.to_string(), None)])?;
+        self.append_wal_locked(payload_buf, &[(key.to_string(), None)])
             .await?;
-            // Owned copy for mutation; readers share the cached `Arc`.
-            let mut manifest = (*manifest).clone();
-            if manifest.wal.iter().any(|w| w == &wal_id) {
-                self.mem.write().await.insert(key.to_string(), None);
-                return Ok(true);
-            }
-            manifest.wal.push(wal_id.clone());
-            manifest.version = manifest.version.wrapping_add(1);
-            let etag_opt = if etag.is_empty() { None } else { Some(etag) };
-            match cas_manifest(Arc::clone(&self.inner), &self.prefix, &manifest, etag_opt).await {
-                Ok(new_etag) => {
-                    let wal_len = manifest.wal.len();
-                    self.manifest_cache.lock().await.update(manifest, new_etag);
-                    self.mem.write().await.insert(key.to_string(), None);
-                    // Best-effort auto maintenance — ignore fencing/conflicts
-                    let _ = self.flush_mem_to_sst().await;
-                    let _ = self.compact().await;
-                    self.maintain_wal(wal_len).await;
-                    return Ok(true);
-                }
-                Err(StoreError::CasConflict(detail)) => {
-                    self.manifest_cache.lock().await.clear();
-                    if attempt == 3 {
-                        return Err(StoreError::Storage(format!(
-                            "wal manifest CAS conflict after retries: {detail}"
-                        )));
-                    }
-                    let backoff = cas_backoff(attempt);
-                    sleep(backoff).await;
-                }
-                Err(e) => return Err(e),
-            }
-        }
         Ok(true)
     }
 
@@ -1178,38 +1238,60 @@ where
         crate::store::encode_record(&mut encoded, key, value)
             .map_err(|e| StoreError::Storage(format!("encode wal: {e}")))?;
         let (responder, mut waiter) = futures::channel::oneshot::channel::<Result<()>>();
+        let id = PENDING_CTR.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         lock_ignore_poison(&self.pending).push(PendingWrite {
+            id,
             key: key.to_string(),
             value: value.to_vec(),
             encoded,
             responder,
         });
         let _gate = self.write_gate.lock().await;
-        // Served while queued behind the gate: return the recorded outcome.
-        // `Closed` means the serving leader vanished mid-batch; the write's
-        // fate is unknowable, so report it instead of silently dropping it.
-        match waiter.try_recv() {
-            Ok(Some(result)) => return result,
-            Ok(None) => {}
-            Err(futures::channel::oneshot::Canceled) => {
-                return Err(StoreError::Storage(
-                    "group commit leader lost; write fate unknown — read back to confirm"
-                        .to_string(),
-                ));
+        loop {
+            // Served while queued behind the gate: return the recorded outcome.
+            // `Closed` means the serving leader vanished mid-batch; the write's
+            // fate is unknowable, so report it instead of silently dropping it.
+            match waiter.try_recv() {
+                Ok(Some(result)) => return result,
+                Ok(None) => {}
+                Err(futures::channel::oneshot::Canceled) => {
+                    return Err(StoreError::Storage(
+                        "group commit leader lost; write fate unknown — read back to confirm"
+                            .to_string(),
+                    ));
+                }
+            }
+            // Leader: drain queued writes (at least our own entry) into one WAL
+            // file plus one manifest CAS; overflow rides the next holder.
+            let batch: Vec<PendingWrite> = {
+                let mut pending = lock_ignore_poison(&self.pending);
+                let take = pending.len().min(MAX_GROUP_WRITES);
+                pending.drain(..take).collect()
+            };
+            if batch.is_empty() {
+                // Our entry was taken by a leader that has not answered yet.
+                return waiter
+                    .await
+                    .map_err(|_| {
+                        StoreError::Storage(
+                            "group commit leader lost; write fate unknown — read back to confirm"
+                                .to_string(),
+                        )
+                    })
+                    .and_then(|r| r);
+            }
+            // A leader whose own entry fell outside the capped batch must not
+            // report that batch's success as *its* outcome: its record is still
+            // queued, so acknowledging now would claim durability it lacks.
+            let mine = batch.iter().any(|e| e.id == id);
+            let result = self.persist_batch(&batch).await;
+            for entry in batch {
+                let _ = entry.responder.send(result.clone());
+            }
+            if mine {
+                return result;
             }
         }
-        // Leader: drain everything pending (at least our own entry) into one
-        // WAL file plus one manifest CAS; overflow rides the next holder.
-        let batch: Vec<PendingWrite> = {
-            let mut pending = lock_ignore_poison(&self.pending);
-            let take = pending.len().min(MAX_GROUP_WRITES);
-            pending.drain(..take).collect()
-        };
-        let result = self.persist_batch(&batch).await;
-        for entry in batch {
-            let _ = entry.responder.send(result.clone());
-        }
-        result
     }
 
     async fn gets_bytes(
@@ -1230,19 +1312,21 @@ where
     type Transaction = OxKvTx<C>;
 
     fn begin_tx(&self) -> Result<Self::Transaction> {
+        let shared = Self::clone_shared(self);
         Ok(OxKvTx {
-            inner: Arc::clone(&self.inner),
-            prefix: self.prefix.clone(),
-            epoch: self.epoch,
-            session: self.session.clone(),
-            mem: Arc::clone(&self.mem),
-            wal_seq: Arc::clone(&self.wal_seq),
-            sst_seq: Arc::clone(&self.sst_seq),
-            manifest_cache: Arc::clone(&self.manifest_cache),
-            readers: Arc::clone(&self.readers),
-            write_gate: Arc::clone(&self.write_gate),
-            pending: Arc::clone(&self.pending),
-            sst_cache: self.sst_cache.clone(),
+            inner: shared.inner,
+            prefix: shared.prefix,
+            epoch: shared.epoch,
+            session: shared.session,
+            mem: shared.mem,
+            wal_seq: shared.wal_seq,
+            wal_buffer: shared.wal_buffer,
+            sst_seq: shared.sst_seq,
+            manifest_cache: shared.manifest_cache,
+            readers: shared.readers,
+            write_gate: shared.write_gate,
+            pending: shared.pending,
+            sst_cache: shared.sst_cache,
             overlay: std::sync::Mutex::new(std::collections::BTreeMap::new()),
         })
     }
