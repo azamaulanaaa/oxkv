@@ -267,9 +267,8 @@ where
 {
     /// Copies every piece of writer state, whatever the source shape.
     ///
-    /// The single place the writer-state field list is written down: `Clone`,
-    /// `begin_tx` and the transaction's maintenance view all route through it,
-    /// so adding a field cannot leave one of the three initializers stale.
+    /// This is the one place the *field assignments* are written down: `Clone`
+    /// and the transaction's maintenance view both route through it.
     pub(crate) fn clone_shared<S: WriterStateRef<C>>(src: &S) -> Self {
         Self {
             inner: Arc::clone(src.inner()),

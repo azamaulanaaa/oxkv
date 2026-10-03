@@ -1280,7 +1280,7 @@ mod tests {
         let large = vec![b'x'; DEFAULT_BLOCK_SIZE];
         s3.stage_set("large", &large).await;
         s3.flush().await.unwrap();
-        s3.flush_mem_to_sst_force().await.unwrap().unwrap();
+        s3.flush_mem_to_sst_inner(true).await.unwrap().unwrap();
         assert_eq!(s3.get_bytes("large").await.unwrap(), Some(large));
         let encoded = encode_blob_pointer(&ObjectPath::from("e000001/blob/deadbeef"), 5, 9);
         assert!(try_decode_blob_pointer(&encoded).is_some());
@@ -1392,30 +1392,88 @@ mod tests {
     }
 
     /// A key rewritten while a flush is in flight keeps its newer value:
-    /// the flush may only drop the exact snapshot it wrote.
+    /// Storage wrapper that fires one `set_bytes` in the middle of the next
+    /// SST upload, so a flush snapshot and a write genuinely overlap.
+    struct Interleave {
+        inner: MemStorage,
+        store: std::sync::OnceLock<std::sync::Arc<OxKvStore>>,
+        fired: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl Storage for Interleave {
+        async fn get(&self, path: &ObjectPath) -> Result<GetOutput> {
+            self.inner.get(path).await
+        }
+        async fn get_opts(&self, path: &ObjectPath, options: GetOptions) -> Result<GetOutput> {
+            self.inner.get_opts(path, options).await
+        }
+        async fn put_opts(
+            &self,
+            path: &ObjectPath,
+            payload: Vec<u8>,
+            mode: PutMode,
+        ) -> Result<PutOutcome> {
+            if std::path::Path::new(path.as_str())
+                .extension()
+                .is_some_and(|ext| ext == "sst")
+                && !self.fired.swap(true, std::sync::atomic::Ordering::SeqCst)
+                && let Some(s3) = self.store.get()
+            {
+                // Overwrites `k` while the flush is between its snapshot and
+                // its post-CAS memtable discard.
+                s3.set_bytes("k", b"newer")
+                    .await
+                    .expect("interleaved write");
+            }
+            self.inner.put_opts(path, payload, mode).await
+        }
+        async fn delete(&self, path: &ObjectPath) -> Result<()> {
+            self.inner.delete(path).await
+        }
+    }
+
+    /// A key rewritten *while a flush is in flight* keeps its newer value.
+    ///
+    /// Regression: the flush discarded every key in its snapshot
+    /// unconditionally, so a write that landed between the snapshot and the
+    /// post-CAS discard was dropped from the `MemTable` even though the SST it
+    /// was written to does not contain it. The discard is compare-and-remove.
+    ///
+    /// The interleaving is injected at the SST upload; a sequential
+    /// set/flush/set/flush sequence cannot reach it.
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn flush_keeps_newer_write_that_overlapped_the_snapshot() {
-        let s3 = OxKvStore::builder()
-            .with_store(new_in_memory())
-            .skip_probe(true)
-            .build()
-            .await
-            .unwrap();
+        let backend = std::sync::Arc::new(Interleave {
+            inner: MemStorage::new(),
+            store: std::sync::OnceLock::new(),
+            fired: std::sync::atomic::AtomicBool::new(false),
+        });
+        let s3 = std::sync::Arc::new(
+            OxKvStore::builder()
+                .with_store(std::sync::Arc::clone(&backend) as Arc<dyn Storage>)
+                .skip_probe(true)
+                .build()
+                .await
+                .unwrap(),
+        );
+        let _ = backend.store.set(std::sync::Arc::clone(&s3));
         s3.set_bytes("k", b"old").await.unwrap();
-        // Force-flush writes `old` to an SST, then the snapshot is dropped.
-        s3.flush_mem_to_sst_force().await.unwrap().unwrap();
-        s3.set_bytes("k", b"new").await.unwrap();
-        // A second flush must not discard `new` while writing `old`'s snapshot.
-        s3.flush_mem_to_sst_force().await.unwrap().unwrap();
+        // Uses the ungated inner path: the public wrapper holds `write_gate`
+        // across the flush, so the injected write would deadlock on it.
+        // That the gate really is held is itself worth knowing.
+        s3.flush_mem_to_sst_inner(true).await.unwrap().unwrap();
+        assert!(
+            backend.fired.load(std::sync::atomic::Ordering::SeqCst),
+            "the interleaved write never fired — this test proves nothing"
+        );
         assert_eq!(
             s3.get_bytes("k").await.unwrap().as_deref(),
-            Some(&b"new"[..])
+            Some(&b"newer"[..]),
+            "flush discarded a value it never made durable"
         );
     }
-
-    /// Every queued write is durable once `put_bytes` returns Ok — including
-    /// the ones past `MAX_GROUP_WRITES` that a leader's capped batch skipped.
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn group_commit_never_acknowledges_another_batches_write() {
@@ -1557,7 +1615,7 @@ mod tests {
         let large = vec![b'x'; DEFAULT_BLOCK_SIZE];
         s3.stage_set("large", &large).await;
         s3.flush().await.unwrap();
-        s3.flush_mem_to_sst_force().await.unwrap().unwrap();
+        s3.flush_mem_to_sst_inner(true).await.unwrap().unwrap();
         assert_eq!(
             s3.get_bytes("large").await.unwrap().as_deref(),
             Some(&large[..])
@@ -1601,7 +1659,7 @@ mod tests {
         let large = vec![b'x'; DEFAULT_BLOCK_SIZE];
         s3.stage_set("large", &large).await;
         s3.flush().await.unwrap();
-        s3.flush_mem_to_sst_force().await.unwrap().unwrap();
+        s3.flush_mem_to_sst_inner(true).await.unwrap().unwrap();
         assert_eq!(
             s3.get_bytes("large").await.unwrap().as_deref(),
             Some(&large[..])
@@ -1643,7 +1701,7 @@ mod tests {
         let large = vec![b'x'; DEFAULT_BLOCK_SIZE];
         s3.stage_set("large", &large).await;
         s3.flush().await.unwrap();
-        s3.flush_mem_to_sst_force().await.unwrap().unwrap();
+        s3.flush_mem_to_sst_inner(true).await.unwrap().unwrap();
 
         let hash = super::blob::blob_hash(&large);
         let path = super::blob::blob_path(s3.prefix(), s3.epoch(), &hash);

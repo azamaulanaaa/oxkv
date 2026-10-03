@@ -228,7 +228,6 @@ where
     ///
     /// Returns `StoreError` on I/O or CRC failure.
     pub async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        self.ensure_replayed().await?;
         retry_once_not_found(&self.manifest_cache, || async move {
             self.ensure_replayed().await?;
             let staged = self.overlay.read().await.get(key).cloned();
@@ -275,8 +274,13 @@ where
             let cursor2 = cursor.clone();
             async move {
                 self.ensure_replayed().await?;
-                let overlay = self.overlay.read().await;
-                let layers = vec![filter_rows(&overlay, direction, &cursor2)];
+                // Scoped so the read guard is dropped before `range_lookup`
+                // starts doing SST I/O; holding it across the await would block
+                // a concurrent `ensure_replayed` from taking the write lock.
+                let layers = {
+                    let overlay = self.overlay.read().await;
+                    vec![filter_rows(&overlay, direction, &cursor2)]
+                };
                 range_lookup(&self.read_ctx(), layers, limit, direction, cursor2).await
             }
         })
