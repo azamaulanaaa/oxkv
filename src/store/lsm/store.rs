@@ -10,6 +10,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use super::blob::{encode_blob_pointer, get_blob, is_overflow, put_blob, try_decode_blob_pointer};
+#[cfg(feature = "btree")]
 use super::cached::CachedOxKvStore;
 use super::manifest::{ManifestCache, SstMeta, cas_manifest, load_manifest};
 use super::merge::merge_sources;
@@ -1457,11 +1458,14 @@ impl OxKvStoreBuilder {
     /// while writes keep WAL durability; see the type docs for the
     /// single-writer contract and the staleness knobs.
     ///
+    /// Requires the `btree` feature: the mirror is a `BTreeStore`.
+    ///
     /// # Errors
     ///
     /// Returns `StoreError::Storage` if the probe fails, `StoreError::Fenced`
     /// if `ownership.json` CAS loses the race, or `StoreError` when the
     /// warming scan fails.
+    #[cfg(feature = "btree")]
     pub async fn build_cached(self) -> Result<CachedOxKvStore> {
         let inner = self.build().await?;
         CachedOxKvStore::open(inner).await
@@ -1474,11 +1478,14 @@ impl OxKvStoreBuilder {
     /// mirror the SST cache only serves maintenance reads, so it can stay
     /// small.
     ///
+    /// Requires the `btree` feature.
+    ///
     /// # Errors
     ///
     /// Returns `StoreError::Storage` if the probe fails, `StoreError::Fenced`
     /// if `ownership.json` CAS loses the race, or `StoreError` when the
     /// warming scan fails.
+    #[cfg(feature = "btree")]
     pub async fn build_cached_with_cache<C>(self, cache: C) -> Result<CachedOxKvStore<C>>
     where
         C: Cache<String, Arc<SstFile>>,

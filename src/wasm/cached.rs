@@ -8,8 +8,6 @@ use crate::store::{self, GetSet, GetSetExt, Store, StoreExt, Transaction, load_s
 
 use super::{Direction, json_compatible};
 
-// Manual wasm-bindgen wrappers for CachedOxKvStore — memory-backed on wasm.
-
 /// Wrapper around the write-through [`store::CachedOxKvStore`] for WASM.
 ///
 /// Same API as [`JsOxKvStore`](super::oxkv::JsOxKvStore), but every key is

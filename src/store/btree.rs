@@ -3,7 +3,10 @@ use std::collections::{BTreeMap, HashSet};
 use std::ops::RangeBounds;
 use std::sync::{Arc, RwLock};
 
-use super::{Direction, GetSet, KeyValue, Result, Store, Transaction};
+use super::{
+    Direction, GetSet, KeyValue, Result, Store, Transaction, lock_ignore_poison,
+    rwlock_ignore_poison,
+};
 
 /// A key-value store backed by a B-tree.
 #[derive(Default, Clone)]
@@ -124,8 +127,10 @@ impl GetSet for BTreeTx {
 #[async_trait]
 impl Transaction for BTreeTx {
     async fn commit(self) -> Result<()> {
-        let overlay = self.overlay.into_inner().unwrap();
-        let mut guard = self.store.write().unwrap();
+        // Recover the guards like the rest of the crate does: a panic in one
+        // holder should degrade this commit, not fail every later one.
+        let overlay = std::mem::take(&mut *lock_ignore_poison(&self.overlay));
+        let mut guard = rwlock_ignore_poison(&self.store);
         for (k, v) in overlay {
             match v {
                 Some(val) => {

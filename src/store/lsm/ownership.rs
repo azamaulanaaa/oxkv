@@ -60,8 +60,6 @@ pub(crate) fn wal_path(prefix: &ObjectPath, epoch: u64, seq: u64) -> ObjectPath 
 }
 
 /// Returns `\{prefix}/e{epoch:06}/sst/{level}/{id:09}.sst`.
-#[must_use]
-#[allow(dead_code)]
 pub(crate) fn sst_path(prefix: &ObjectPath, epoch: u64, level: u8, id: u64) -> ObjectPath {
     epoch_prefix(prefix, epoch)
         .child("sst")

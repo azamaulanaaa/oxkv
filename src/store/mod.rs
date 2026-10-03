@@ -41,12 +41,11 @@ mod otel;
 #[cfg(feature = "oxkv")]
 mod storage;
 #[cfg(feature = "oxkv")]
-pub use cache::{Cache, CacheStats, LruCache, S3FifoCache};
+pub use cache::{Cache, CacheStats, LruCache};
+#[cfg(all(feature = "oxkv", feature = "btree"))]
+pub use lsm::{CachedOxKvStore, CachedTx, WarmMode};
 #[cfg(feature = "oxkv")]
-pub use lsm::{
-    CachedOxKvStore, CachedTx, OxKvReader, OxKvRoTx, OxKvStore, OxKvStoreBuilder, OxKvTx, SstFile,
-    WarmMode,
-};
+pub use lsm::{OxKvReader, OxKvRoTx, OxKvStore, OxKvStoreBuilder, OxKvTx, SstFile};
 #[cfg(all(feature = "oxkv", target_arch = "wasm32"))]
 pub use storage::OpfsStorage;
 #[cfg(feature = "oxkv")]
@@ -180,6 +179,14 @@ impl From<&str> for StoreError {
 pub(crate) fn lock_ignore_poison<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// `std::sync::RwLock` counterpart of [`lock_ignore_poison`].
+pub(crate) fn rwlock_ignore_poison<T>(
+    lock: &std::sync::RwLock<T>,
+) -> std::sync::RwLockWriteGuard<'_, T> {
+    lock.write()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 

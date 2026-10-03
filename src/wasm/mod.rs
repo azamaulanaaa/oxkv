@@ -56,13 +56,12 @@ fn json_compatible<T: Serialize>(value: &T) -> Result<JsValue, store::StoreError
 
 #[cfg(feature = "btree")]
 mod btree;
-#[cfg(feature = "oxkv")]
+#[cfg(all(feature = "btree", feature = "oxkv"))]
 mod cached;
 #[cfg(feature = "oxkv")]
 mod oxkv;
 
-#[cfg(feature = "btree")]
-#[cfg(feature = "oxkv")]
+#[cfg(all(feature = "btree", feature = "oxkv"))]
 pub use cached::{JsCachedOxKvStore, JsCachedOxKvTx};
 
 #[cfg(feature = "btree")]

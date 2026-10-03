@@ -2,9 +2,9 @@
 //!
 //! Provides a minimal async trait so the LSM engine does not depend directly
 //! on any single cache. The production implementation is the built-in
-//! `LruCache` (an `S3-FIFO` eviction policy kept under its historic name, also
-//! aliased as [`S3FifoCache`]), while `moka` remains an optional alternative
-//! and `WASM` and future targets can supply their own `Cache` without `tokio`.
+//! `LruCache`, an `S3-FIFO` eviction policy, while `moka` remains an optional
+//! alternative and `WASM` and future targets can supply their own `Cache`
+//! without `tokio`.
 
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
@@ -345,8 +345,8 @@ impl Counters {
 /// `O(1)`; critical sections hold a single `futures::lock::Mutex` only for
 /// queue bookkeeping with no `.await` inside.
 ///
-/// The historic name is kept so existing `OxKvStore` instantiations and imports
-/// keep compiling; new code may prefer the [`S3FifoCache`] alias.
+/// to become `LruCache`, which is the name the trait's own docs and the
+/// benches use.
 pub struct LruCache<K, V> {
     inner: Arc<futures::lock::Mutex<S3Inner<K, V>>>,
     capacity: usize,
@@ -354,9 +354,6 @@ pub struct LruCache<K, V> {
     weigher: Weigher<K, V>,
     counters: Arc<Counters>,
 }
-
-/// Preferred name for the scan-resistant policy; identical to [`LruCache`].
-pub type S3FifoCache<K, V> = LruCache<K, V>;
 
 impl<K, V> Clone for LruCache<K, V> {
     fn clone(&self) -> Self {
@@ -439,13 +436,11 @@ where
                     .weight
                     .saturating_sub(old_weight)
                     .saturating_add(weight);
-            } else {
-                // Entries heavier than the whole cache are not retained,
-                // matching the previous eviction behavior without pointless
-                // bookkeeping.
-                if weight > self.capacity {
-                    return;
-                }
+            } else if weight <= self.capacity {
+                // Entries heavier than the whole cache are not retained, but
+                // the insert counter is still bumped below: a rejected
+                // oversize entry is exactly the case where the count explains
+                // why nothing is being cached.
                 let promoted = match inner.ghost_map.remove(&key) {
                     Some(weight) => {
                         inner.ghost_weight = inner.ghost_weight.saturating_sub(weight);
@@ -472,7 +467,6 @@ where
                 inner.push_slot(queue, seq, key);
                 inner.weight = inner.weight.saturating_add(weight);
             }
-
             let before = inner.map.len();
             inner.evict_while_over(self.capacity, self.ghost_cap);
             before.saturating_sub(inner.map.len())
@@ -651,5 +645,33 @@ mod tests {
         assert!(cache.get(&"a".to_string()).await.is_none());
         assert!(cache.get(&"b".to_string()).await.is_some());
         assert!(cache.get(&"c".to_string()).await.is_some());
+    }
+
+    /// An entry too heavy for the cache is rejected, but still counted — that
+    /// is exactly the case where `inserts` explains why nothing is cached.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn oversized_insert_is_counted_but_not_retained() {
+        let cache: LruCache<String, Vec<u8>> = LruCache::new(4, |_k: &String, v: &Vec<u8>| {
+            u32::try_from(v.len()).unwrap()
+        });
+        cache.insert("small".to_string(), vec![1, 2]).await;
+        cache.insert("huge".to_string(), vec![0; 4096]).await;
+        let stats = cache.stats().expect("tracked");
+        assert_eq!(stats.inserts, 2, "rejected insert must still count");
+        assert!(!cache.contains(&"huge".to_string()).await);
+        assert!(cache.contains(&"small".to_string()).await);
+    }
+
+    /// `hit_ratio` is defined when nothing has been looked up yet.
+    #[test]
+    fn hit_ratio_of_an_empty_cache_is_zero() {
+        let empty = CacheStats {
+            hits: 0,
+            misses: 0,
+            inserts: 0,
+            evictions: 0,
+        };
+        assert_eq!(empty.hit_ratio(), 0.0);
     }
 }

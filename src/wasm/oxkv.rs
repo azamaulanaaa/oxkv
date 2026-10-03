@@ -8,8 +8,6 @@ use crate::store::{self, GetSet, GetSetExt, Store, StoreExt, Transaction, load_s
 
 use super::{Direction, json_compatible};
 
-// Manual wasm-bindgen wrappers for OxKvStore (LSM) — memory-backed on wasm.
-
 /// Wrapper around the LSM [`store::OxKvStore`] for use in a WASM environment.
 ///
 /// Backed by an in-memory [`store::MemStorage`], so contents live only as

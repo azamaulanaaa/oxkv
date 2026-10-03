@@ -811,7 +811,7 @@ wasm-pack build --target web   # or nodejs, bundler, etc.
 - `src/store/lsm/ownership.rs` — `ownership.json` epoch fencing
 - `src/store/lsm/probe.rs` — conditional-write probe (`If-None-Match` / `If-Match`)
 - `src/store/storage.rs` — `Storage` trait + `MemStorage` (in-memory, every target) + `object_store` impl (S3/memory/local, native `oxkv-s3`) + `OpfsStorage` (browser origin-private storage, wasm)
-- `src/store/cache.rs` — `Cache` trait + `LruCache`/`S3FifoCache` (scan-resistant `S3-FIFO`, `moka` optional)
+- `src/store/cache.rs` — `Cache` trait + `LruCache` (scan-resistant `S3-FIFO`, `moka` optional)
 - `src/store/hooks.rs` — `HookStore` decorator providing validation hooks and change notifications
 - `src/store/otel.rs` — `OtelStore` decorator emitting OpenTelemetry spans and metrics (feature `otel`)
 - `src/query/mod.rs` — query AST types and the pest-based parser (`query/query.pest` grammar)

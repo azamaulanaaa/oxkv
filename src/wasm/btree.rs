@@ -8,8 +8,6 @@ use crate::store::{self, GetSet, GetSetExt, Store, StoreExt, Transaction, load_s
 
 use super::{Direction, json_compatible};
 
-// Manual wasm-bindgen wrappers for BTreeStore — inlined from `make_wasm_store!` macro.
-
 /// Wrapper around the concrete [`store::BTreeStore`] for use in a WASM environment.
 ///
 /// The wrapper holds an `Arc<Mutex<BTreeStore>>` so that multiple concurrent
