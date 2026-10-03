@@ -1020,7 +1020,7 @@ mod tests {
             .returning(|_, _, _| Ok(vec![]));
 
         let bytes = mock_store.save().await.unwrap();
-        assert!(!bytes.is_empty());
+        assert_ne!(bytes, Vec::<u8>::new(), "save must frame the batch");
     }
 
     #[tokio::test]
