@@ -1238,6 +1238,14 @@ where
             // A leader whose own entry fell outside the capped batch must not
             // report that batch's success as *its* outcome: its record is still
             // queued, so acknowledging now would claim durability it lacks.
+            // Defence in depth, and currently unreachable: `pending` is
+            // drained from the front and `write_gate` is fair (FIFO), so a
+            // leader is always at the head of the queue it drains and its own
+            // entry is always inside the batch. It would only matter if the
+            // push moved after the lock acquisition, or the gate stopped being
+            // FIFO — either of which would let this task acknowledge a batch
+            // that excluded its own write, claiming durability it does not
+            // have. Cheap to keep, so keep it.
             let mine = batch.iter().any(|e| e.id == id);
             let result = self.persist_batch(&batch).await;
             for entry in batch {

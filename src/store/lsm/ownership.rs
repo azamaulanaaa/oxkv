@@ -70,10 +70,14 @@ pub(crate) fn sst_path(prefix: &ObjectPath, epoch: u64, level: u8, id: u64) -> O
 /// Backoff for CAS contention: `50ms*2^n + jitter`, cap `1s`.
 #[must_use]
 pub(crate) fn cas_backoff(attempt: u32) -> std::time::Duration {
-    let base = 50u64.saturating_mul(1u64 << attempt.min(5));
-    let base = base.min(1000);
+    // Jitter is reserved *inside* the cap, not added after it: capping the base
+    // and then adding jitter produced 1010ms against a documented 1 s ceiling,
+    // and left every contended writer sleeping the same flat amount once
+    // saturated.
     let jitter = u64::from(attempt).wrapping_mul(7) % 20;
-    std::time::Duration::from_millis(base + jitter)
+    let base = 50u64.saturating_mul(1u64 << attempt.min(5));
+    let base = base.min(1000 - 20);
+    std::time::Duration::from_millis((base + jitter).min(1000))
 }
 
 /// Acquires ownership by CAS-bumping `ownership.json` epoch.
@@ -179,9 +183,23 @@ mod tests {
     fn cas_backoff_grows_and_stays_capped() {
         assert!(cas_backoff(0) < cas_backoff(1));
         assert!(cas_backoff(1) < cas_backoff(3));
-        // Jitter can reorder equal bases, so compare the documented ceiling.
-        assert!(cas_backoff(3) <= std::time::Duration::from_secs(1));
-        assert!(cas_backoff(30) <= std::time::Duration::from_millis(1020));
+        // The documented ceiling is 1 s for *every* attempt, jitter included.
+        for attempt in 0..64 {
+            assert!(
+                cas_backoff(attempt) <= std::time::Duration::from_secs(1),
+                "attempt {attempt} backed off {:?}, over the documented cap",
+                cas_backoff(attempt)
+            );
+        }
+        // Jitter must survive at saturation, else every contended writer
+        // sleeps the same flat amount and re-synchronises into a thundering
+        // herd.
+        let saturated: std::collections::BTreeSet<u64> =
+            (5..64).map(|a| cas_backoff(a).as_millis() as u64).collect();
+        assert!(
+            saturated.len() > 1,
+            "backoff lost its jitter once saturated: {saturated:?}"
+        );
     }
 
     /// A corrupt `ownership.json` must be reported, never silently treated as

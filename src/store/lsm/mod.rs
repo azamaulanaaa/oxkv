@@ -1474,9 +1474,23 @@ mod tests {
             "flush discarded a value it never made durable"
         );
     }
-    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    /// Every queued write is durable once `put_bytes` returns Ok, including
+    /// the ones past `MAX_GROUP_WRITES` that no single batch could hold.
+    ///
+    /// Note on coverage: this asserts the observable contract, not the
+    /// `mine`-check inside `put_bytes`. That branch is currently unreachable —
+    /// `pending` is drained from the front under a fair FIFO gate, so a leader
+    /// is always at the head of the queue it drains, and its own entry is always
+    /// inside the batch. An instrumented run (this many writers on 8 workers,
+    /// released from a barrier) recorded zero re-queues. The branch is kept as
+    /// defence in depth, not as a covered path.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tokio::test(flavor = "multi_thread", worker_threads = 8)
+    )]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn group_commit_never_acknowledges_another_batches_write() {
+        use tokio::sync::Barrier;
         let backend = new_in_memory();
         let s3 = std::sync::Arc::new(
             OxKvStore::builder()
@@ -1486,12 +1500,17 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        // More writers than one capped batch can hold, all racing the same gate.
+        // More writers than one capped batch can hold, all released together so
+        // they pile up behind the gate before the first leader drains.
         let total = MAX_GROUP_WRITES + 40;
+        let barrier = Arc::new(Barrier::new(total));
         let mut handles = Vec::new();
         for i in 0..total {
             let s3 = std::sync::Arc::clone(&s3);
+            let s3 = std::sync::Arc::clone(&s3);
+            let barrier = Arc::clone(&barrier);
             handles.push(tokio::spawn(async move {
+                barrier.wait().await;
                 s3.put_bytes(&format!("k{i:04}"), format!("v{i}").as_bytes())
                     .await
             }));
