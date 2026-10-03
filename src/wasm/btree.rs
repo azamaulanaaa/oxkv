@@ -333,8 +333,8 @@ impl JsBTreeStore {
     /// decoded independently downstream (e.g. piped straight into a file or
     /// fetch upload).
     ///
-    /// The stream reads lazily and holds the store lock only while a chunk is
-    /// being produced; cancelling the consumer releases it automatically.
+    /// The stream reads lazily and clones the store handle out of the mutex, so
+    /// no other method on this handle is blocked for the stream lifetime.
     ///
     /// # Errors
     /// * `StoreError` - if retrieval fails while streaming
@@ -353,7 +353,11 @@ impl JsBTreeStore {
         let (mut sender, receiver) = futures::channel::mpsc::channel::<store::Result<Vec<u8>>>(16);
         let inner = std::sync::Arc::clone(&self.inner);
         wasm_bindgen_futures::spawn_local(async move {
-            let store = inner.lock().await;
+            // Cloning out of the mutex instead of holding the guard: a consumer
+            // that stalls on a full channel would otherwise park this task
+            // holding the store lock and freeze every other method on the
+            // handle until it resumed or was cancelled.
+            let store = inner.lock().await.clone();
             let mut chunks = store.save_stream();
             while let Some(chunk) = chunks.next().await {
                 if sender.send(chunk).await.is_err() {
@@ -410,234 +414,13 @@ impl JsBTreeStore {
     }
 }
 
-/// Wrapper around the [`Store::BTreeTx`] produced by [`begin_tx`].
-#[wasm_bindgen(js_name = BTreeTx)]
-#[derive(Clone)]
-pub struct JsBTreeTx {
-    inner: std::sync::Arc<
-        futures::lock::Mutex<Option<<crate::BTreeStore as store::Store>::Transaction>>,
-    >,
-}
-
-#[wasm_bindgen(js_class = BTreeTx)]
-impl JsBTreeTx {
-    async fn take_tx(
-        self,
-    ) -> Result<<crate::BTreeStore as store::Store>::Transaction, store::StoreError> {
-        let mut guard = self.inner.lock().await;
-        guard.take().ok_or_else(|| {
-            store::StoreError::Other("transaction already committed or rolled back".into())
-        })
-    }
-
-    /// Retrieve a value within an active transaction.
-    /// # Errors
-    /// * `StoreError` - if the transaction was already committed or rolled back, or if an I/O error occurs
-    #[wasm_bindgen(return_description = "Raw bytes as a Uint8Array, or null when not found")]
-    pub async fn get_bytes(
-        &self,
-        #[wasm_bindgen(param_description = "The key to retrieve")] key: &str,
-    ) -> Result<JsValue, JsValue> {
-        let mut guard = self.inner.lock().await;
-        let tx = guard.as_mut().ok_or_else(|| {
-            store::StoreError::Other("transaction already committed or rolled back".into())
-        })?;
-        match tx.get_bytes(key).await {
-            Ok(Some(bytes)) => {
-                let arr = js_sys::Uint8Array::from(&bytes[..]);
-                Ok(arr.into())
-            }
-            Ok(None) => Ok(JsValue::null()),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    /// Checks if a key exists within an active transaction.
-    /// # Errors
-    /// * `StoreError` - if the transaction was already committed or rolled back, or if an I/O error occurs
-    #[wasm_bindgen(
-        return_description = "true when the key exists within the transaction, false otherwise"
-    )]
-    pub async fn has(
-        &self,
-        #[wasm_bindgen(param_description = "The key to check for existence")] key: &str,
-    ) -> Result<JsValue, JsValue> {
-        let mut guard = self.inner.lock().await;
-        let tx = guard.as_mut().ok_or_else(|| {
-            store::StoreError::Other("transaction already committed or rolled back".into())
-        })?;
-        match tx.has(key).await {
-            Ok(exists) => Ok(JsValue::from(exists)),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    /// Set a key-value pair within an active transaction.
-    /// # Errors
-    /// * `StoreError` - if the transaction was already committed or rolled back, or if an I/O error occurs
-    #[wasm_bindgen(
-        return_description = "Previous value as a Uint8Array if the key already existed, or null if it was newly inserted"
-    )]
-    pub async fn set_bytes(
-        &self,
-        #[wasm_bindgen(param_description = "The key to set")] key: &str,
-        #[wasm_bindgen(param_description = "Byte array of the value to store under the given key")]
-        value: &[u8],
-    ) -> Result<JsValue, JsValue> {
-        let mut guard = self.inner.lock().await;
-        let tx = guard.as_mut().ok_or_else(|| {
-            store::StoreError::Other("transaction already committed or rolled back".into())
-        })?;
-        match tx.set_bytes(key, value).await {
-            Ok(Some(prev)) => {
-                let arr = js_sys::Uint8Array::from(&prev[..]);
-                Ok(arr.into())
-            }
-            Ok(None) => Ok(JsValue::null()),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    /// Delete a key from within an active transaction.
-    /// # Errors
-    /// * `StoreError` - if the transaction was already committed or rolled back, or if an I/O error occurs
-    #[wasm_bindgen(
-        return_description = "true if a key existed and was removed; false when no prior value was present"
-    )]
-    pub async fn delete(
-        &self,
-        #[wasm_bindgen(param_description = "The key to remove from storage")] key: &str,
-    ) -> Result<JsValue, JsValue> {
-        let mut guard = self.inner.lock().await;
-        let tx = guard.as_mut().ok_or_else(|| {
-            store::StoreError::Other("transaction already committed or rolled back".into())
-        })?;
-        match tx.delete(key).await {
-            Ok(deleted) => Ok(JsValue::from(deleted)),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    /// Set a key to an arbitrary JSON-shaped value within an active transaction. Accepts any `JsValue` from JavaScript — objects, arrays, strings, numbers, booleans, or nested structures. The value is serialized with `serde_json`, stored as raw bytes, and the previous value (if any) is returned as a deserialized `Option<T>`.
-    ///
-    /// This is the JSON-level counterpart to [`set_bytes`]; use it when you want to work with typed Rust structs instead of raw byte arrays.
-    ///
-    /// # Errors
-    /// * `StoreError` - if serialization of the value or an I/O error occurs
-    #[wasm_bindgen(js_name = "set")]
-    pub async fn set(
-        &self,
-        #[wasm_bindgen(param_description = "The key to set")] key: &str,
-        #[wasm_bindgen(param_description = "A JSON-shaped value from JavaScript")] value: JsValue,
-    ) -> Result<JsValue, JsValue> {
-        let json_value: serde_json::Value = serde_wasm_bindgen::from_value(value)
-            .map_err(|e| store::StoreError::Serialization(e.to_string()))?;
-        let mut guard = self.inner.lock().await;
-        let tx = guard.as_mut().ok_or_else(|| {
-            store::StoreError::Other("transaction already committed or rolled back".into())
-        })?;
-        match tx.set(key, &json_value).await {
-            Ok(Some(prev)) => {
-                let js_value = json_compatible(&prev)?;
-                Ok(js_value)
-            }
-            Ok(None) => Ok(JsValue::null()),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    /// Retrieve a JSON-shaped value from within an active transaction. Returns the stored value deserialized into an arbitrary `serde_json::Value` (objects, arrays, strings, numbers, booleans, or nested structures), or null when not found.
-    ///
-    /// This is the JSON-level counterpart to [`get_bytes`]; use it when you want typed access instead of raw byte arrays.
-    ///
-    /// # Errors
-    /// * `StoreError` - if deserialization of the stored value or an I/O error occurs
-    #[wasm_bindgen(js_name = "get")]
-    pub async fn get(
-        &self,
-        #[wasm_bindgen(param_description = "The key to retrieve")] key: &str,
-    ) -> Result<JsValue, JsValue> {
-        let mut guard = self.inner.lock().await;
-        let tx = guard.as_mut().ok_or_else(|| {
-            store::StoreError::Other("transaction already committed or rolled back".into())
-        })?;
-        match tx.get::<serde_json::Value>(key).await {
-            Ok(Some(value)) => {
-                let js_value = json_compatible(&value)?;
-                Ok(js_value)
-            }
-            Ok(None) => Ok(JsValue::null()),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    /// Retrieve key-value pairs within an active transaction.
-    /// # Errors
-    /// * `StoreError` - if the transaction was already committed or rolled back, or if an I/O error occurs
-    #[wasm_bindgen(return_description = "An array of key-value objects")]
-    pub async fn gets_bytes(
-        &self,
-        #[wasm_bindgen(
-            param_description = "Optional maximum number of results to return; omit (None) for all matches"
-        )]
-        limit: Option<u32>,
-        #[wasm_bindgen(param_description = "Sort order for pagination — ascending or descending")]
-        direction: Direction,
-        #[wasm_bindgen(
-            param_description = "Optional start key for the range; keys *at* this cursor are included when present"
-        )]
-        start_cursor: Option<String>,
-        #[wasm_bindgen(
-            param_description = "Optional end key for the range; keys *at* this cursor are included when present"
-        )]
-        end_cursor: Option<String>,
-    ) -> Result<Vec<js_sys::Object>, JsValue> {
-        let cursor = (start_cursor, end_cursor);
-
-        let mut guard = self.inner.lock().await;
-        let tx = guard.as_mut().ok_or_else(|| {
-            store::StoreError::Other("transaction already committed or rolled back".into())
-        })?;
-        match tx.gets_bytes(limit, direction.into(), cursor).await {
-            Ok(kvs) => kvs
-                .into_iter()
-                .map(|value| {
-                    let obj = js_sys::Object::new();
-                    let js_key = js_sys::JsString::from(value.key);
-                    let js_val = js_sys::Uint8Array::from(&value.value[..]);
-                    js_sys::Reflect::set(&obj, &"key".into(), &js_key)?;
-                    js_sys::Reflect::set(&obj, &"value".into(), &js_val)?;
-                    Ok(obj)
-                })
-                .collect::<Result<_, JsValue>>(),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    /// Commit the transaction, making all staged changes permanent.
-    /// # Errors
-    /// * `StoreError` - if an I/O error occurs while committing the transaction
-    #[wasm_bindgen(return_description = "Undefined on success")]
-    pub async fn commit(self) -> Result<JsValue, JsValue> {
-        let tx = self.take_tx().await?;
-        match tx.commit().await {
-            Ok(()) => Ok(JsValue::undefined()),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    /// Rollback the transaction, discarding every staged change.
-    /// # Errors
-    /// * `StoreError` - if an I/O error occurs while rolling back the transaction
-    #[wasm_bindgen(return_description = "Undefined on success")]
-    pub async fn rollback(self) -> Result<JsValue, JsValue> {
-        let tx = self.take_tx().await?;
-        match tx.rollback().await {
-            Ok(()) => Ok(JsValue::undefined()),
-            Err(e) => Err(e.into()),
-        }
-    }
-}
+// Generated wrapper; see `js_tx!` in `wasm/mod.rs`.
+js_tx!(
+    JsBTreeTx,
+    "BTreeTx",
+    store::BTreeStore,
+    "Transaction handle for [`JsBTreeStore`]: staged overlay, durable only on `commit`."
+);
 
 #[cfg(all(test, feature = "btree"))]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
