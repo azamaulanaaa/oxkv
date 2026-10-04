@@ -346,8 +346,9 @@ where
     ///
     /// # Errors
     ///
-    /// Returns `StoreError::Storage` on `PUT`/CAS failure. It also returns
-    /// `StoreError::Fenced` if ownership moved. It also returns an error if
+    /// Returns `StoreError::Storage` if the WAL `PUT` fails. Returns
+    /// `StoreError::CasConflict` if all four manifest `CAS` attempts lose.
+    /// Returns `StoreError::Fenced` if ownership moved. Returns an error if
     /// this sequence already holds different bytes.
     pub(crate) async fn append_wal_locked(
         &self,
@@ -431,7 +432,10 @@ where
                 Err(StoreError::CasConflict(detail)) => {
                     self.manifest_cache.lock().await.clear();
                     if attempt == 3 {
-                        return Err(StoreError::Storage(format!(
+                        // Report `CasConflict`, not `Storage`. The variant
+                        // documents itself as retryable. A caller must see
+                        // the conflict after the last attempt.
+                        return Err(StoreError::CasConflict(format!(
                             "wal manifest CAS conflict after retries: {detail}"
                         )));
                     }

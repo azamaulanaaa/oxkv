@@ -1849,4 +1849,77 @@ mod tests {
             Some(&b"old"[..])
         );
     }
+
+    /// A WAL append must report `StoreError::CasConflict` when every
+    /// manifest `CAS` attempt loses.
+    ///
+    /// The variant documents itself as retryable. The exhausted-retry path
+    /// returned `Storage` instead. A caller that matched on `CasConflict`
+    /// then missed the one condition it can retry.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn wal_manifest_cas_conflict_after_retries_stays_cas_conflict() {
+        /// Fails every `manifest.json` put with `CasConflict`. The struct
+        /// delegates every other call, so ownership and the WAL put still
+        /// succeed.
+        struct ManifestCasConflictStore {
+            inner: MemStorage,
+        }
+
+        #[async_trait::async_trait]
+        impl Storage for ManifestCasConflictStore {
+            async fn get(&self, path: &ObjectPath) -> Result<GetOutput> {
+                self.inner.get(path).await
+            }
+
+            async fn get_opts(&self, path: &ObjectPath, options: GetOptions) -> Result<GetOutput> {
+                self.inner.get_opts(path, options).await
+            }
+
+            async fn put_opts(
+                &self,
+                path: &ObjectPath,
+                payload: Vec<u8>,
+                mode: PutMode,
+            ) -> Result<PutOutcome> {
+                if path.as_str().ends_with("manifest.json") {
+                    return Err(StoreError::CasConflict(format!("{path}: etag mismatch")));
+                }
+                self.inner.put_opts(path, payload, mode).await
+            }
+
+            async fn delete(&self, path: &ObjectPath) -> Result<()> {
+                self.inner.delete(path).await
+            }
+        }
+
+        let backend: Arc<dyn Storage> = Arc::new(ManifestCasConflictStore {
+            inner: MemStorage::new(),
+        });
+        let s3 = OxKvStore::builder()
+            .with_store(backend)
+            .with_prefix(ObjectPath::from("oxkv-wal-cas"))
+            .skip_probe(true)
+            .build()
+            .await
+            .unwrap();
+
+        let err = s3
+            .put_bytes("k1", b"v1")
+            .await
+            .expect_err("every manifest CAS attempt conflicts");
+        match &err {
+            StoreError::CasConflict(detail) => {
+                assert!(
+                    detail.starts_with("wal manifest CAS conflict after retries: "),
+                    "lost the original detail: {detail}"
+                );
+                assert!(
+                    detail.contains("etag mismatch"),
+                    "lost the backend detail: {detail}"
+                );
+            }
+            other => panic!("expected CasConflict, got {other:?}"),
+        }
+    }
 }
