@@ -793,6 +793,10 @@ mod tests {
         // OPFS exists only in browsers; Node runs the rest of the suite.
         // (Browser CI executes this test for real.)
         if web_sys::window().is_none() {
+            crate::wasm::announce_skip(
+                "cached_persistent_roundtrip_survives_reopen",
+                "no window/OPFS under Node; executed for real by CI's `wasm-pack test --headless --chrome` job",
+            );
             return;
         }
         let prefix = Some("persist-smoke".to_string());

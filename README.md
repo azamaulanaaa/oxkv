@@ -568,7 +568,7 @@ const reopened = await OxKvStore.createPersistent("my-app");
 console.log(await reopened.get("user1")); // { name: "Ada" }
 ```
 
-Main-thread only (async OPFS handles); cross-tab races resolve last-writer-wins, since OPFS offers no conditional-write primitive on the main thread.
+Main-thread only (async OPFS handles). OPFS has no native conditional-write primitive, so `OpfsStorage` supplies one: each `put`/`delete` runs inside a [Web Lock](https://developer.mozilla.org/docs/Web/API/Web_Locks_API) named after the object, which serialises `Create`/`Update` across tabs sharing an origin. Where `navigator.locks` is unavailable the write runs unguarded and resolves best-effort rather than atomically — `OpfsStorage::cross_tab_cas_is_atomic()` reports which mode the current host is in. Reads are never locked; a concurrent read sees the old or the new value, never a partial one.
 
 ### Cached reads in the browser
 

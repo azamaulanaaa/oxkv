@@ -554,16 +554,26 @@ use sha2::{Digest, Sha256};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast as _;
 
+#[cfg(target_arch = "wasm32")]
+mod opfs_lock;
+
 /// Origin-private-file-system [`Storage`] for browsers (`wasm32` only).
 ///
 /// Persists objects as real OPFS files under one `oxkv` root directory, so
 /// contents survive page reloads. Main-thread only: async file handles work
 /// on the main thread, while sync access handles are worker-only.
 ///
-/// Cross-tab races resolve last-writer-wins — OPFS offers no
-/// conditional-write primitive on the main thread, so `Create`/`Update`
-/// preconditions are checked read-then-write. Single-tab behavior (probe,
-/// fencing, CAS) is exact.
+/// OPFS offers no conditional-write primitive on the main thread, so `Create`
+/// and `Update` preconditions are checked read-then-write. That read and the
+/// write it guards run inside a named
+/// [Web Lock](https://developer.mozilla.org/en-US/docs/Web/API/Web_Locks_API)
+/// (see [`opfs_lock`]), so tabs of this origin serialise per object instead of
+/// resolving last-writer-wins. `delete` takes the same lock; `get` needs none,
+/// because OPFS swaps a file atomically when its writable stream closes.
+///
+/// Where `navigator.locks` is missing (older Safari, no browser) the guard is
+/// skipped and the preconditions degrade to a best-effort read-then-write —
+/// see [`OpfsStorage::cross_tab_cas_is_atomic`].
 ///
 /// `ETag`s and versions are hex `SHA-256` content hashes: stable across
 /// reloads, unique per byte content, no sidecar files.
@@ -648,6 +658,31 @@ impl OpfsStorage {
             .dyn_into()
             .map_err(|e| js_err("OPFS oxkv root is not a directory", e))?;
         Ok(Self { root })
+    }
+
+    /// Whether conditional writes are serialised across tabs by a Web Lock.
+    ///
+    /// `true` (any browser with `navigator.locks`, i.e. Chrome 69+, Firefox
+    /// 96+, Safari 15.4+): `put_opts` and `delete` check their preconditions
+    /// and write while holding a per-object lock, so tabs of this origin cannot
+    /// interleave a write between the read and the write.
+    ///
+    /// `false`: the preconditions degrade to a best-effort read-then-write.
+    /// Still exact within one tab, but a concurrent tab can lose an update —
+    /// which is what the LSM layer's single-writer fencing is there to catch.
+    #[must_use]
+    pub fn cross_tab_cas_is_atomic() -> bool {
+        opfs_lock::locks_available()
+    }
+
+    /// Number of [`put_opts`](Storage::put_opts)/`delete` calls that ran
+    /// without a Web Lock since this page loaded.
+    ///
+    /// Non-zero exactly when [`OpfsStorage::cross_tab_cas_is_atomic`] was
+    /// `false` — the observable signal that the degraded path was exercised.
+    #[must_use]
+    pub fn unlocked_operation_count() -> u64 {
+        opfs_lock::unlocked_operation_count()
     }
 
     /// Splits `path` into parent segments and the file name.
@@ -752,31 +787,12 @@ impl OpfsStorage {
             .map_err(|e| js_err("OPFS close failed", e))?;
         Ok(content_etag(payload))
     }
-}
 
-#[cfg(target_arch = "wasm32")]
-#[async_trait::async_trait]
-impl Storage for OpfsStorage {
-    async fn get(&self, path: &ObjectPath) -> Result<GetOutput> {
-        match self.read_existing(path).await? {
-            Some((bytes, etag)) => Ok(GetOutput {
-                bytes,
-                e_tag: Some(etag.clone()),
-                version: Some(etag),
-            }),
-            None => Err(StoreError::Storage(format!("not found: {path}"))),
-        }
-    }
-
-    async fn get_opts(&self, path: &ObjectPath, options: GetOptions) -> Result<GetOutput> {
-        let out = self.get(path).await?;
-        if options.if_none_match.as_deref() == out.e_tag.as_deref() && out.e_tag.is_some() {
-            return Err(StoreError::NotModified);
-        }
-        Ok(out)
-    }
-
-    async fn put_opts(
+    /// Precondition check plus write for [`Storage::put_opts`], run with the
+    /// object's Web Lock already held.
+    ///
+    /// Must not take the lock again: Web Locks are not reentrant.
+    async fn put_guarded(
         &self,
         path: &ObjectPath,
         payload: Vec<u8>,
@@ -811,7 +827,11 @@ impl Storage for OpfsStorage {
         })
     }
 
-    async fn delete(&self, path: &ObjectPath) -> Result<()> {
+    /// Deletes the object at `path`, run with the object's Web Lock held so it
+    /// cannot land between another tab's precondition check and its write.
+    ///
+    /// Must not take the lock again: Web Locks are not reentrant.
+    async fn delete_guarded(&self, path: &ObjectPath) -> Result<()> {
         let (segments, name) = Self::split(path)?;
         let Some(dir) = self.parent(&segments, false).await? else {
             return Ok(());
@@ -821,5 +841,273 @@ impl Storage for OpfsStorage {
             Err(e) if is_not_found(&e) => Ok(()),
             Err(e) => Err(js_err("OPFS delete failed", e)),
         }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[async_trait::async_trait]
+impl Storage for OpfsStorage {
+    async fn get(&self, path: &ObjectPath) -> Result<GetOutput> {
+        match self.read_existing(path).await? {
+            Some((bytes, etag)) => Ok(GetOutput {
+                bytes,
+                e_tag: Some(etag.clone()),
+                version: Some(etag),
+            }),
+            None => Err(StoreError::Storage(format!("not found: {path}"))),
+        }
+    }
+
+    async fn get_opts(&self, path: &ObjectPath, options: GetOptions) -> Result<GetOutput> {
+        let out = self.get(path).await?;
+        if options.if_none_match.as_deref() == out.e_tag.as_deref() && out.e_tag.is_some() {
+            return Err(StoreError::NotModified);
+        }
+        Ok(out)
+    }
+
+    async fn put_opts(
+        &self,
+        path: &ObjectPath,
+        payload: Vec<u8>,
+        mode: PutMode,
+    ) -> Result<PutOutcome> {
+        // The store handle and the path are cloned into the lock callback
+        // because a Web Lock callback must be `'static`: it outlives this
+        // call and is driven by the browser's microtask queue.
+        let lock_path = path.clone();
+        let store = self.clone();
+        let guarded_path = path.clone();
+        opfs_lock::with_object_lock(&lock_path, move || async move {
+            store.put_guarded(&guarded_path, payload, mode).await
+        })
+        .await
+    }
+
+    async fn delete(&self, path: &ObjectPath) -> Result<()> {
+        let lock_path = path.clone();
+        let store = self.clone();
+        let guarded_path = path.clone();
+        opfs_lock::with_object_lock(&lock_path, move || async move {
+            store.delete_guarded(&guarded_path).await
+        })
+        .await
+    }
+}
+
+/// Contract tests for the OPFS backend, mirroring the [`MemStorage`] suite
+/// above: the engine only speaks [`Storage`], so every backend owes the same
+/// `Create`/`Update`/`get_opts`/`delete` behaviour.
+///
+/// These need a real browser (OPFS is not available under
+/// `wasm-pack test --node`), so they announce the skip rather than passing
+/// vacuously — see [`crate::wasm::announce_skip`]. CI's Chrome job
+/// (`wasm-pack test --headless --chrome`) is what executes them.
+#[cfg(all(test, target_arch = "wasm32"))]
+mod opfs_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    /// Opens a store under a prefix of its own, so tests cannot collide with
+    /// each other or with anything else left in OPFS by a previous run.
+    async fn store_for(test: &str) -> Option<OpfsStorage> {
+        if web_sys::window().is_none() {
+            crate::wasm::announce_skip(
+                test,
+                "no window/OPFS under Node; executed for real by CI's `wasm-pack test --headless --chrome` job",
+            );
+            return None;
+        }
+        Some(
+            OpfsStorage::open()
+                .await
+                .unwrap_or_else(|e| panic!("{test}: open OPFS: {e}")),
+        )
+    }
+
+    fn path(test: &str) -> ObjectPath {
+        ObjectPath::new(format!("contract-{test}/object"))
+    }
+
+    #[wasm_bindgen_test]
+    async fn opfs_contracts_mirror_mem_storage() {
+        let Some(store) = store_for("contracts").await else {
+            return;
+        };
+        let path = path("contracts");
+        store.delete(&path).await.expect("clean slate");
+
+        let created = store
+            .put_opts(&path, b"v1".to_vec(), PutMode::Create)
+            .await
+            .expect("create");
+        assert!(created.e_tag.is_some(), "OPFS must report an etag");
+        assert_eq!(created.version, created.e_tag);
+
+        let err = store
+            .put_opts(&path, b"v2".to_vec(), PutMode::Create)
+            .await
+            .expect_err("duplicate create conflicts");
+        assert!(matches!(err, StoreError::CasConflict(_)), "{err:?}");
+
+        let stale = ObjectVersion {
+            e_tag: Some("\"stale\"".to_string()),
+            version: None,
+        };
+        let err = store
+            .put_opts(&path, b"v2".to_vec(), PutMode::Update(stale))
+            .await
+            .expect_err("stale update conflicts");
+        assert!(matches!(err, StoreError::CasConflict(_)), "{err:?}");
+
+        let got = store.get(&path).await.expect("get");
+        assert_eq!(got.bytes, b"v1", "conflicts must not overwrite");
+
+        let err = store
+            .get_opts(
+                &path,
+                GetOptions {
+                    if_none_match: created.e_tag.clone(),
+                },
+            )
+            .await
+            .expect_err("etag match is NotModified");
+        assert_eq!(err, StoreError::NotModified);
+
+        let updated = store
+            .put_opts(
+                &path,
+                b"v2".to_vec(),
+                PutMode::Update(ObjectVersion {
+                    e_tag: created.e_tag.clone(),
+                    version: created.version.clone(),
+                }),
+            )
+            .await
+            .expect("matching update wins");
+        assert_ne!(updated.e_tag, created.e_tag, "new content, new etag");
+        assert_eq!(store.get(&path).await.expect("get").bytes, b"v2");
+
+        store.delete(&path).await.expect("delete");
+        store.delete(&path).await.expect("delete idempotent");
+        let err = store.get(&path).await.expect_err("missing get fails");
+        assert!(err.to_string().contains("not found"), "{err}");
+    }
+
+    #[wasm_bindgen_test]
+    async fn opfs_rejects_empty_and_trailing_slash_paths() {
+        let Some(store) = store_for("split").await else {
+            return;
+        };
+        for bad in ["", "a/", "a/b/"] {
+            let bad = ObjectPath::new(bad);
+            assert!(
+                store
+                    .put_opts(&bad, b"x".to_vec(), PutMode::Create)
+                    .await
+                    .is_err()
+            );
+            assert!(store.get(&bad).await.is_err());
+            assert!(
+                store.delete(&bad).await.is_err(),
+                "{bad:?} must be rejected"
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    async fn opfs_conflict_inside_the_lock_still_releases_it() {
+        let Some(store) = store_for("conflict-release").await else {
+            return;
+        };
+        let path = path("conflict-release");
+        store.delete(&path).await.expect("clean slate");
+        let created = store
+            .put_opts(&path, b"v1".to_vec(), PutMode::Create)
+            .await
+            .expect("create");
+
+        // A conflict returns from inside the locked section. If that path
+        // dropped the lock early — or kept it — the next operation on this
+        // very path would corrupt or hang; it must simply work.
+        let err = store
+            .put_opts(
+                &path,
+                b"v2".to_vec(),
+                PutMode::Update(ObjectVersion {
+                    e_tag: Some("\"stale\"".to_string()),
+                    version: None,
+                }),
+            )
+            .await
+            .expect_err("stale update conflicts");
+        assert!(matches!(err, StoreError::CasConflict(_)), "{err:?}");
+        let updated = store
+            .put_opts(
+                &path,
+                b"v2".to_vec(),
+                PutMode::Update(ObjectVersion {
+                    e_tag: created.e_tag,
+                    version: None,
+                }),
+            )
+            .await
+            .expect("the lock is free again after a conflict");
+        assert!(updated.e_tag.is_some());
+        store.delete(&path).await.expect("delete");
+    }
+
+    #[wasm_bindgen_test]
+    async fn opfs_backend_failure_inside_the_lock_releases_it() {
+        let Some(store) = store_for("error-release").await else {
+            return;
+        };
+        let blocker = ObjectPath::new("contract-error-release/a");
+        let nested = ObjectPath::new("contract-error-release/a/b");
+        store.delete(&nested).await.expect("clean slate");
+        store.delete(&blocker).await.expect("clean slate");
+        store
+            .put_opts(&blocker, b"file".to_vec(), PutMode::Create)
+            .await
+            .expect("create the blocking file");
+
+        // `a` is a file, so creating the directory `a/` fails from inside the
+        // locked section — an operational error, not a precondition conflict.
+        let err = store
+            .put_opts(&nested, b"x".to_vec(), PutMode::Create)
+            .await
+            .expect_err("a file cannot become a directory");
+        assert!(!matches!(err, StoreError::CasConflict(_)), "{err:?}");
+
+        // Same lock name as the failed call: if the error path had leaked or
+        // released it early, this would hang or corrupt.
+        store
+            .delete(&blocker)
+            .await
+            .expect("delete the blocking file");
+        store
+            .put_opts(&nested, b"x".to_vec(), PutMode::Create)
+            .await
+            .expect("the lock is free again after an operational error");
+        store.delete(&nested).await.expect("delete");
+    }
+
+    #[wasm_bindgen_test]
+    async fn opfs_lock_is_available_wherever_opfs_is() {
+        // Wherever OPFS itself works — a browser — the Web Lock must be there
+        // too, or `put_opts` is an unguarded read-then-write while claiming
+        // otherwise. Outside a browser the host may or may not ship Web Locks
+        // (`opfs_lock`'s detection test pins that to `navigator.locks`).
+        if web_sys::window().is_none() {
+            crate::wasm::announce_skip(
+                "opfs_lock_is_available_wherever_opfs_is",
+                "no OPFS outside a browser; CI's Chrome job asserts the real thing",
+            );
+            return;
+        }
+        assert!(
+            OpfsStorage::cross_tab_cas_is_atomic(),
+            "a browser without Web Locks would make OpfsStorage's CAS best-effort"
+        );
     }
 }

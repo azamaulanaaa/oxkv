@@ -43,6 +43,43 @@ impl From<store::StoreError> for JsValue {
     }
 }
 
+/// Announces that a browser-only test is about to assert nothing here.
+///
+/// `wasm-pack test --node` — the job most contributors run locally, and the
+/// one CI's `wasm` job runs — has no `window`, so OPFS tests there would pass
+/// without checking anything. `eprintln!` is a no-op on
+/// `wasm32-unknown-unknown` and the Node harness swallows `console.*`, so we
+/// write straight to the host process's stderr and fall back to
+/// `console.error` in a browser. The Chrome CI job
+/// (`wasm-pack test --headless --chrome`) is what actually runs these tests.
+#[cfg(test)]
+pub(crate) fn announce_skip(test: &str, reason: &str) {
+    let message = format!("SKIPPED {test}: {reason}\n");
+    if write_host_stderr(&message) {
+        return;
+    }
+    web_sys::console::error_1(&JsValue::from_str(&message));
+}
+
+/// Writes `message` to the host process's stderr; `false` when there is none.
+#[cfg(test)]
+fn write_host_stderr(message: &str) -> bool {
+    fn property(object: &JsValue, key: &str) -> Result<JsValue, JsValue> {
+        js_sys::Reflect::get(object, &JsValue::from_str(key))
+    }
+    let Ok(process) = property(&js_sys::global(), "process") else {
+        return false;
+    };
+    let Ok(stderr) = property(&process, "stderr") else {
+        return false;
+    };
+    let Ok(write) = property(&stderr, "write").and_then(JsCast::dyn_into::<js_sys::Function>)
+    else {
+        return false;
+    };
+    write.call1(&stderr, &JsValue::from_str(message)).is_ok()
+}
+
 /// Serializes a value into a plain, JSON-compatible `JsValue`.
 ///
 /// Unlike [`serde_wasm_bindgen::to_value`], which encodes maps as ES6 `Map`
