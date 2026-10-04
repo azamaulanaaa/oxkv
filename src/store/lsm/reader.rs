@@ -615,6 +615,10 @@ mod tests {
         async fn delete(&self, path: &ObjectPath) -> Result<()> {
             self.inner.delete(path).await
         }
+
+        async fn list(&self, prefix: &ObjectPath) -> Result<Vec<ObjectPath>> {
+            self.inner.list(prefix).await
+        }
     }
 
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]

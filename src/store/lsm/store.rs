@@ -55,6 +55,38 @@ pub(crate) struct PendingWrite {
 /// tell whether the batch it drained contained its own write.
 static PENDING_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Reports whether a prefix-relative key has the exact shape
+/// `e{6 digits}/wal/{8 digits}.log`.
+///
+/// A strict shape check keeps the orphan sweep away from every other object.
+/// The check accepts nothing else. An `e*/sst/` path, a blob path, an
+/// `ownership.json`, a `manifest.json` and any probe canary all fail it.
+fn is_orphan_wal_key(relative: &str) -> bool {
+    let mut segments = relative.split('/');
+    let Some(epoch) = segments.next() else {
+        return false;
+    };
+    let Some(kind) = segments.next() else {
+        return false;
+    };
+    let Some(file) = segments.next() else {
+        return false;
+    };
+    if segments.next().is_some() || kind != "wal" {
+        return false;
+    }
+    let Some(digits) = epoch.strip_prefix('e') else {
+        return false;
+    };
+    let Some(seq) = file.strip_suffix(".log") else {
+        return false;
+    };
+    digits.len() == 6
+        && digits.bytes().all(|b| b.is_ascii_digit())
+        && seq.len() == 8
+        && seq.bytes().all(|b| b.is_ascii_digit())
+}
+
 /// Storage-backed LSM store. It has a probe. It has fencing. It has a WAL
 /// gate. It has SST handling.
 pub struct OxKvStore<C = LruCache<String, Arc<SstFile>>> {
@@ -494,7 +526,8 @@ where
     /// Best-effort WAL maintenance after a manifest CAS that carries `wal_len`
     /// entries. The method force-flushes an SST. The method also GCs covered
     /// WALs once the list reaches `WAL_MAINTENANCE_COUNT`. This keeps the
-    /// per-write manifest cost flat. The method swallows failures (fencing,
+    /// per-write manifest cost flat. The method also reconciles orphaned `WAL`
+    /// objects at the same trigger. The method swallows failures (fencing,
     /// conflicts, reader pins).
     ///
     /// The caller must hold [`Self::write_gate`].
@@ -510,6 +543,10 @@ where
             Err(_) => return,
         }
         let _ = self.gc_wal_inner().await;
+        // The orphan pass reclaims the objects that `gc_wal_inner` cannot see.
+        // It shares the same trigger. Therefore it costs one extra `LIST` per
+        // 200 `WAL` files, not one per write. Both passes are already rare.
+        let _ = self.gc_orphans_inner().await;
     }
 
     /// Flushes `MemTable` to `L0` SST if above `32 MiB` or `force`.
@@ -849,6 +886,92 @@ where
             }
         }
         Ok(0)
+    }
+
+    /// Reclaims `WAL` objects that the manifest never listed.
+    ///
+    /// A failed manifest `CAS` in [`Self::append_wal_locked`] leaves the `WAL`
+    /// object in storage. The manifest does not list it. [`Self::gc_wal_inner`]
+    /// deletes only listed ids, so it never sees those objects. They accumulate
+    /// for the life of the prefix. This method lists the prefix, then deletes
+    /// every unlisted object whose key has the exact shape
+    /// `e{6 digits}/wal/{8 digits}.log`. It returns the number of deletions.
+    ///
+    /// The path-shape filter comes first on purpose. The scope stays narrow.
+    /// A takeover carries the `manifest.wal` list across the epoch boundary,
+    /// so entries from a previous epoch name live data that
+    /// [`replay_listed_wals`] still reads. An object under `e*/sst/` names a
+    /// live SST. An object outside any `e*/` directory names a manifest, an
+    /// ownership record, a blob, or a probe canary. Only an unlisted `WAL`
+    /// object is unreachable garbage.
+    ///
+    /// The function is best effort. A failed `LIST` or `DELETE` stops the pass
+    /// and returns the count reached so far. A later call continues the work.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError` when the manifest cannot be loaded. A `LIST` or
+    /// `DELETE` failure is not an error here. It only shortens the pass.
+    pub(crate) async fn gc_orphans_inner(&self) -> Result<usize> {
+        let (manifest, _) = load_manifest(
+            Arc::clone(&self.inner),
+            &self.prefix,
+            self.epoch,
+            &self.manifest_cache,
+            std::time::Duration::from_secs(1),
+        )
+        .await?;
+        // A backend without a listing cannot reconcile. Leave every object in
+        // place. A failure here must never fail a write.
+        let Ok(keys) = self.inner.list(&self.prefix).await else {
+            return Ok(0);
+        };
+        let prefix = self.prefix.as_str();
+        let mut deleted = 0usize;
+        for key in keys {
+            let Some(relative) = key.as_str().strip_prefix(prefix) else {
+                continue;
+            };
+            // Strip the leading `/` that the prefix left behind.
+            let relative = relative.strip_prefix('/').unwrap_or(relative);
+            if !is_orphan_wal_key(relative) {
+                continue;
+            }
+            // A listed id is live data even when a previous epoch created it.
+            if manifest.wal.iter().any(|id| id == key.as_str()) {
+                continue;
+            }
+            if self.inner.delete(&key).await.is_err() {
+                break;
+            }
+            deleted += 1;
+        }
+        Ok(deleted)
+    }
+
+    /// Reclaims `WAL` objects that the manifest never listed.
+    ///
+    /// A failed manifest `CAS` leaves a `WAL` object in storage that the
+    /// manifest does not list. [`Self::gc_wal`] deletes only listed ids. The
+    /// method therefore lists the prefix and deletes every unlisted object
+    /// whose key has the exact shape `e{6 digits}/wal/{8 digits}.log`. It
+    /// returns the number of deletions.
+    ///
+    /// A listed id names live data even when a previous epoch created it, so
+    /// the method keeps every listed id. The method also keeps every object
+    /// under `e*/sst/`, every object outside any `e*/` directory, and every
+    /// key that fails the shape check.
+    ///
+    /// The function is best effort. A failed `LIST` or `DELETE` stops the pass
+    /// and returns the count reached so far. A later call continues the work.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError` when the manifest cannot be loaded. A `LIST` or
+    /// `DELETE` failure is not an error here. It only shortens the pass.
+    pub async fn gc_orphans(&self) -> Result<usize> {
+        let _gate = self.write_gate.lock().await;
+        self.gc_orphans_inner().await
     }
 
     /// Compacts `L0` into `L1` when `L0 files >=4` or `>128MB`.
@@ -1620,9 +1743,10 @@ impl OxKvStoreBuilder {
             .await?;
             let cur_epoch = s3store.epoch;
             let wal_prefix = format!("{}/wal/", format_epoch(cur_epoch));
-            // High-water mark, not a tally. A sequence burned by a failed append
-            // leaves an unlisted object. Counting the listed WALs can
-            // therefore hand a live sequence to the next write.
+            // High-water mark of this epoch's sequences. `acquire_ownership`
+            // bumps the epoch on every build, and every build opens a fresh,
+            // empty `wal` directory. A failed append cannot burn a sequence
+            // here, so the listed ids alone describe the high-water mark.
             let mut max_wal = 0u64;
             for id in &manifest.wal {
                 if let Some(num) = id

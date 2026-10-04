@@ -89,6 +89,7 @@ pub(crate) fn new_in_memory() -> Arc<dyn Storage> {
 #[cfg(test)]
 mod tests {
     use super::blob::encode_blob_pointer;
+    use super::manifest::cas_manifest;
     use super::ownership::{acquire_ownership, sst_path, wal_path};
     use super::probe::probe_store;
     use super::sst::DEFAULT_BLOCK_SIZE;
@@ -134,6 +135,10 @@ mod tests {
 
         async fn delete(&self, path: &ObjectPath) -> Result<()> {
             self.inner.delete(path).await
+        }
+
+        async fn list(&self, prefix: &ObjectPath) -> Result<Vec<ObjectPath>> {
+            self.inner.list(prefix).await
         }
     }
 
@@ -222,6 +227,10 @@ mod tests {
             async fn delete(&self, path: &ObjectPath) -> Result<()> {
                 self.inner.delete(path).await
             }
+
+            async fn list(&self, prefix: &ObjectPath) -> Result<Vec<ObjectPath>> {
+                self.inner.list(prefix).await
+            }
         }
 
         let bad: Arc<dyn Storage> = Arc::new(NoConditionStore {
@@ -286,6 +295,10 @@ mod tests {
             }
             async fn delete(&self, path: &ObjectPath) -> Result<()> {
                 self.inner.delete(path).await
+            }
+
+            async fn list(&self, prefix: &ObjectPath) -> Result<Vec<ObjectPath>> {
+                self.inner.list(prefix).await
             }
         }
 
@@ -945,6 +958,10 @@ mod tests {
         async fn delete(&self, path: &ObjectPath) -> Result<()> {
             self.inner.delete(path).await
         }
+
+        async fn list(&self, prefix: &ObjectPath) -> Result<Vec<ObjectPath>> {
+            self.inner.list(prefix).await
+        }
     }
 
     async fn poll_count_fixture(
@@ -1447,6 +1464,10 @@ mod tests {
         async fn delete(&self, path: &ObjectPath) -> Result<()> {
             self.inner.delete(path).await
         }
+
+        async fn list(&self, prefix: &ObjectPath) -> Result<Vec<ObjectPath>> {
+            self.inner.list(prefix).await
+        }
     }
 
     /// A key rewritten *while a flush is in flight* keeps its newer value.
@@ -1891,6 +1912,10 @@ mod tests {
             async fn delete(&self, path: &ObjectPath) -> Result<()> {
                 self.inner.delete(path).await
             }
+
+            async fn list(&self, prefix: &ObjectPath) -> Result<Vec<ObjectPath>> {
+                self.inner.list(prefix).await
+            }
         }
 
         let backend: Arc<dyn Storage> = Arc::new(ManifestCasConflictStore {
@@ -1921,5 +1946,290 @@ mod tests {
             }
             other => panic!("expected CasConflict, got {other:?}"),
         }
+    }
+
+    /// Builds a store over a private prefix with a session of its own.
+    /// The function returns the backend so that a test can inspect the objects.
+    async fn orphan_fixture(prefix: &str) -> (Arc<dyn Storage>, OxKvStore) {
+        let backend = new_in_memory();
+        let s3 = OxKvStore::builder()
+            .with_store(Arc::clone(&backend))
+            .with_prefix(ObjectPath::from(prefix))
+            .with_session(format!("sess-{prefix}"))
+            .skip_probe(true)
+            .build()
+            .await
+            .expect("build");
+        (backend, s3)
+    }
+
+    /// Returns the ids currently listed in `prefix/manifest.json`.
+    async fn listed_wal_ids(
+        backend: &Arc<dyn Storage>,
+        s3: &OxKvStore,
+        prefix: &str,
+    ) -> Vec<String> {
+        let (manifest, _) = load_manifest(
+            Arc::clone(backend),
+            &ObjectPath::from(prefix),
+            s3.epoch(),
+            &s3.manifest_cache,
+            std::time::Duration::from_secs(0),
+        )
+        .await
+        .expect("manifest");
+        manifest.wal.clone()
+    }
+
+    /// A `WAL` object that no manifest lists is unreachable. The reconcile
+    /// must reclaim it.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn gc_orphans_deletes_unlisted_wal_object() {
+        let (backend, s3) = orphan_fixture("orphan-del").await;
+        s3.put_bytes("k", b"v").await.expect("put");
+        assert!(
+            !listed_wal_ids(&backend, &s3, "orphan-del").await.is_empty(),
+            "the write must list a WAL"
+        );
+        let orphan = ObjectPath::from("orphan-del/e000001/wal/00009999.log");
+        backend
+            .put_opts(&orphan, b"unlisted".to_vec(), PutMode::Create)
+            .await
+            .expect("orphan put");
+
+        let deleted = s3.gc_orphans().await.expect("reconcile");
+        assert_eq!(deleted, 1, "exactly the orphan must be reclaimed");
+        assert!(
+            backend.get(&orphan).await.is_err(),
+            "the orphan object survived the reconcile"
+        );
+        // The listed WAL must survive. It holds the acknowledged write.
+        assert_eq!(s3.get_bytes("k").await.expect("get"), Some(b"v".to_vec()));
+    }
+
+    /// A listed `WAL` names live data. The reconcile must keep it.
+    ///
+    /// The list carries ids from a previous epoch after a takeover, and
+    /// `replay_listed_wals` reads them. Therefore a listed id is never a
+    /// candidate, whatever epoch created it.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn gc_orphans_keeps_listed_wal_object() {
+        let (backend, s3) = orphan_fixture("orphan-keep").await;
+        s3.put_bytes("k", b"v").await.expect("put");
+        let listed = listed_wal_ids(&backend, &s3, "orphan-keep").await;
+        assert!(!listed.is_empty(), "the write must list a WAL");
+
+        let deleted = s3.gc_orphans().await.expect("reconcile");
+        assert_eq!(deleted, 0, "a listed WAL is not an orphan");
+        for id in &listed {
+            assert!(
+                backend.get(&ObjectPath::from(id.as_str())).await.is_ok(),
+                "the reconcile deleted a listed WAL: {id}"
+            );
+        }
+        // A previous-epoch id stays listed and stays on storage.
+        let inherited = ObjectPath::from("orphan-keep/e000000/wal/00000007.log");
+        let inherited_id = inherited.to_string();
+        backend
+            .put_opts(&inherited, b"old".to_vec(), PutMode::Create)
+            .await
+            .expect("inherited put");
+        // Publish the manifest that lists it. The engine lists it as its own
+        // epoch, but the shape check accepts a previous epoch. That is what a
+        // real takeover produces.
+        let (manifest, etag) = load_manifest(
+            Arc::clone(&backend),
+            &ObjectPath::from("orphan-keep"),
+            s3.epoch(),
+            &s3.manifest_cache,
+            std::time::Duration::from_secs(0),
+        )
+        .await
+        .expect("manifest");
+        let mut manifest = (*manifest).clone();
+        manifest.wal.push(inherited_id.clone());
+        let etag_opt = if etag.is_empty() { None } else { Some(etag) };
+        cas_manifest(
+            Arc::clone(&backend),
+            &ObjectPath::from("orphan-keep"),
+            &manifest,
+            etag_opt,
+        )
+        .await
+        .expect("cas manifest");
+
+        assert_eq!(s3.gc_orphans().await.expect("reconcile"), 0);
+        assert!(
+            backend.get(&inherited).await.is_ok(),
+            "the reconcile deleted a listed previous-epoch WAL"
+        );
+    }
+
+    /// An unlisted `SST` object is live data. The reconcile must keep it.
+    /// The shape filter must stop before it reaches any `sst/` path.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn gc_orphans_keeps_unlisted_sst_object() {
+        let (backend, s3) = orphan_fixture("orphan-sst").await;
+        s3.put_bytes("k", b"v").await.expect("put");
+        for id in [
+            "orphan-sst/e000001/sst/L0/000000009.sst",
+            "orphan-sst/e000001/sst/L1/000000000.sst",
+        ] {
+            let path = ObjectPath::from(id);
+            backend
+                .put_opts(&path, b"sst bytes".to_vec(), PutMode::Create)
+                .await
+                .expect("sst put");
+            assert_eq!(
+                s3.gc_orphans().await.expect("reconcile"),
+                0,
+                "{id} must not be a candidate"
+            );
+            assert!(
+                backend.get(&path).await.is_ok(),
+                "the reconcile deleted an SST object: {id}"
+            );
+        }
+    }
+
+    /// An object outside any `e*/` directory is not a `WAL`. The reconcile
+    /// must keep it. That covers the manifest, the ownership record, a blob
+    /// and anything an application stored beside the engine.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn gc_orphans_keeps_object_outside_epoch_directory() {
+        let (backend, s3) = orphan_fixture("orphan-outside").await;
+        s3.put_bytes("k", b"v").await.expect("put");
+        for id in [
+            "orphan-outside/probe/canary",
+            "orphan-outside/e000001/blob/abc123",
+            "orphan-outside/notes/todo.txt",
+            // A near miss: the right directory, the wrong file shape.
+            "orphan-outside/e000001/wal/notes.log",
+            // A near miss: the right file shape, the wrong directory.
+            "orphan-outside/e000001/wals/00000001.log",
+        ] {
+            let path = ObjectPath::from(id);
+            backend
+                .put_opts(&path, b"keep".to_vec(), PutMode::Create)
+                .await
+                .expect("put");
+        }
+        assert_eq!(s3.gc_orphans().await.expect("reconcile"), 0);
+        for id in [
+            "orphan-outside/probe/canary",
+            "orphan-outside/e000001/blob/abc123",
+            "orphan-outside/notes/todo.txt",
+            "orphan-outside/e000001/wal/notes.log",
+            "orphan-outside/e000001/wals/00000001.log",
+            "orphan-outside/manifest.json",
+            "orphan-outside/ownership.json",
+        ] {
+            assert!(
+                backend.get(&ObjectPath::from(id)).await.is_ok(),
+                "the reconcile deleted an out-of-scope object: {id}"
+            );
+        }
+    }
+
+    /// A failed `LIST` must never fail a write.
+    ///
+    /// The maintenance path runs the reconcile inside the acknowledged write.
+    /// A backend without a working listing must therefore degrade to a no-op.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn list_failure_does_not_fail_a_write() {
+        /// Fails every `list`. It delegates every other call.
+        struct ListFailStore {
+            inner: MemStorage,
+        }
+
+        #[async_trait::async_trait]
+        impl Storage for ListFailStore {
+            async fn get(&self, path: &ObjectPath) -> Result<GetOutput> {
+                self.inner.get(path).await
+            }
+            async fn get_opts(&self, path: &ObjectPath, options: GetOptions) -> Result<GetOutput> {
+                self.inner.get_opts(path, options).await
+            }
+            async fn put_opts(
+                &self,
+                path: &ObjectPath,
+                payload: Vec<u8>,
+                mode: PutMode,
+            ) -> Result<PutOutcome> {
+                self.inner.put_opts(path, payload, mode).await
+            }
+            async fn delete(&self, path: &ObjectPath) -> Result<()> {
+                self.inner.delete(path).await
+            }
+            async fn list(&self, _prefix: &ObjectPath) -> Result<Vec<ObjectPath>> {
+                Err(StoreError::Storage("list unavailable".to_string()))
+            }
+        }
+
+        let backend: Arc<dyn Storage> = Arc::new(ListFailStore {
+            inner: MemStorage::new(),
+        });
+        let s3 = OxKvStore::builder()
+            .with_store(Arc::clone(&backend))
+            .with_prefix(ObjectPath::from("orphan-list-fail"))
+            .with_session("sess-list-fail")
+            .skip_probe(true)
+            .build()
+            .await
+            .expect("build");
+
+        // The write crosses `WAL_MAINTENANCE_COUNT`, so the maintenance path
+        // runs the reconcile. The write must still succeed.
+        for i in 0..WAL_MAINTENANCE_COUNT {
+            s3.put_bytes(&format!("k{i}"), b"v")
+                .await
+                .unwrap_or_else(|e| panic!("write {i} must survive a failed LIST: {e}"));
+        }
+        assert_eq!(
+            s3.gc_orphans()
+                .await
+                .expect("a failed LIST is not an error"),
+            0
+        );
+        assert_eq!(
+            s3.get_bytes(&format!("k{}", WAL_MAINTENANCE_COUNT - 1))
+                .await
+                .expect("get"),
+            Some(b"v".to_vec())
+        );
+    }
+
+    /// The maintenance path reclaims orphans on writers. The trigger is the
+    /// same `WAL_MAINTENANCE_COUNT` count that drives `gc_wal`, so the sweep
+    /// costs one `LIST` per 200 `WAL` files rather than one per write.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn maintenance_reconciles_orphans_without_an_explicit_call() {
+        let (backend, s3) = orphan_fixture("orphan-maint").await;
+        let orphan = ObjectPath::from("orphan-maint/e000001/wal/00009999.log");
+        backend
+            .put_opts(&orphan, b"unlisted".to_vec(), PutMode::Create)
+            .await
+            .expect("orphan put");
+
+        for i in 0..WAL_MAINTENANCE_COUNT {
+            s3.put_bytes(&format!("k{i}"), b"v").await.expect("put");
+        }
+        assert!(
+            backend.get(&orphan).await.is_err(),
+            "maintenance never reclaimed the orphan"
+        );
+        assert_eq!(
+            s3.get_bytes(&format!("k{}", WAL_MAINTENANCE_COUNT - 1))
+                .await
+                .expect("get"),
+            Some(b"v".to_vec()),
+            "maintenance must not lose an acknowledged write"
+        );
     }
 }

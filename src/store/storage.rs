@@ -161,6 +161,18 @@ pub trait Storage: Send + Sync + 'static {
     ///
     /// Returns [`StoreError::Storage`] on backend failure.
     async fn delete(&self, path: &ObjectPath) -> Result<()>;
+
+    /// Lists every object key under `prefix`, recursively.
+    ///
+    /// An empty `prefix` lists the whole store. Keys are relative to the
+    /// store root, in the same `/`-delimited form as [`ObjectPath`]. A
+    /// directory is not an object, so it never appears in the result. The
+    /// order of the keys is unspecified.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Storage`] on backend failure.
+    async fn list(&self, prefix: &ObjectPath) -> Result<Vec<ObjectPath>>;
 }
 
 /// Pure-Rust in-memory [`Storage`].
@@ -269,6 +281,31 @@ impl Storage for MemStorage {
         self.inner.lock().await.objects.remove(path.as_str());
         Ok(())
     }
+
+    async fn list(&self, prefix: &ObjectPath) -> Result<Vec<ObjectPath>> {
+        let inner = self.inner.lock().await;
+        let mut keys: Vec<ObjectPath> = inner
+            .objects
+            .keys()
+            .filter(|key| under_prefix(key, prefix.as_str()))
+            .map(|key| ObjectPath::from(key.as_str()))
+            .collect();
+        keys.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        Ok(keys)
+    }
+}
+
+/// Reports whether `key` sits under `prefix`.
+///
+/// A prefix matches whole segments only. Therefore `oxkv` matches
+/// `oxkv/e000001` but not `oxkv2/e000001`. The empty prefix matches every
+/// key.
+fn under_prefix(key: &str, prefix: &str) -> bool {
+    if prefix.is_empty() {
+        return true;
+    }
+    key.strip_prefix(prefix)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }
 
 /// `Arc<dyn ObjectStore>` implements [`Storage`]. The `oxkv-s3` feature keeps
@@ -365,6 +402,21 @@ impl Storage for Arc<dyn object_store::ObjectStore> {
             Err(e) => Err(StoreError::Storage(format!("delete {path} failed: {e}"))),
         }
     }
+
+    async fn list(&self, prefix: &ObjectPath) -> Result<Vec<ObjectPath>> {
+        use futures::StreamExt;
+        use object_store::path::Path;
+        let path_ref = Path::from(prefix.as_str());
+        let mut keys = Vec::new();
+        // `object_store` returns one stream for the whole listing. Every page
+        // must be drained. Stopping early would return a partial listing.
+        let mut pages = self.as_ref().list(Some(&path_ref));
+        while let Some(item) = pages.next().await {
+            let meta = item.map_err(|e| map_list_error(&e))?;
+            keys.push(ObjectPath::from(meta.location.as_ref()));
+        }
+        Ok(keys)
+    }
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "oxkv-s3"))]
@@ -377,6 +429,11 @@ fn map_get_error(path: &ObjectPath, err: object_store::Error) -> StoreError {
         }
         other => StoreError::Storage(format!("get {path} failed: {other}")),
     }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "oxkv-s3"))]
+fn map_list_error(err: &object_store::Error) -> StoreError {
+    StoreError::Storage(format!("list failed: {err}"))
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "oxkv-s3"))]
@@ -490,6 +547,35 @@ mod tests {
 
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn mem_list_matches_whole_segments() {
+        let store = MemStorage::new();
+        for key in [
+            "oxkv/e000001/wal/00000000.log",
+            "oxkv/e000001/sst/L0/000000000.sst",
+            "oxkv2/e000001/wal/00000000.log",
+            "other.txt",
+        ] {
+            store
+                .put_opts(&ObjectPath::from(key), b"x".to_vec(), PutMode::Create)
+                .await
+                .expect("create");
+        }
+        let listed = store.list(&ObjectPath::from("oxkv")).await.expect("list");
+        let listed: Vec<&str> = listed.iter().map(ObjectPath::as_str).collect();
+        assert_eq!(
+            listed,
+            vec![
+                "oxkv/e000001/sst/L0/000000000.sst",
+                "oxkv/e000001/wal/00000000.log",
+            ],
+            "a prefix must not match a partial segment"
+        );
+        let all = store.list(&ObjectPath::default()).await.expect("list");
+        assert_eq!(all.len(), 4, "the empty prefix lists the whole store");
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn object_path_strings_match_object_store() {
         let prefix = ObjectPath::new("my-app/oxkv");
         let wal = prefix.child("e000007").child("wal").child("00000042.log");
@@ -543,6 +629,14 @@ mod tests {
             .await
             .expect_err("etag match is NotModified");
         assert_eq!(err, StoreError::NotModified);
+
+        // `list` must report the object it just wrote under its own prefix.
+        let listed = store
+            .list(&ObjectPath::from("contract"))
+            .await
+            .expect("list");
+        assert_eq!(listed, vec![path.clone()], "the object is unlisted");
+
         store.delete(&path).await.expect("delete");
         store.delete(&path).await.expect("delete idempotent");
         let err = store.get(&path).await.expect_err("missing get fails");
@@ -851,6 +945,67 @@ impl OpfsStorage {
             Err(e) => Err(js_err("OPFS delete failed", e)),
         }
     }
+
+    /// Walks the store tree and collects every file key under `prefix`.
+    ///
+    /// OPFS has no listing API on a path prefix. The walk therefore descends
+    /// from the root one directory at a time. `base` is the key prefix of the
+    /// directory the walk currently visits. The function keeps a work stack
+    /// of unvisited directories. A recursive walk would need boxing for every
+    /// level of the tree.
+    async fn list_all(&self, prefix: &ObjectPath) -> Result<Vec<ObjectPath>> {
+        let mut keys: Vec<ObjectPath> = Vec::new();
+        let mut stack: Vec<(web_sys::FileSystemDirectoryHandle, String)> =
+            vec![(self.root.clone(), String::new())];
+        while let Some((dir, base)) = stack.pop() {
+            let entries = dir.entries();
+            loop {
+                let next = entries.next().map_err(|e| js_err("OPFS list failed", e))?;
+                let step = js_await(next)
+                    .await
+                    .map_err(|e| js_err("OPFS list failed", e))?;
+                let done = js_sys::Reflect::get(&step, &wasm_bindgen::JsValue::from_str("done"))
+                    .ok()
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if done {
+                    break;
+                }
+                let pair = js_sys::Reflect::get(&step, &wasm_bindgen::JsValue::from_str("value"))
+                    .map_err(|e| js_err("OPFS list failed", e))?;
+                let pair = js_sys::Array::from(&pair);
+                let name = pair.get(0).as_string().unwrap_or_default();
+                let handle = pair.get(1);
+                let key = if base.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{base}/{name}")
+                };
+                match handle.dyn_into::<web_sys::FileSystemDirectoryHandle>() {
+                    Ok(child) => {
+                        // Descend only into a directory that can still hold the
+                        // prefix. A directory that sits outside the prefix
+                        // cannot hold it. A directory above it can.
+                        if under_prefix(&key, prefix.as_str()) || prefix.as_str().starts_with(&key)
+                        {
+                            stack.push((child, key));
+                        }
+                    }
+                    Err(handle) => {
+                        if handle.dyn_into::<web_sys::FileSystemFileHandle>().is_err() {
+                            return Err(StoreError::Storage(format!(
+                                "OPFS entry is neither a file nor a directory: {key}"
+                            )));
+                        }
+                        if under_prefix(&key, prefix.as_str()) {
+                            keys.push(ObjectPath::from(key));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(keys)
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -901,6 +1056,10 @@ impl Storage for OpfsStorage {
             store.delete_guarded(&guarded_path).await
         })
         .await
+    }
+
+    async fn list(&self, prefix: &ObjectPath) -> Result<Vec<ObjectPath>> {
+        self.list_all(prefix).await
     }
 }
 
@@ -997,6 +1156,19 @@ mod opfs_tests {
             .expect("matching update wins");
         assert_ne!(updated.e_tag, created.e_tag, "new content, new etag");
         assert_eq!(store.get(&path).await.expect("get").bytes, b"v2");
+
+        // `list` must report the object it just wrote, and must not report
+        // anything below an absent prefix.
+        let listed = store
+            .list(&ObjectPath::from("contract-contracts/object"))
+            .await
+            .expect("list");
+        assert_eq!(listed, vec![path.clone()]);
+        let empty = store
+            .list(&ObjectPath::from("contract-contracts/absent"))
+            .await
+            .expect("list");
+        assert!(empty.is_empty(), "an absent prefix lists nothing");
 
         store.delete(&path).await.expect("delete");
         store.delete(&path).await.expect("delete idempotent");
