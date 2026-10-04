@@ -1467,11 +1467,13 @@ mod tests {
     /// inside the batch. An instrumented run (this many writers on 8 workers,
     /// released from a barrier) recorded zero re-queues. The branch is kept as
     /// defence in depth, not as a covered path.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tokio::test(flavor = "multi_thread", worker_threads = 8)
-    )]
-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    ///
+    /// Native only, like its sibling: this spawns one task per writer and needs
+    /// a multi-threaded Tokio runtime, neither of which exists on `wasm32`.
+    /// Running it under `wasm_bindgen_test` panicked with "there is no reactor
+    /// running" and turned `wasm-pack test --node` red.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn group_commit_never_acknowledges_another_batches_write() {
         use tokio::sync::Barrier;
         let backend = new_in_memory();
