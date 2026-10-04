@@ -1,7 +1,7 @@
 //! Pest-generated parser for the Lucene-style query grammar.
 //!
-//! The derive macro generates undocumented items (`Rule`, `Parser` impl),
-//! so the `missing_docs` lint is disabled for this module.
+//! The derive macro generates items without documentation: `Rule` and the
+//! `Parser` impl. This module disables the `missing_docs` lint for them.
 #![allow(missing_docs)]
 
 use pest_derive::Parser;

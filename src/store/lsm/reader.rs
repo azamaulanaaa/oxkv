@@ -1,8 +1,9 @@
 //! Read-only view over the LSM store for multi-reader deployments.
 //!
-//! [`OxKvReader`](crate::store::OxKvReader) opens a `prefix` without the `ownership.json` epoch CAS, so
-//! readers never fence the writer. It implements [`Store`], with every write
-//! rejected at runtime, so generic code over [`Store`] accepts both handles.
+//! [`OxKvReader`](crate::store::OxKvReader) opens a `prefix` without the
+//! `ownership.json` epoch CAS. The reader never fences the writer. The reader
+//! implements [`Store`]. The reader rejects every write at runtime. Generic
+//! code over [`Store`] accepts both handles.
 
 use std::sync::Arc;
 
@@ -52,8 +53,8 @@ impl<C> std::fmt::Debug for OxKvReader<C> {
 impl OxKvReader {
     /// Opens a read-only view with the default SST cache.
     ///
-    /// Never acquires ownership: the observed epoch is recorded for debugging
-    /// and no `ownership.json` write is performed.
+    /// The function never acquires ownership. The function records the observed
+    /// epoch for debugging. The function performs no `ownership.json` write.
     ///
     /// # Errors
     ///
@@ -107,8 +108,8 @@ where
         self.epoch
     }
 
-    /// Returns SST-cache hit/miss statistics, or `None` for cache backends
-    /// that do not track them (e.g. `moka`).
+    /// Returns the SST cache hit and miss statistics. Returns `None` for cache
+    /// backends that do not track the statistics (e.g. `moka`).
     #[must_use]
     pub fn sst_cache_stats(&self) -> Option<CacheStats> {
         self.sst_cache.stats()
@@ -133,9 +134,9 @@ where
 
     /// Replays every listed WAL file into the replay overlay.
     ///
-    /// Errors propagate: silently replaying an incomplete set would leave the
-    /// reader answering pre-GC state forever while the writer reports
-    /// otherwise.
+    /// The function propagates errors. A silent replay of an incomplete set
+    /// would leave the reader on the pre-GC state forever. The writer would
+    /// report a different state in that case.
     async fn replay_wal(&self) -> Result<()> {
         let (manifest, _etag) = load_manifest(
             Arc::clone(&self.inner),
@@ -161,12 +162,14 @@ where
         Ok(())
     }
 
-    /// Replays WAL files listed since the last call into the overlay.
+    /// Replays the WAL files that the manifest listed since the last call into the
+    /// overlay.
     ///
-    /// Called at the top of every read, so post-open writer batches become
-    /// visible without reopening. A fully collected WAL list means every
-    /// record is SST-covered, so the overlay and the id set are dropped to
-    /// keep a long-lived reader bounded to one WAL window.
+    /// The code calls this function at the top of every read. A writer batch
+    /// after the open becomes visible without a reopen. A fully collected WAL
+    /// list means that every record is SST-covered. The function then drops the
+    /// overlay and the id set. This keeps a long-lived reader bounded to one WAL
+    /// window.
     async fn ensure_replayed(&self) -> Result<()> {
         let (manifest, _etag) = load_manifest(
             Arc::clone(&self.inner),
@@ -192,9 +195,10 @@ where
         };
         for wal_id in missing {
             let path = ObjectPath::from(wal_id.as_str());
-            // A vanished WAL is the `gc_wal` race: its records are SST-covered
-            // and the manifest no longer lists it, so drop it from the set.
-            // Any other failure must surface instead of diverging silently.
+            // A vanished WAL is the `gc_wal` race. Its records are SST-covered. The
+            // manifest no longer lists the file. The code drops it from the set.
+            // Any other failure must surface. The code must not diverge
+            // silently.
             let out = match self.inner.get(&path).await {
                 Ok(out) => out,
                 Err(e) if is_not_found(&e) => {
@@ -220,7 +224,8 @@ where
         Ok(())
     }
 
-    /// Reads `key` via the replay overlay → SSTs (newest first) → blob deref.
+    /// Reads `key` through the replay overlay. Then it reads the SSTs, newest
+    /// first. Then it reads the blob deref.
     ///
     /// Restarts once against a fresh manifest when an SST read hits `not found`.
     ///
@@ -256,7 +261,8 @@ where
         Ok(self.get_bytes(key).await?.is_some())
     }
 
-    /// Range scan merging the replay overlay + SSTs with tombstone suppression.
+    /// Range scan that merges the replay overlay and the SSTs. The scan suppresses
+    /// tombstones.
     ///
     /// Restarts once against a fresh manifest when an SST read hits `not found`.
     ///
@@ -274,9 +280,9 @@ where
             let cursor2 = cursor.clone();
             async move {
                 self.ensure_replayed().await?;
-                // Scoped so the read guard is dropped before `range_lookup`
-                // starts doing SST I/O; holding it across the await would block
-                // a concurrent `ensure_replayed` from taking the write lock.
+                // The scope drops the read guard before `range_lookup` starts
+                // SST I/O. Holding the guard across the await would block a
+                // concurrent `ensure_replayed` from taking the write lock.
                 let layers = {
                     let overlay = self.overlay.read().await;
                     vec![filter_rows(&overlay, direction, &cursor2)]
@@ -290,8 +296,8 @@ where
 
 /// Read-only transaction over an [`OxKvReader`].
 ///
-/// Reads behave like the parent reader; every write is rejected and `commit`
-/// on an empty overlay succeeds as a no-op.
+/// Reads behave like the parent reader. The transaction rejects every write.
+/// `commit` on an empty overlay succeeds as a no-op.
 #[derive(Clone)]
 pub struct OxKvRoTx<C = LruCache<String, Arc<SstFile>>> {
     reader: OxKvReader<C>,

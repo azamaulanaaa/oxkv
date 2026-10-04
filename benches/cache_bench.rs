@@ -1,18 +1,19 @@
 //! Micro-benchmarks for the [`Cache`](oxkv::Cache) trait itself: insert,
-//! hit, miss, and skewed (`Zipf`) read pressure, each run against the
-//! built-in scan-resistant `S3-FIFO` (`lru`) and, with `--features moka`,
-//! the optional `moka` backend (`moka`) for A/B admission-policy comparison.
+//! hit, miss, and skewed (`Zipf`) read pressure. Each read pressure run uses
+//! the built-in scan-resistant `S3-FIFO` (`lru`) and, with `--features moka`,
+//! the optional `moka` backend (`moka`). The two backends serve an A/B
+//! comparison of admission policy.
 //!
 //! The end-to-end benches in `kv_bench` mostly measure cache *miss* paths
-//! (SST parse + insert); these isolate the data structure: fixed 64-byte
-//! values, weight = byte length, capacity sized for 4,096 entries while the
-//! `zipf` working set is 4x that, so admission policy (not capacity)
-//! decides the hit ratio. Hit ratios print once per impl to stderr.
+//! (SST parse and insert). These benches isolate the data structure. Values are
+//! fixed at 64 bytes. Weight equals byte length. Capacity holds 4,096 entries,
+//! and the `zipf` working set is 4x that capacity. Therefore admission policy,
+//! not capacity, decides the hit ratio. Hit ratios print once per impl to stderr.
 //!
 //! Run with `cargo bench --bench cache_bench`.
 
 // Only `missing_docs`: a bench binary exposes no API surface, and the sole
-// public item is `criterion_group!`'s generated entry fn. Every code check
+// public item is the generated entry fn of `criterion_group!`. Every code check
 // (pedantic casts, correctness, dead code) stays at full deny.
 #![allow(missing_docs)]
 
@@ -21,7 +22,7 @@ use std::hint::black_box;
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use oxkv::{Cache, LruCache};
 
-/// Value size; doubles as the per-entry weight via `Vec::len`.
+/// Value size. This size also acts as the per-entry weight through `Vec::len`.
 const VALUE_LEN: usize = 64;
 /// Entries that fit in the cache under test.
 const CAPACITY_ENTRIES: usize = 4_096;
@@ -29,7 +30,7 @@ const CAPACITY_ENTRIES: usize = 4_096;
 const ZIPF_KEYS: usize = 16_384;
 /// Reads per `zipf` iteration.
 const ZIPF_READS: usize = 4_096;
-/// Zipf skew: head-heavy but with a churning tail.
+/// Zipf skew. The distribution is head-heavy, and its tail keeps changing.
 const ZIPF_SKEW: f64 = 1.07;
 
 fn key(i: usize) -> String {
@@ -47,8 +48,9 @@ fn runtime() -> tokio::runtime::Runtime {
         .expect("current-thread runtime")
 }
 
-/// Fixed-seed xorshift; deterministic across runs without a rand dep.
-/// Written cast-free on purpose: ranks fit `f64` exactly via an incrementing
+/// Fixed-seed xorshift. The order is deterministic across runs, and the
+/// function needs no `rand` dependency.
+/// The casts are absent on purpose: ranks fit `f64` exactly via an incrementing
 /// counter, and the draw uses the upper 32 bits (`f64::from(u32)` is exact).
 fn zipf_order(total: usize, len: usize, skew: f64) -> Vec<usize> {
     let mut weights = Vec::with_capacity(total);
@@ -87,7 +89,8 @@ fn moka() -> moka::future::Cache<String, Vec<u8>> {
         .build()
 }
 
-/// Sequential inserts of every key: insert + eviction-churn throughput.
+/// Sequential inserts of every key. The group measures insert throughput and
+/// eviction-churn throughput.
 fn insert<C>(
     rt: &tokio::runtime::Runtime,
     c: &mut Criterion,
@@ -182,11 +185,12 @@ fn get_miss<C>(
     group.finish();
 }
 
-/// Skewed reads over a 4x-capacity working set: admission policy decides the
-/// hit ratio. The cache is shared across invocations (built once, empty)
-/// with read-through inserts on miss, so criterion's warmup drives it to
-/// steady state; hits are counted locally (`is_some`) so both backends
-/// report comparably even though `moka` tracks no stats.
+/// Skewed reads over a 4x-capacity working set. Admission policy decides the
+/// hit ratio. The cache is shared across invocations. It builds once, and it
+/// starts empty. A read-through insert runs on each miss. Therefore the warmup of
+/// `criterion` drives the cache to a steady state. The benchmark counts hits
+/// locally (`is_some`), so both backends report comparably. `moka` tracks no
+/// stats, which does not change that comparison.
 fn zipf<C>(
     rt: &tokio::runtime::Runtime,
     c: &mut Criterion,
@@ -203,8 +207,8 @@ fn zipf<C>(
     let mut cache: Option<C> = None;
     group.bench_function("get", |b| {
         let cache = cache.get_or_insert_with(make);
-        // Fixed rotation across invocations keeps cycles comparable; the
-        // skew lives in `order` itself.
+        // The rotation stays fixed across invocations, which keeps the cycles
+        // comparable. The skew lives in `order` itself.
         let mut j = 0usize;
         let mut run_hits = 0u64;
         let mut run_gets = 0u64;
@@ -214,8 +218,9 @@ fn zipf<C>(
                 for _ in 0..ZIPF_READS {
                     let idx = order[j % order.len()];
                     j += 1;
-                    // Read-through: misses populate, so warmup converges to
-                    // the steady-state hot set instead of missing forever.
+                    // Read-through: a miss populates the cache. The warmup therefore
+                    // converges to the steady-state hot set instead of missing
+                    // forever.
                     if cache.get(&keys[idx]).await.is_some() {
                         hits += 1;
                     } else {
@@ -229,7 +234,8 @@ fn zipf<C>(
             run_gets += ZIPF_READS as u64;
         });
         reported.call_once(|| {
-            // Integer permille: exact, and needs no float casts.
+            // The value is an integer permille. This form is exact. It
+            // needs no float casts.
             let permille = run_hits * 1_000 / run_gets.max(1);
             eprintln!(
                 "[cache_zipf/{name}] hit_ratio={}.{:03} hits={run_hits} misses={}",
@@ -242,7 +248,8 @@ fn zipf<C>(
     group.finish();
 }
 
-/// Keys that fit without eviction (hit bench + miss-bench offset base).
+/// Keys that fit without eviction. The hit bench and the miss bench use them as
+/// a base.
 const fn n_keys() -> usize {
     CAPACITY_ENTRIES / 2
 }
@@ -251,8 +258,9 @@ static ZIPF_LRU_REPORTED: std::sync::Once = std::sync::Once::new();
 #[cfg(feature = "moka")]
 static ZIPF_MOKA_REPORTED: std::sync::Once = std::sync::Once::new();
 
-/// Registers every cache group: insert, hit, miss, and skewed reads, each
-/// against the built-in `S3-FIFO` and (with `--features moka`) `moka`.
+/// Registers every cache group: insert, hit, miss, and skewed reads. Each
+/// group runs against the built-in `S3-FIFO` and, with `--features moka`, against
+/// `moka`.
 fn benchmark(c: &mut Criterion) {
     let rt = runtime();
     insert(&rt, c, "lru", lru);

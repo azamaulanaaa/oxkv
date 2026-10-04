@@ -1,51 +1,54 @@
 //! Validation and reactivity hooks for stores.
 //!
-//! This module provides [`HookStore`], a decorator that wraps any backend
-//! implementing [`Store`] and adds two capabilities:
+//! This module provides [`HookStore`]. This decorator wraps any backend that
+//! implements [`Store`]. It adds two capabilities.
 //!
-//! - **Validation** — [`Validator`] implementations run before a value is
-//!   written; returning an error from `validate` rejects the write.
-//! - **Reactivity** — changes are broadcast after they become durable, either
-//!   to registered [`Observer`] implementations or to channel receivers
-//!   obtained via [`watch`](HookStore::watch).
+//! - **Validation**. [`Validator`] implementations run before a value is
+//!   written. A validator rejects the write when `validate` returns an error.
+//! - **Reactivity**. Each change is broadcast after it becomes durable. The
+//!   broadcast reaches registered [`Observer`] implementations or the channel
+//!   receivers from [`watch`](HookStore::watch).
 //!
-//! Both hooks support key scoping through [`Scope`], so a validator or
-//! observer can be attached to a single key, all keys sharing a prefix, or
+//! Both hooks support key scoping through [`Scope`]. A validator or an
+//! observer attaches to a single key, to all keys that share a prefix, or to
 //! the entire store.
 //!
 //! # Delivery guarantees
 //!
-//! - Watch channels are bounded: a consumer that falls behind misses events
-//!   (oldest dropped per delivery attempt) but never stalls writers.
-//! - Observers run concurrently with each other, but `await` their completion
-//!   before the write returns. For fire-and-forget reactivity prefer the
-//!   channel-based [`watch`](HookStore::watch) API.
-//! - Validators registered on a [`HookStore`] are snapshotted when a
-//!   transaction begins; validators added afterwards do not affect open
-//!   transactions.
-//! - Cloning a [`HookStore`] shares subscribers between the clones (events
-//!   from either clone reach every watcher) while each clone keeps its own
+//! - Watch channels are bounded. A consumer that falls behind misses events,
+//!   because the oldest event is dropped on each delivery attempt. Such a
+//!   consumer never stalls writers.
+//! - Observers run concurrently with each other. The write method awaits
+//!   their completion before the write returns. Use the channel-based
+//!   [`watch`](HookStore::watch) API for fire-and-forget reactivity.
+//! - The [`HookStore`] snapshots the validators when a transaction begins.
+//!   Validators that are added afterwards do not affect open transactions.
+//! - Cloning a [`HookStore`] shares the subscribers between the clones. An
+//!   event from either clone reaches every watcher. Each clone keeps its own
 //!   validator list.
-//! - Deletes read the current value before removing it so [`ChangeEvent`]s
-//!   can carry `old_value`; if another writer bypasses this decorator and
-//!   mutates the key between that read and the delete, the reported old
-//!   value may be stale.
-//! - Every hook receives a read-only [`StoreView`]: inside a transaction it
-//!   reflects the transaction's own staged writes (read-your-writes), while
-//!   observers are handed a view of committed state as of after the change.
-//!   The view exposes no write methods, so hooks cannot mutate the store or
-//!   recursively trigger further events.
-//! - Transactional writes are re-validated at commit time so a decision made
-//!   at staging time cannot be invalidated by later writes within the same
-//!   transaction. During this pass a validator sees every key's final
-//!   post-transaction value *except* the key currently being validated,
-//!   which shows its pre-transaction value instead - absence-based rules
-//!   must not observe the staged write itself. Backends used with
-//!   [`HookStore`] must implement `Clone` (both shipped backends do).
-//! - Cross-transaction ordering depends on the backend: redb serializes
-//!   writers natively, so notifications always match durability order there;
-//!   with multiple concurrent transactions on other backends, notification
-//!   order follows commit-call order, not a global serialization.
+//! - A delete reads the current value before it removes the value, so that
+//!   [`ChangeEvent`]s can carry `old_value`. The reported old value may be
+//!   stale if another writer bypasses this decorator and mutates the key
+//!   between that read and the delete.
+//! - Every hook receives a read-only [`StoreView`]. Inside a transaction, the
+//!   view reflects the transaction's own staged writes. A hook therefore
+//!   reads its own writes. Observers receive a view of the committed state as
+//!   of after the change. The view exposes no write methods. Therefore a hook
+//!   cannot mutate the store. Therefore a hook cannot trigger further events
+//!   recursively.
+//! - Transactional writes are re-validated at commit time. A decision made at
+//!   staging time cannot be invalidated by later writes within the same
+//!   transaction. During this pass, a validator sees the final
+//!   post-transaction value of every key. The key that the validator
+//!   currently validates is an exception. That key shows its pre-transaction
+//!   value instead. This exception keeps absence-based rules from observing
+//!   the staged write itself. Backends used with [`HookStore`] must implement
+//!   `Clone`. Both shipped backends do.
+//! - Cross-transaction ordering depends on the backend. `redb` serializes
+//!   writers natively, so notifications always match the durability order
+//!   there. With multiple concurrent transactions on other backends, the
+//!   notification order follows the commit-call order. It is not a global
+//!   serialization.
 //!
 //! # Example
 //!
@@ -88,12 +91,13 @@
 //! }
 //! ```
 //!
-//! Hooks may read freely through the [`StoreView`] they are given; they
-//! must never call back into the owning [`HookStore`] directly - hook calls
-//! happen while writes are in progress, and reentrant store calls can
-//! deadlock or double-notify. Beyond reads through the view, treat hooks as
-//! side-effect-free: validators run more than once per transactional write
-//! (staging plus commit-time re-validation), so they must be idempotent.
+//! Hooks may read freely through the [`StoreView`] that they are given. They
+//! must never call the owning [`HookStore`] directly. Hook calls happen while
+//! writes are in progress. Reentrant store calls can deadlock or
+//! double-notify. Treat hooks as side-effect-free beyond reads through the
+//! view. Validators run more than once per transactional write, at staging
+//! time and again at commit-time re-validation. Therefore validators must be
+//! idempotent.
 
 use std::sync::{Arc, Mutex};
 
@@ -128,7 +132,7 @@ impl Scope {
 /// The kind of change that produced a [`ChangeEvent`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {
-    /// A key was inserted or updated.
+    /// A key was inserted or a key was updated.
     Set,
     /// A key was removed.
     Delete,
@@ -143,17 +147,17 @@ pub struct ChangeEvent {
     pub kind: ChangeKind,
     /// The value before the change, when it could be observed.
     pub old_value: Option<Vec<u8>>,
-    /// The value after the change; `None` for deletes.
+    /// The value after the change. The value is `None` for a delete.
     pub new_value: Option<Vec<u8>>,
 }
 
 /// A read-only view of the store, handed to hooks so they can inspect state.
 ///
-/// Inside a transaction the view reflects the transaction's own staged
-/// writes (read-your-writes); outside a transaction it reflects committed
-/// state. Hooks cannot mutate the store through this view, which keeps
-/// validation side-effect-free and prevents observers from recursively
-/// triggering further change events.
+/// Inside a transaction, the view reflects the transaction's own staged
+/// writes, so a hook reads its own writes. Outside a transaction, the view
+/// reflects the committed state. A hook cannot mutate the store through this
+/// view. This restriction keeps validation side-effect-free. It also prevents
+/// observers from triggering further change events recursively.
 #[async_trait]
 pub trait StoreView: Send + Sync {
     /// Retrieves the committed-or-staged value associated with the given key.
@@ -184,12 +188,12 @@ impl<S: GetSet + Send + Sync> StoreView for S {
 
 /// Checks a value before it is written to the underlying store.
 ///
-/// Validators are registered on a [`HookStore`] with
-/// [`with_validator`](HookStore::with_validator) and run before every write
-/// (standalone or transactional) whose key matches the validator's
-/// [`scope`](Validator::scope). Returning an error aborts the write without
+/// A validator runs before every write whose key matches its
+/// [`scope`](Validator::scope). The write is standalone or transactional.
+/// Register the validator on a [`HookStore`] with
+/// [`with_validator`](HookStore::with_validator). An error aborts the write without
 /// touching the underlying store. Transactional writes are re-validated at
-/// commit time against the transaction's final state, so a decision made at
+/// commit time against the transaction's final state. A decision made at
 /// staging time cannot be invalidated by later writes within the same
 /// transaction.
 #[async_trait]
@@ -201,25 +205,25 @@ pub trait Validator: Send + Sync {
 
     /// Validates the pending write of `value` under `key`.
     ///
-    /// The [`StoreView`] may be used to compare the pending write against
-    /// other keys; inside a transaction it observes the transaction's own
-    /// staged writes.
+    /// The implementation may use the [`StoreView`] to compare the pending
+    /// write against other keys. Inside a transaction, the view observes the
+    /// transaction's own staged writes.
     ///
     /// # Errors
     ///
-    /// Returns a [`StoreError`](super::StoreError) to reject the write; the error is propagated
-    /// to the caller of the mutating method (or to `commit`, during the
-    /// commit-time re-validation pass).
+    /// Returns a [`StoreError`](super::StoreError) to reject the write. The error goes
+    /// to the caller of the mutating method. During the commit-time re-validation pass,
+    /// the error goes to `commit`.
     async fn validate(&self, ctx: &dyn StoreView, key: &str, value: &[u8]) -> Result<()>;
 }
 
 /// Receives notifications about durable changes to the store.
 ///
-/// Observers are registered on a [`HookStore`] with
-/// [`add_observer`](HookStore::add_observer) and invoked once per committed
-/// change whose key matches their [`scope`](Observer::scope). For
-/// channel-based consumption prefer [`watch`](HookStore::watch), which needs
-/// no trait implementation.
+/// Register an observer on a [`HookStore`] with
+/// [`add_observer`](HookStore::add_observer). The hook store invokes the
+/// observer once per committed change whose key matches its
+/// [`scope`](Observer::scope). Use [`watch`](HookStore::watch) for
+/// channel-based consumption. That API needs no trait implementation.
 #[async_trait]
 pub trait Observer: Send + Sync {
     /// Which keys this observer applies to. Defaults to [`Scope::All`].
@@ -229,8 +233,9 @@ pub trait Observer: Send + Sync {
 
     /// Called once for every matching committed change.
     ///
-    /// The [`StoreView`] reflects committed state as of after the change,
-    /// so an observer may inspect related keys without racing the write.
+    /// The [`StoreView`] reflects the committed state as of after the change.
+    /// An observer may inspect related keys through this view without racing
+    /// the write.
     ///
     /// Observers must not call back into the same store (see the
     /// module documentation about reentrancy).
@@ -256,10 +261,11 @@ impl Subscribers {
 
 /// Delivers a change event to every matching subscriber.
 ///
-/// Closed channels are pruned while delivering; full channels skip the event
-/// so a slow consumer can never stall a write. Observer calls happen after
-/// the lock is released and run concurrently, so observers may take
-/// arbitrarily long relative to each other.
+/// The function prunes closed channels while it delivers. It skips the event
+/// on a full channel, so a slow consumer can never stall a write. The lock
+/// releases before the observer calls start. The observer calls then run
+/// concurrently, so observers may take arbitrarily long relative to each
+/// other.
 async fn notify(subscribers: &Mutex<Subscribers>, view: &dyn StoreView, event: ChangeEvent) {
     let observers = {
         let mut subs = lock_ignore_poison(subscribers);
@@ -294,11 +300,12 @@ async fn notify(subscribers: &Mutex<Subscribers>, view: &dyn StoreView, event: C
     .await;
 }
 
-/// A [`StoreView`] for the commit-time re-validation pass: shows the
-/// transaction's final state for every key *except* the one currently being
-/// validated, whose pre-transaction value is exposed instead. Without the
-/// shadowing, absence-based rules (e.g. "must not overwrite") would see the
-/// staged write itself and falsely reject legitimate inserts.
+/// This view supports the commit-time re-validation pass. It shows the
+/// transaction's final state for every key. The key that the pass currently
+/// validates is an exception. That key shows its pre-transaction value
+/// instead. Without this exception, an absence-based rule (e.g. "must not
+/// overwrite") sees the staged write itself. Such a rule falsely rejects
+/// legitimate inserts.
 struct RevalidateView<'a> {
     inner: &'a dyn StoreView,
     key: &'a str,
@@ -342,11 +349,11 @@ fn validate_key<'a>(
 
 /// A store decorator adding validation hooks and change notifications.
 ///
-/// Wrapping any [`Store`] backend, it intercepts writes to run registered
-/// [`Validator`]s first, then broadcasts [`ChangeEvent`]s after the change is
-/// durable. Because it implements [`Store`] itself, it composes transparently
-/// with the rest of the crate, including transactions and the extension
-/// traits ([`GetSetExt`](super::GetSetExt), [`StoreExt`](super::StoreExt)).
+/// The decorator intercepts writes. It runs the registered [`Validator`]s
+/// first. It then broadcasts [`ChangeEvent`]s after the change is durable. It
+/// implements [`Store`] itself. Therefore it composes transparently with the
+/// rest of the crate, including transactions and the extension traits
+/// ([`GetSetExt`](super::GetSetExt), [`StoreExt`](super::StoreExt)).
 #[derive(Clone)]
 pub struct HookStore<S> {
     inner: S,
@@ -385,8 +392,8 @@ impl<S> HookStore<S> {
     /// Registers an observer that receives matching change events.
     ///
     /// Dropping the returned receiver unsubscribes a channel-based
-    /// subscriber automatically; observers stay registered until the store
-    /// is dropped.
+    /// subscriber automatically. Observers stay registered until the store is
+    /// dropped.
     pub fn add_observer<O>(&mut self, observer: O)
     where
         O: Observer + 'static,
@@ -399,25 +406,25 @@ impl<S> HookStore<S> {
 
     /// Subscribes to changes of the exact key `key`.
     ///
-    /// Returns the receiving half of an unbounded channel receiving one
-    /// [`ChangeEvent`] per committed change to `key`. Unsubscribes when the
-    /// receiver is dropped.
+    /// Returns the receiving half of an unbounded channel. The channel receives
+    /// one [`ChangeEvent`] per committed change to `key`. The function
+    /// unsubscribes when the receiver is dropped.
     pub fn watch(&self, key: &str) -> mpsc::Receiver<ChangeEvent> {
         self.watch_scope(Scope::Exact(key.to_string()))
     }
 
     /// Subscribes to changes of every key under `prefix`.
     ///
-    /// Semantics match [`watch`](HookStore::watch); unsubscribes when the
-    /// receiver is dropped.
+    /// The semantics match [`watch`](HookStore::watch). The function
+    /// unsubscribes when the receiver is dropped.
     pub fn watch_prefix(&self, prefix: &str) -> mpsc::Receiver<ChangeEvent> {
         self.watch_scope(Scope::Prefix(prefix.to_string()))
     }
 
     /// Subscribes to changes of every key in the store.
     ///
-    /// Semantics match [`watch`](HookStore::watch); unsubscribes when the
-    /// receiver is dropped.
+    /// The semantics match [`watch`](HookStore::watch). The function
+    /// unsubscribes when the receiver is dropped.
     pub fn watch_all(&self) -> mpsc::Receiver<ChangeEvent> {
         self.watch_scope(Scope::All)
     }
@@ -507,9 +514,9 @@ where
 /// change notifications until commit.
 ///
 /// Writes are validated as they are staged, so a rejected operation fails
-/// early. Staged events replace any earlier event for the same key, and
-/// nothing is broadcast unless [`commit`](Transaction::commit) succeeds —
-/// rolled-back transactions produce no notifications.
+/// early. A staged event replaces any earlier event for the same key. Nothing
+/// is broadcast unless [`commit`](Transaction::commit) succeeds. A
+/// rolled-back transaction produces no notifications.
 pub struct HookTx<T, V> {
     inner: T,
     validators: Vec<Arc<dyn Validator>>,
@@ -520,12 +527,12 @@ pub struct HookTx<T, V> {
 }
 
 impl<T, V> HookTx<T, V> {
-    /// Records a change event, replacing any earlier event for the same key
-    /// so that each key appears at most once per commit. The original
-    /// pre-transaction value is preserved across replacements so observers
-    /// always see the net effect.
+    /// The function records a change event. The function replaces any
+    /// earlier event for the same key, so that each key appears at most once
+    /// per commit. The original pre-transaction value survives each
+    /// replacement, so observers always see the net effect.
     fn stage(&self, mut event: ChangeEvent) {
-        // Single guard for the whole check-and-insert: re-locking `staged`
+        // One guard covers the whole check-and-insert. Re-locking `staged`
         // inside the match would deadlock against the scrutinee's guard.
         let mut staged = lock_ignore_poison(&self.staged);
         match staged.iter_mut().find(|e| e.key == event.key) {
@@ -588,14 +595,15 @@ impl<T: GetSet + Send + Sync, V: Send + Sync> GetSet for HookTx<T, V> {
 #[async_trait]
 impl<T: Transaction + Send + Sync, V: StoreView> Transaction for HookTx<T, V> {
     async fn commit(self) -> Result<()> {
-        // Authoritative pass: re-validate every staged write against the
-        // transaction's final state while it is still the exclusive writer,
-        // so later writes within the same transaction (or concurrent ones
-        // racing for the same write path) cannot invalidate a decision made
-        // at staging time.
+        // This pass is authoritative. It re-validates every staged write
+        // against the transaction's final state while the transaction is
+        // still the exclusive writer. Later writes within the same
+        // transaction cannot invalidate a decision made at staging time.
+        // Concurrent writes that race for the same write path cannot
+        // invalidate that decision either.
         //
-        // Snapshot under the lock: the guard must not be held across the
-        // awaits below (`std` guards are not `Send`).
+        // Take the snapshot under the lock. Do not hold the guard across the
+        // awaits below. `std` guards are not `Send`.
         let staged = lock_ignore_poison(&self.staged).clone();
         for event in &staged {
             if let (ChangeKind::Set, Some(value)) = (event.kind, event.new_value.as_deref()) {
@@ -677,7 +685,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_validator_rejects_write_without_touching_store() {
+    async fn test_a_rejecting_validator_blocks_the_write() {
         let s = store().with_validator(Rejecting(Scope::All));
 
         assert!(s.set_bytes("k", b"v").await.is_err());
@@ -685,7 +693,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_validator_scope_limits_application() {
+    async fn test_a_validator_applies_only_inside_its_scope() {
         let s = store().with_validator(Rejecting(Scope::Exact(String::from("locked"))));
 
         assert!(s.set_bytes("locked", b"v").await.is_err());
@@ -701,7 +709,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_watch_receives_set_and_delete_events() {
+    async fn test_a_watcher_receives_the_kind_of_each_change() {
         let s = store();
         let mut rx = s.watch("k");
 
@@ -737,7 +745,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_transaction_event_reports_net_change() {
+    async fn test_a_transaction_event_reports_only_the_last_staged_value() {
         let s = store();
         s.set_bytes("a", b"original").await.unwrap();
         let mut rx = s.watch("a");
@@ -753,7 +761,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_slow_watcher_misses_events_but_does_not_block_writes() {
+    async fn test_a_slow_watcher_does_not_block_writes() {
         let s = store();
         let mut rx = s.watch_all();
 
@@ -800,7 +808,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_observer_receives_scoped_events() {
+    async fn test_an_observer_receives_only_events_inside_its_scope() {
         let log = Arc::new(Mutex::new(Vec::new()));
         let mut s = store();
         s.add_observer(Collector(Arc::clone(&log)));
@@ -897,7 +905,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_stateful_validator_reads_transaction_state() {
+    async fn test_stage_time_validation_sees_the_staged_writes() {
         let s = store().with_validator(NoOverwrite(Scope::All));
 
         // Stage-time validation observes the transaction's own staged writes.
@@ -931,7 +939,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_commit_revalidates_against_final_transaction_state() {
+    async fn test_commit_fails_when_the_final_state_breaks_the_rule() {
         let s = store().with_validator(OnlyWhileAbsent(String::from("flag")));
 
         let tx = s.begin_tx().unwrap();
@@ -941,16 +949,17 @@ mod tests {
         tx.set_bytes("flag", b"on").await.unwrap();
 
         assert!(tx.commit().await.is_err());
-        // Re-validation failed before the inner transaction committed:
-        // nothing landed in the store.
+        // Re-validation failed before the inner transaction committed.
+        // Nothing landed in the store.
         assert_eq!(s.get_bytes("target").await.unwrap(), None);
         assert_eq!(s.get_bytes("flag").await.unwrap(), None);
     }
 
     #[tokio::test]
-    async fn test_commit_revalidation_hides_pending_write_of_validated_key() {
-        // Absence-based rules must not see the staged write being validated,
-        // or every legitimate insert would be rejected at commit time.
+    async fn test_commit_revalidation_does_not_reject_a_validated_insert() {
+        // An absence-based rule must not see the staged write that the
+        // pass validates. Otherwise every legitimate insert would be
+        // rejected at commit time.
         let s = store().with_validator(NoOverwrite(Scope::All));
 
         let tx = s.begin_tx().unwrap();
@@ -961,7 +970,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_transaction_delete_stages_single_event() {
+    async fn test_a_transaction_set_then_delete_emits_one_delete_event() {
         let s = store();
         s.set_bytes("a", b"1").await.unwrap();
         let mut rx = s.watch("a");
@@ -977,7 +986,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_hook_store_composes_with_get_set_ext_and_query() {
+    async fn test_hook_store_supports_the_get_set_extension() {
         use crate::store::{Direction, GetSetExt};
 
         let s = store().with_validator(RequireJson(Scope::Prefix(String::from("doc:"))));

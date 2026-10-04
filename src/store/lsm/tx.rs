@@ -1,7 +1,8 @@
 //! Transactional overlay over an [`OxKvStore`](super::store::OxKvStore).
 //!
-//! [`OxKvTx`] stages writes invisibly until `commit` and shares the lookup
-//! engine, the WAL module, and the owner state with its parent store.
+//! [`OxKvTx`] stages writes invisibly until `commit`. It shares the lookup
+//! engine with its parent store. It also shares the WAL module. It also
+//! shares the owner state.
 
 use std::sync::Arc;
 
@@ -18,13 +19,17 @@ use crate::store::cache::{Cache, LruCache};
 use crate::store::storage::{ObjectPath, Storage};
 use crate::store::{Direction, GetSet, KeyValue, Result, SstFile, Transaction, lock_ignore_poison};
 
-/// Transaction for `OxKvStore` — staged overlay, durable only on `commit`.
+/// Transaction for `OxKvStore`. It stages an overlay. It is durable only
+/// on `commit`.
 ///
-/// `stage_set`/`stage_delete` are buffered in `overlay` and invisible to
-/// the parent `OxKvStore` until `commit` applies them to the shared
-/// `MemTable`/`WalBuffer` and `flush`es the WAL to S3 (RPO=0).
-/// `get`/`has`/`gets` see `overlay` first (read-your-writes) then the
-/// parent's `MemTable` + `SST`s via the same heap-merge.
+/// `stage_set` and `stage_delete` buffer their writes in `overlay`. The
+/// parent `OxKvStore` does not see these writes. The `commit` method
+/// applies them to the shared `MemTable` and `WalBuffer`. The method then
+/// flushes the WAL to S3 (RPO=0).
+///
+/// `get`, `has`, and `gets` read `overlay` first. This order gives
+/// read-your-writes behavior. Then these methods read the parent
+/// `MemTable` and the `SST`s through the same heap merge.
 pub struct OxKvTx<C = LruCache<String, Arc<SstFile>>> {
     pub(crate) inner: Arc<dyn Storage>,
     pub(crate) prefix: ObjectPath,
@@ -32,18 +37,19 @@ pub struct OxKvTx<C = LruCache<String, Arc<SstFile>>> {
     pub(crate) session: String,
     pub(crate) mem: MemTable,
     pub(crate) wal_seq: Arc<std::sync::atomic::AtomicU64>,
-    /// Shared with the parent store so a tx commit can order itself after
-    /// anything already staged there.
+    /// Shared with the parent store. A tx commit uses this field to order
+    /// itself after anything already staged there.
     pub(crate) wal_buffer: WalBuffer,
     pub(crate) sst_seq: Arc<std::sync::atomic::AtomicU64>,
     pub(crate) manifest_cache: Arc<async_lock::Mutex<ManifestCache>>,
     /// Fair gate serializing the durable write paths (`put_bytes` and tx
-    /// `commit`): concurrent writers queue here instead of CAS-retry-storming
-    /// the manifest. Always acquired outermost, never while holding
-    /// `manifest_cache`, so lock ordering stays acyclic.
+    /// `commit`). Concurrent writers queue here instead of storming the
+    /// manifest with CAS retries. Callers always acquire this gate
+    /// outermost. Callers never acquire it while they hold
+    /// `manifest_cache`. This order keeps the lock ordering acyclic.
     pub(crate) write_gate: Arc<async_lock::Mutex<()>>,
-    /// Group-commit queue shared with the parent store: blind writes staged
-    /// anywhere drain through whoever holds `write_gate`.
+    /// Group-commit queue shared with the parent store. Blind writes
+    /// staged anywhere drain through whoever holds `write_gate`.
     pub(crate) pending: Arc<std::sync::Mutex<Vec<PendingWrite>>>,
     pub(crate) sst_cache: C,
     pub(crate) overlay: std::sync::Mutex<std::collections::BTreeMap<String, Option<Vec<u8>>>>,
@@ -117,19 +123,21 @@ where
 {
     #[allow(clippy::too_many_lines)]
     async fn commit(self) -> Result<()> {
-        // Serialize concurrent writers; see `write_gate`.
+        // Serialize concurrent writers. See `write_gate`.
         let _gate = self.write_gate.lock().await;
-        // Drain under the lock: `commit` consumes the transaction, so taking
-        // ownership up front is equivalent and keeps no guard across awaits.
+        // Drain under the lock. The `commit` method consumes the
+        // transaction, so taking ownership up front is equivalent. It also
+        // keeps no guard across awaits.
         let overlay = std::mem::take(&mut *lock_ignore_poison(&self.overlay));
         if overlay.is_empty() {
             return Ok(());
         }
-        // Encode directly from overlay — don't mutate shared mem until WAL is durable (atomic)
+        // Encode directly from overlay. Do not mutate shared mem until WAL
+        // is durable (atomic).
         let updates: Vec<(String, Option<Vec<u8>>)> = overlay.into_iter().collect();
         let payload_buf = OxKvStore::<C>::encode_ops(&updates)?;
         // Anything already staged on the parent store happened-before this
-        // commit and must land ahead of it in the WAL.
+        // commit. It must land ahead of this commit in the WAL.
         self.maintenance_view().drain_staged_locked().await?;
         self.maintenance_view()
             .append_wal_locked(payload_buf, &updates)
@@ -146,7 +154,8 @@ impl<C> OxKvTx<C>
 where
     C: Cache<String, Arc<SstFile>>,
 {
-    /// Newest-layer rows for a scan: transaction overlay over `MemTable`.
+    /// Newest-layer rows for a scan. The layers are the transaction overlay
+    /// over `MemTable`.
     async fn snapshot_layers(
         &self,
         direction: Direction,
@@ -174,8 +183,8 @@ where
         }
     }
 
-    /// Store view sharing all mutable state, for running the durable write
-    /// path and maintenance (SST flush, GC, compaction) from tx-only
+    /// Store view sharing all mutable state. It runs the durable write path
+    /// and the maintenance tasks (SST flush, GC, compaction) from tx-only
     /// workloads.
     fn maintenance_view(&self) -> OxKvStore<C> {
         OxKvStore::clone_shared(self)

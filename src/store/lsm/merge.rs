@@ -1,17 +1,20 @@
 //! Newest-wins merge algebra over sorted read sources.
 //!
-//! Point and scan lookups resolve each key from layered sources ordered
-//! newest-first (replay overlay, `MemTable`, SSTs): the first entry for a key
-//! decides it, tombstones suppress older duplicates, and forward scans pull
-//! lazily so a page never decodes more than it yields.
+//! Point and scan lookups resolve each key from layered sources. The code
+//! orders the sources newest first (replay overlay, `MemTable`, SSTs). The
+//! first entry for a key decides that key. Tombstones suppress older
+//! duplicates. Forward scans pull lazily. Therefore a page never decodes more
+//! than it yields.
 
 use super::sst::SstScan;
 use crate::store::{Direction, KeyValue, Result};
 
-/// Merges sorted sources (newest first) with newest-wins dedup and tombstone suppression.
+/// Merges sorted sources (newest first). The merge applies newest-wins
+/// deduplication. The merge suppresses tombstones.
 ///
-/// Each source is `Vec<(key, Option<value>)>` sorted ascending; `None` is tombstone.
-/// Returns deduplicated, sorted `KeyValue` (tombstones removed).
+/// Each source is a `Vec<(key, Option<value>)>` in ascending order. `None` is
+/// a tombstone. The function returns deduplicated `KeyValue` values in sorted
+/// order. The function removes the tombstones.
 #[must_use]
 pub(crate) fn merge_sources(sources: Vec<Vec<(String, Option<Vec<u8>>)>>) -> Vec<KeyValue> {
     let mut map = std::collections::BTreeMap::new();
@@ -25,9 +28,9 @@ pub(crate) fn merge_sources(sources: Vec<Vec<(String, Option<Vec<u8>>)>>) -> Vec
         .collect()
 }
 
-/// One pull source for [`pull_merge_next`]: owned mem rows or a borrowing
-/// file scan. File scans borrow their SST, so sources never outlive the
-/// handle vector built alongside them in `gets_bytes`.
+/// One pull source for [`pull_merge_next`]. A source holds owned memory rows
+/// or a borrowing file scan. File scans borrow their SST. Therefore sources
+/// never outlive the handle vector that `gets_bytes` builds alongside them.
 pub(crate) enum MergeSource<'a> {
     Mem(std::vec::IntoIter<(String, Option<Vec<u8>>)>),
     File(SstScan<'a>),
@@ -44,10 +47,11 @@ impl Iterator for MergeSource<'_> {
     }
 }
 
-/// Heap entry for [`pull_merge_next`], ordered by ascending key with source
-/// rank breaking ties: smaller rank is newer, so the first pop of a key is
-/// its newest entry and decides it. `BinaryHeap` is a max-heap, hence the
-/// reversed comparison.
+/// Heap entry for [`pull_merge_next`]. The heap orders entries by ascending
+/// key. The source rank breaks ties. A smaller rank means a newer entry.
+/// Therefore the first pop of a key is the newest entry for that key.
+/// Therefore the first pop decides the key. `BinaryHeap` is a max-heap.
+/// Therefore the code reverses the comparison.
 struct MergeHeapEntry {
     key: String,
     rank: usize,
@@ -78,15 +82,21 @@ impl Ord for MergeHeapEntry {
     }
 }
 
-/// K-way newest-first merge over sorted per-source iterators, ascending.
+/// K-way newest-first merge over sorted per-source iterators. The merge
+/// returns rows in ascending order.
 ///
-/// Sources must yield range-filtered `(key, raw)` pairs with `None` marking
-/// tombstones, ordered newest-first (rank is the source position). Pulls the
-/// globally smallest undecided key: its newest entry decides it, tombstones
-/// suppress older duplicates without yielding, and iteration stops after
-/// `limit` live keys (`None` drains). Exact: entries pull in global order,
-/// so stopping early returns precisely what an uncapped merge-then-truncate
-/// would, without decoding the unread tail.
+/// The sources must yield range-filtered `(key, raw)` pairs. `None` marks a
+/// tombstone. The rank is the source position. The code orders the pairs
+/// newest first.
+///
+/// The function pulls the globally smallest undecided key. The newest entry
+/// for that key decides the key. Tombstones suppress older duplicates without
+/// yielding. The iteration stops after `limit` live keys. `None` drains all
+/// keys.
+///
+/// The merge is exact. The entries pull in global order. Therefore an early
+/// stop returns exactly what an uncapped merge and then truncate would
+/// return. The function does not decode the unread tail.
 pub(crate) fn pull_merge_next(
     sources: &mut [MergeSource<'_>],
     limit: Option<usize>,
@@ -211,10 +221,12 @@ mod tests {
     use super::*;
     use crate::store::SstFile;
 
-    /// `pull_merge_next` agrees with the materialized merge on overlapping
-    /// sources with tombstones, at every limit including the truncation edge
-    /// and full drain. Guards the heap ordering, newest-wins dedup, and
-    /// early-stop exactness of lazy page scans.
+    /// The test checks that `pull_merge_next` agrees with the materialized
+    /// merge. The sources overlap. The sources contain tombstones. The test
+    /// runs at every limit. The limits include the truncation edge and the
+    /// full drain. The test guards the heap ordering. The test guards the
+    /// newest-wins deduplication. The test guards the early-stop exactness of
+    /// the lazy page scans.
     #[test]
     fn pull_merge_matches_materialized() {
         use std::collections::BTreeMap;

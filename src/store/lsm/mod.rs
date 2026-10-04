@@ -1,4 +1,5 @@
-//! LSM store generic over the [`Storage`] trait — native and `wasm32`.
+//! The LSM store is generic over the [`Storage`] trait.
+//! The store runs on native targets and on `wasm32`.
 
 use std::sync::Arc;
 
@@ -28,7 +29,8 @@ pub(crate) use read::{
     ReadCtx, filter_rows, is_not_found, point_lookup, range_lookup, retry_once_not_found,
 };
 pub use reader::{OxKvReader, OxKvRoTx};
-/// Parsed SST file; name it to weigh a custom [`crate::store::Cache`] (see [`SstFile::size`]).
+/// Parsed SST file. Name it to weigh a custom [`crate::store::Cache`].
+/// See [`SstFile::size`].
 pub use sst::SstFile;
 pub(crate) use sst::TOMBSTONE_VLEN;
 pub use store::{OxKvStore, OxKvStoreBuilder};
@@ -51,28 +53,31 @@ type MemTable = Arc<async_lock::RwLock<MemMap>>;
 type WalBuffer = Arc<async_lock::Mutex<Vec<(String, Option<Vec<u8>>)>>>;
 
 /// Process-unique session suffix for builders without an explicit session.
-/// A counter (not wall time): `std::time` clocks panic on `wasm32`, and
-/// fencing safety comes from the monotonic epoch, not session uniqueness.
+/// The store uses a counter, not wall time. The `std::time` clocks panic on
+/// `wasm32`. Fencing safety comes from the monotonic epoch, not from session
+/// uniqueness.
 static SESSION_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// WAL entries that trigger force-flush + GC maintenance.
+/// Number of WAL entries that trigger force flush and GC maintenance.
 ///
-/// Each write CAS-appends one WAL id to `manifest.json`; without a bound the
-/// manifest grows without limit on small-write workloads (the 32 MiB SST
-/// threshold never fires), making every write pay O(list) scan + serde.
-/// Crossing this count force-flushes an SST and GCs covered WALs, keeping
-/// per-write manifest cost flat.
+/// Each write appends one WAL id to `manifest.json` with a CAS. Without a
+/// bound, the manifest grows without limit on small-write workloads. On such a
+/// workload the 32 MiB SST threshold never fires. Every write then pays an
+/// O(list) scan and a serde cost. Crossing this count force flushes an SST.
+/// The store then GCs the covered WALs. This keeps the per-write manifest cost
+/// flat.
 const WAL_MAINTENANCE_COUNT: usize = 200;
 
-/// L1 files that trigger a bounding compaction merging the smallest
-/// adjacent pair (keeps the SST list — and every read's scan — short).
+/// Number of L1 files that trigger a bounding compaction. The compaction
+/// merges the smallest adjacent pair. This keeps the SST list short. This also
+/// keeps the scan in every read short.
 const L1_MERGE_COUNT: usize = 16;
 
-/// Maximum single-key writes fused into one group-commit batch.
+/// Maximum number of single-key writes that one group-commit batch fuses.
 ///
-/// Bounds the WAL file a leader assembles and the time followers wait:
-/// overflow stays queued for the next gate holder instead of stalling
-/// behind one giant batch.
+/// This value bounds the WAL file that a leader assembles. It also bounds the
+/// time that followers wait. Write overflow stays queued for the next gate
+/// holder. Write overflow does not stall behind one giant batch.
 const MAX_GROUP_WRITES: usize = 256;
 
 /// In-memory store helper for tests.
@@ -207,7 +212,9 @@ mod tests {
                 payload: Vec<u8>,
                 _mode: PutMode,
             ) -> Result<PutOutcome> {
-                // Ignore conditional modes: unconditional overwrite (no fencing support).
+                // The store ignores conditional modes.
+                // It overwrites unconditionally because it has no fencing
+                // support.
                 self.inner.delete(path).await?;
                 self.inner.put_opts(path, payload, PutMode::Create).await
             }
@@ -271,7 +278,9 @@ mod tests {
                 payload: Vec<u8>,
                 _mode: PutMode,
             ) -> Result<PutOutcome> {
-                // Ignore conditional modes: unconditional overwrite (no fencing support).
+                // The store ignores conditional modes.
+                // It overwrites unconditionally because it has no fencing
+                // support.
                 self.inner.delete(path).await?;
                 self.inner.put_opts(path, payload, PutMode::Create).await
             }
@@ -448,12 +457,13 @@ mod tests {
         assert_eq!(got2, b"v1");
     }
 
-    /// Concurrent tasks share one store on a multi-threaded runtime: blind
-    /// writes, point reads, and per-task transaction commits interleave
-    /// across threads. Distinct values per key catch cross-talk; the final
-    /// sweep asserts every write landed exactly once.
-    // Threaded stress: wasm32-unknown-unknown is single-threaded and the
-    // multi-thread scheduler feature does not compile there (see Cargo.toml).
+    /// Concurrent tasks share one store on a multi-threaded runtime. Blind
+    /// writes, point reads, and per-task transaction commits interleave across
+    /// threads. Distinct values per key catch cross-talk. The final sweep
+    /// asserts that every write landed exactly once.
+    // Threaded stress. The `wasm32-unknown-unknown` target is single-threaded.
+    // The multi-thread scheduler feature does not compile on that target.
+    // See `Cargo.toml`.
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_writers_and_readers_share_store() {
@@ -508,8 +518,8 @@ mod tests {
         }
     }
 
-    /// Concurrent writes to one key never lose updates: every task reports
-    /// success and the final value is one of the written ones.
+    /// Concurrent writes to one key never lose updates. Every task reports
+    /// success. The final value is one of the written values.
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn group_commit_same_key_hammer() {
@@ -548,8 +558,8 @@ mod tests {
         assert!(t.is_ok() && t.unwrap() < 8 && i.is_ok() && i.unwrap() < 20);
     }
 
-    /// Barrier-released writers fuse into fewer WAL files than operations:
-    /// at least one batch must carry two or more records.
+    /// Writers released by a barrier fuse into fewer WAL files than the
+    /// operations. At least one batch must carry two or more records.
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn group_commit_batches_concurrent_writes() {
@@ -599,8 +609,8 @@ mod tests {
         assert_eq!(got, b"t3-k7");
     }
 
-    /// Dropped stores rebuild from multi-record WAL files: concurrent writes
-    /// replay exactly, proving batched WAL needs no format changes.
+    /// Dropped stores rebuild from multi-record WAL files. Concurrent writes
+    /// replay exactly. This proves that batched WAL needs no format changes.
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn group_commit_wal_replay_after_rebuild() {
@@ -645,10 +655,11 @@ mod tests {
         }
     }
 
-    /// Newest-wins across flush/compact cycles: a newer L0 outranks older
-    /// L1s, and the manifest re-sort inside `compact` preserves that because
-    /// `compact` drains every L0 it merges while `flush` appends new L0s
-    /// after the sorted L1s, keeping reverse manifest order newest-first.
+    /// The newest value wins across flush and compact cycles. A newer L0
+    /// outranks older L1s. The manifest re-sort inside `compact` preserves that
+    /// order. `compact` drains every L0 that it merges. `flush` appends new L0s
+    /// after the sorted L1s. These two rules keep the reverse manifest order
+    /// newest-first.
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn newest_wins_across_flush_compact() {
@@ -672,21 +683,22 @@ mod tests {
             s.flush_mem_to_sst_force().await.expect("flush");
         }
         s.compact().await.unwrap();
-        // Old mango version rides one L0; new version plus a smaller key
-        // rides the next, so min_key order and recency order disagree.
+        // An old version of `mango` rides in one L0. A new version and a
+        // smaller key ride in the next L0. The `min_key` order and the recency
+        // order disagree.
         s.put_bytes("mango", b"v1").await.unwrap();
         s.put_bytes("zebra", b"v1").await.unwrap();
         s.flush_mem_to_sst_force().await.expect("flush");
         s.put_bytes("apple", b"x").await.unwrap();
         s.put_bytes("mango", b"v2").await.unwrap();
         s.flush_mem_to_sst_force().await.expect("flush");
-        // Unmerged L0s lose nothing: the newest L0 outranks older files.
+        // Unmerged L0s lose nothing. The newest L0 outranks older files.
         assert_eq!(
             s.get_bytes("mango").await.unwrap().as_deref(),
             Some(b"v2".as_slice())
         );
-        // Top up L0s so the final compact must merge (and re-sort); each
-        // iteration nets one L0 because auto-compacts only fire at four.
+        // Top up the L0s so that the final compact must merge and re-sort. Each
+        // iteration nets one L0, because auto compacts fire only at four.
         loop {
             let manifest = read_manifest().await;
             if manifest.sst.iter().filter(|m| m.level == 0).count() >= 4 {
@@ -736,7 +748,8 @@ mod tests {
             .expect("sst flush")
             .expect("some sst");
 
-        // Point path is cache-through: miss inserts, hit serves.
+        // The point read path is cache-through. A miss inserts an entry. A hit
+        // serves the entry.
         let got = s3.get_bytes("k1").await.unwrap().expect("k1");
         assert_eq!(got, b"v1");
         cache.run_pending_tasks().await;
@@ -744,7 +757,7 @@ mod tests {
         let got = s3.get_bytes("k1").await.unwrap().expect("k1 again");
         assert_eq!(got, b"v1");
 
-        // Scan path bypasses the cache but stays correct.
+        // The scan path bypasses the cache. The scan path stays correct.
         let rows = s3
             .gets_bytes(None, Direction::Next, (None, None))
             .await
@@ -767,8 +780,9 @@ mod tests {
             .await
             .unwrap();
 
-        // 2.5x the maintenance threshold: without the force-flush + GC drain
-        // the list would hold every WAL id (quadratic manifest cost).
+        // This is 2.5x the maintenance threshold. Without the force flush and
+        // the GC drain, the list would hold every WAL id. The manifest cost
+        // would be quadratic.
         for i in 0..2_500 {
             s3.set_bytes(&format!("k{i:05}"), b"v").await.unwrap();
         }
@@ -796,15 +810,16 @@ mod tests {
             .await
             .unwrap();
 
-        // 100 rounds of disjoint ranges: each L0-triggered compact adds one
-        // L1, so without pair-collapse the count would reach 25. With it,
-        // the count oscillates around the threshold once crossed (~64 rounds).
+        // 100 rounds of disjoint ranges. Each L0-triggered compact adds one
+        // L1. Without pair collapse, the count would reach 25. With pair
+        // collapse, the count oscillates around the threshold once the
+        // threshold is crossed (~64 rounds).
         for i in 0..100 {
             for j in 0..4 {
                 s3.put_bytes(&format!("c{i:03}/k{j}"), b"v").await.unwrap();
             }
-            // Tolerate `None`: WAL maintenance may have flushed this round's
-            // mem mid-round once the WAL list hits its threshold.
+            // Tolerate `None`. WAL maintenance may have flushed this round's
+            // memtable mid-round, after the WAL list reached its threshold.
             let _ = s3.flush_mem_to_sst_force().await.expect("sst flush");
             s3.compact().await.unwrap();
         }
@@ -813,8 +828,9 @@ mod tests {
         let out = inner.get(&path).await.expect("manifest readable");
         let manifest: Manifest = serde_json::from_slice(&out.bytes).expect("manifest parses");
         let l1 = manifest.sst.iter().filter(|m| m.level == 1).count();
-        // Lower bound proves compactions actually ran (not a vacuous zero);
-        // upper bound proves pair-collapse engaged (unfixed would be 25).
+        // The lower bound proves that compactions ran. It does not report a
+        // vacuous zero. The upper bound proves that pair collapse engaged.
+        // Without pair collapse, the count would be 25.
         assert!((10..=L1_MERGE_COUNT + 2).contains(&l1), "l1 files {l1}");
     }
 
@@ -831,9 +847,9 @@ mod tests {
             .await
             .unwrap();
 
-        // 2.5x the maintenance threshold in single-write commits: without
-        // tx-side maintenance the WAL list would hold every commit's id and
-        // mem would never reach an SST.
+        // This is 2.5x the maintenance threshold in single-write commits.
+        // Without transaction-side maintenance, the WAL list would hold the id
+        // of every commit. The memtable would never reach an SST.
         for i in 0..2_500 {
             let tx = s3.begin_tx().unwrap();
             tx.set_bytes(&format!("t{i:05}"), b"v").await.unwrap();
@@ -868,7 +884,8 @@ mod tests {
             .await
             .unwrap();
 
-        // Fresh key: blind write lands, overwrite replaces.
+        // For a fresh key, a blind write lands. An overwrite replaces the
+        // value.
         s3.put_bytes("k1", b"v1").await.unwrap();
         assert_eq!(
             s3.get_bytes("k1").await.unwrap().as_deref(),
@@ -879,11 +896,13 @@ mod tests {
             s3.get_bytes("k1").await.unwrap().as_deref(),
             Some(b"v2".as_slice())
         );
-        // Parity: set_bytes on the same key reports the put value as prev.
+        // For parity, `set_bytes` on the same key reports the `put` value as
+        // `prev`.
         let prev = s3.set_bytes("k1", b"v3").await.unwrap();
         assert_eq!(prev.as_deref(), Some(b"v2".as_slice()));
 
-        // Tx staging stays invisible until commit, like set_bytes.
+        // Transaction staging stays invisible until the commit, as `set_bytes`
+        // does.
         let tx = s3.begin_tx().unwrap();
         tx.put_bytes("tk", b"tv").await.unwrap();
         assert_eq!(s3.get_bytes("tk").await.unwrap(), None);
@@ -894,7 +913,8 @@ mod tests {
         );
     }
 
-    /// Counts `get_opts` calls (manifest polls) while delegating everything.
+    /// Counts `get_opts` calls for manifest polls.
+    /// The struct delegates every other call.
     #[derive(Clone)]
     struct CountingStore {
         inner: MemStorage,
@@ -957,7 +977,7 @@ mod tests {
     async fn single_writer_skips_manifest_polls() {
         let (s3, calls) = poll_count_fixture(true).await;
         let baseline = calls.load(std::sync::atomic::Ordering::SeqCst);
-        // Miss MemTable so every read reaches the manifest load.
+        // Miss the `MemTable` so that every read reaches the manifest load.
         for _ in 0..10 {
             assert_eq!(s3.get_bytes("missing").await.unwrap(), None);
         }
@@ -969,7 +989,7 @@ mod tests {
     async fn default_mode_still_polls_manifest() {
         let (s3, calls) = poll_count_fixture(false).await;
         let baseline = calls.load(std::sync::atomic::Ordering::SeqCst);
-        // Miss MemTable so every read reaches the manifest load.
+        // Miss the `MemTable` so that every read reaches the manifest load.
         for _ in 0..10 {
             assert_eq!(s3.get_bytes("missing").await.unwrap(), None);
         }
@@ -1010,8 +1030,9 @@ mod tests {
         assert_eq!(scanned[0].key, "b");
     }
 
-    /// registered (it has no handle to the writer's registry), so the watermark
-    /// was dead code advertising a guarantee nothing enforced.
+    /// registered, because it has no handle to the writer's registry. The
+    /// watermark was dead code that advertised a guarantee which nothing
+    /// enforced.
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn wal_gc_reclaims_wal_once_an_sst_covers_it() {
@@ -1067,7 +1088,7 @@ mod tests {
                 "WAL {wal} must be deleted after GC: {err}"
             );
         }
-        // Data still readable via SST after WAL GC.
+        // The data stays readable through the SST after the WAL GC.
         assert_eq!(
             s3.get_bytes("k1").await.unwrap().as_deref(),
             Some(b"v1".as_slice())
@@ -1088,7 +1109,7 @@ mod tests {
             .build()
             .await
             .unwrap();
-        // Create 4 L0 SSTs to trigger compaction (>=4).
+        // Create 4 L0 SSTs to trigger the compaction (>=4).
         for i in 0..4 {
             s3.stage_set(&format!("k{i:02}"), format!("v{i}").as_bytes())
                 .await;
@@ -1115,7 +1136,7 @@ mod tests {
         // First compaction should produce L1.
         let new_l1 = s3.compact().await.unwrap().expect("should compact");
         assert_eq!(new_l1.level, 1);
-        // Verify manifest now has no L0 (or fewer) and one L1.
+        // Verify the manifest state. It has no L0, or fewer L0s. It has one L1.
         let (m_after, _) = load_manifest(
             Arc::clone(&store),
             &ObjectPath::from("compact-test"),
@@ -1147,7 +1168,7 @@ mod tests {
                 m.id
             );
         }
-        // Data still readable after compaction (newest wins).
+        // The data stays readable after the compaction. The newest value wins.
         assert_eq!(
             s3.get_bytes("k00").await.unwrap().as_deref(),
             Some(b"v0".as_slice())
@@ -1156,7 +1177,8 @@ mod tests {
             s3.get_bytes("common").await.unwrap().as_deref(),
             Some(b"2".as_slice())
         );
-        // Second compaction should be no-op (idempotent, no extra L0).
+        // The second compaction should be a no-op. It should stay idempotent. It
+        // must not create an extra L0.
         let second = s3.compact().await.unwrap();
         assert!(second.is_none(), "second compact should be no-op");
     }
@@ -1173,7 +1195,8 @@ mod tests {
             .build()
             .await
             .unwrap();
-        // Store::set/get/delete direct (persistent)
+        // The calls `Store::set`, `get`, and `delete` run directly against
+        // persistent storage.
         assert_eq!(s3.set_bytes("k1", b"v1").await.unwrap(), None);
         assert_eq!(
             s3.get_bytes("k1").await.unwrap().as_deref(),
@@ -1191,21 +1214,22 @@ mod tests {
         assert!(s3.delete("k1").await.unwrap());
         assert!(!s3.has("k1").await.unwrap());
         assert!(!s3.delete("k1").await.unwrap());
-        // Transaction is staged until commit
+        // The transaction stays staged until the commit.
         let tx = s3.begin_tx().unwrap();
         tx.set_bytes("tx-k", b"tx-v").await.unwrap();
         assert_eq!(
             tx.get_bytes("tx-k").await.unwrap().as_deref(),
             Some(b"tx-v".as_slice())
         );
-        // not visible outside before commit
+        // The write is not visible outside the transaction before the commit.
         assert_eq!(s3.get_bytes("tx-k").await.unwrap(), None);
         tx.commit().await.unwrap();
         assert_eq!(
             s3.get_bytes("tx-k").await.unwrap().as_deref(),
             Some(b"tx-v".as_slice())
         );
-        // gets with limits/directions still works via heap-merge
+        // The call `gets` with limits and directions still works through the
+        // heap merge.
         s3.set_bytes("a", b"1").await.unwrap();
         s3.set_bytes("b", b"2").await.unwrap();
         s3.set_bytes("c", b"3").await.unwrap();
@@ -1217,9 +1241,11 @@ mod tests {
         assert_eq!(got[0].key, "a");
     }
 
-    /// A user value shaped exactly like a blob pointer is user data, not a pointer.
-    /// Regression: `try_decode_blob_pointer` used to accept any matching JSON
-    /// object, so storing this value made the key permanently unreadable.
+    /// A user value shaped exactly like a blob pointer is user data, not a
+    /// pointer.
+    ///
+    /// Regression detail: `try_decode_blob_pointer` used to accept any matching
+    /// JSON object. Storing this value made the key permanently unreadable.
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn blob_pointer_shaped_user_value_round_trips() {
@@ -1240,7 +1266,7 @@ mod tests {
                 Some(payload),
                 "user value must not be mistaken for a blob pointer"
             );
-            // ...and after it has round-tripped through an SST as well.
+            // The value stays correct after it has passed through an SST.
             s3.flush_mem_to_sst_force().await.unwrap().unwrap();
             assert_eq!(
                 s3.get_bytes("k").await.unwrap().as_deref(),
@@ -1271,8 +1297,10 @@ mod tests {
     }
 
     /// A staged write that happens-before a durable write must win after a
-    /// restart. Regression: the WAL sequence was allocated at flush time, so a
-    /// later `put_bytes` could take the *lower* sequence and win the replay.
+    /// restart.
+    ///
+    /// Regression detail: the WAL sequence was allocated at flush time. A later
+    /// `put_bytes` could take the *lower* sequence and win the replay.
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn staged_write_before_durable_write_survives_restart() {
@@ -1306,9 +1334,10 @@ mod tests {
         );
     }
 
-    /// Same ordering rule across a delete: a staged write before the delete
-    /// must not resurrect the key, and a staged delete before a later put must
-    /// not erase it.
+    /// The same ordering rule applies across a delete.
+    ///
+    /// A staged write before the delete must not resurrect the key.
+    /// A staged delete before a later put must not erase it.
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn staged_ops_order_against_deletes_across_restart() {
@@ -1320,10 +1349,10 @@ mod tests {
             .await
             .unwrap();
         s3.put_bytes("gone", b"1").await.unwrap();
-        // Staged first, deleted second: the delete wins.
+        // The write is staged first and the delete is second. The delete wins.
         s3.stage_set("gone", b"2").await;
         assert!(s3.delete("gone").await.unwrap());
-        // Deleted first, put second: the put wins.
+        // The delete is first and the put is second. The put wins.
         s3.put_bytes("back", b"1").await.unwrap();
         assert!(s3.delete("back").await.unwrap());
         s3.stage_set("back", b"2").await;
@@ -1343,8 +1372,9 @@ mod tests {
         );
     }
 
-    /// A transaction commit happens-after anything staged on the store, so
-    /// the staged record must take the lower WAL sequence.
+    /// A transaction commit happens-after anything staged on the store.
+    ///
+    /// The staged record must take the lower WAL sequence.
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn staged_write_before_tx_commit_survives_restart() {
@@ -1374,9 +1404,10 @@ mod tests {
         );
     }
 
-    /// A key rewritten while a flush is in flight keeps its newer value:
-    /// Storage wrapper that fires one `set_bytes` in the middle of the next
-    /// SST upload, so a flush snapshot and a write genuinely overlap.
+    /// A key rewritten while a flush is in flight keeps its newer value.
+    ///
+    /// The wrapper fires one `set_bytes` in the middle of the next SST upload.
+    /// The flush snapshot and the write therefore overlap.
     struct Interleave {
         inner: MemStorage,
         store: std::sync::OnceLock<std::sync::Arc<OxKvStore>>,
@@ -1403,7 +1434,7 @@ mod tests {
                 && !self.fired.swap(true, std::sync::atomic::Ordering::SeqCst)
                 && let Some(s3) = self.store.get()
             {
-                // Overwrites `k` while the flush is between its snapshot and
+                // Overwrite `k` while the flush is between its snapshot and
                 // its post-CAS memtable discard.
                 s3.set_bytes("k", b"newer")
                     .await
@@ -1418,12 +1449,12 @@ mod tests {
 
     /// A key rewritten *while a flush is in flight* keeps its newer value.
     ///
-    /// Regression: the flush discarded every key in its snapshot
-    /// unconditionally, so a write that landed between the snapshot and the
-    /// post-CAS discard was dropped from the `MemTable` even though the SST it
-    /// was written to does not contain it. The discard is compare-and-remove.
+    /// Regression detail: the flush discarded every key in its snapshot
+    /// unconditionally. A write that landed between the snapshot and the
+    /// post-CAS discard was dropped from the `MemTable`. The SST that the write
+    /// targeted does not contain the write. The discard is a compare-and-remove.
     ///
-    /// The interleaving is injected at the SST upload; a sequential
+    /// The test injects the interleaving at the SST upload. A sequential
     /// set/flush/set/flush sequence cannot reach it.
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
@@ -1443,9 +1474,9 @@ mod tests {
         );
         let _ = backend.store.set(std::sync::Arc::clone(&s3));
         s3.set_bytes("k", b"old").await.unwrap();
-        // Uses the ungated inner path: the public wrapper holds `write_gate`
-        // across the flush, so the injected write would deadlock on it.
-        // That the gate really is held is itself worth knowing.
+        // The call uses the ungated inner path. The public wrapper holds
+        // `write_gate` across the flush. The injected write would deadlock on
+        // that gate. The test therefore also confirms that the gate is held.
         s3.flush_mem_to_sst_inner(true).await.unwrap().unwrap();
         assert!(
             backend.fired.load(std::sync::atomic::Ordering::SeqCst),
@@ -1460,18 +1491,20 @@ mod tests {
     /// Every queued write is durable once `put_bytes` returns Ok, including
     /// the ones past `MAX_GROUP_WRITES` that no single batch could hold.
     ///
-    /// Note on coverage: this asserts the observable contract, not the
-    /// `mine`-check inside `put_bytes`. That branch is currently unreachable —
-    /// `pending` is drained from the front under a fair FIFO gate, so a leader
-    /// is always at the head of the queue it drains, and its own entry is always
-    /// inside the batch. An instrumented run (this many writers on 8 workers,
-    /// released from a barrier) recorded zero re-queues. The branch is kept as
-    /// defence in depth, not as a covered path.
+    /// Note on coverage: the test asserts the observable contract. It does not
+    /// assert the `mine` check inside `put_bytes`. That branch is currently
+    /// unreachable. `pending` is drained from the front under a fair FIFO gate.
+    /// A leader is therefore always at the head of the queue it drains. Its own
+    /// entry is therefore always inside the batch. An instrumented run (this
+    /// many writers on 8 workers, released from a barrier) recorded zero
+    /// re-queues. The test keeps the branch as defence in depth, not as a
+    /// covered path.
     ///
-    /// Native only, like its sibling: this spawns one task per writer and needs
-    /// a multi-threaded Tokio runtime, neither of which exists on `wasm32`.
-    /// Running it under `wasm_bindgen_test` panicked with "there is no reactor
-    /// running" and turned `wasm-pack test --node` red.
+    /// The test runs on native targets only, as its sibling test does. It spawns
+    /// one task per writer. It needs a multi-threaded Tokio runtime. Neither
+    /// exists on `wasm32`. Running the test under `wasm_bindgen_test` panicked
+    /// with "there is no reactor running" and turned `wasm-pack test --node`
+    /// red.
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn group_commit_never_acknowledges_another_batches_write() {
@@ -1485,8 +1518,9 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        // More writers than one capped batch can hold, all released together so
-        // they pile up behind the gate before the first leader drains.
+        // The test uses more writers than one capped batch can hold. It
+        // releases all writers together. They pile up behind the gate before the
+        // first leader drains.
         let total = MAX_GROUP_WRITES + 40;
         let barrier = Arc::new(Barrier::new(total));
         let mut handles = Vec::new();
@@ -1505,7 +1539,8 @@ mod tests {
                 .unwrap()
                 .unwrap_or_else(|e| panic!("write {i} failed: {e}"));
         }
-        // Every acknowledged write must be readable, in-memory and after restart.
+        // Every acknowledged write must be readable. The test checks it in
+        // memory and after a restart.
         for i in 0..total {
             let key = format!("k{i:04}");
             assert_eq!(
@@ -1531,10 +1566,11 @@ mod tests {
         }
     }
 
-    /// The manifest SST list is ordered oldest-first by write sequence, and
-    /// every read walks it in reverse — so list position *is* recency.
-    /// Regression: compaction re-sorted the list by `min_key`, which can place
-    /// a newer file ahead of older data and serve stale values.
+    /// The manifest SST list is ordered oldest-first by write sequence. Every
+    /// read walks the list in reverse. List position therefore *is* recency.
+    ///
+    /// Regression: compaction re-sorted the list by `min_key`. That sort can
+    /// place a newer file ahead of older data and serve stale values.
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn manifest_sst_list_stays_ordered_by_write_sequence() {
@@ -1555,10 +1591,11 @@ mod tests {
             serde_json::from_slice::<Manifest>(&out.bytes).expect("manifest parses")
         };
 
-        // Disjoint key ranges, so each compaction produces a non-overlapping L1
-        // that is *retained* by the next one. That is the case where the list
-        // order actually carries information: after L1_MERGE_COUNT files,
-        // compaction folds the smallest adjacent pair and rebuilds the list.
+        // The test uses disjoint key ranges. Each compaction produces a
+        // non-overlapping L1 that the next compaction *retains*. This is the
+        // case where the list order carries information. After `L1_MERGE_COUNT`
+        // files, compaction folds the smallest adjacent pair and rebuilds the
+        // list.
         let mut saw_multi_file_list = false;
         for round in 0..(L1_MERGE_COUNT + 2) {
             for i in 0..4 {
@@ -1586,7 +1623,7 @@ mod tests {
             "compaction never retained more than one file; test proves nothing"
         );
 
-        // Newest value still wins through whatever order survived.
+        // The newest value still wins, whatever order survived.
         for round in 0..(L1_MERGE_COUNT + 2) {
             s.put_bytes(&format!("r{round:02}k0"), b"v2").await.unwrap();
         }
@@ -1603,9 +1640,11 @@ mod tests {
         }
     }
 
-    /// Corrupting the blob object must surface as an error, not a silent
-    /// short or empty value. These are the only checks on spilled values, and
-    /// they had no coverage at all.
+    /// Corrupting the blob object must surface as an error. The test does not
+    /// accept a silent short or empty value.
+    ///
+    /// These tests are the only checks on spilled values. They had no coverage
+    /// at all.
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn blob_length_mismatch_surfaces_an_error() {
@@ -1669,7 +1708,8 @@ mod tests {
             Some(&large[..])
         );
 
-        // Same length, different bytes: length check passes, CRC must not.
+        // The length is the same, but the bytes differ. The length check
+        // passes. The CRC check must not pass.
         let hash = super::blob::blob_hash(&large);
         let path = super::blob::blob_path(s3.prefix(), s3.epoch(), &hash);
         let mut tampered = large.clone();
@@ -1690,8 +1730,10 @@ mod tests {
         );
     }
 
-    /// A spilled value must actually be spilled — a regression that inlined
-    /// it would pass every round-trip assertion.
+    /// A spilled value must actually be spilled.
+    ///
+    /// A regression that inlined the value would pass every round-trip
+    /// assertion.
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn oversized_value_really_spills_to_a_blob_object() {
@@ -1716,15 +1758,16 @@ mod tests {
         assert_eq!(stored.bytes, large);
     }
 
-    /// `seq` orders the manifest SST list, and the manifest is prefix-scoped
-    /// and inherited across an epoch takeover — so `seq` must be a prefix-wide
-    /// high-water mark, not per-epoch.
+    /// `seq` orders the manifest SST list. The manifest is prefix-scoped. The
+    /// manifest is inherited across an epoch takeover. Therefore `seq` must be
+    /// a prefix-wide high-water mark, not a per-epoch mark.
     ///
-    /// Regression: `sst_seq` was rebuilt from this epoch's SSTs only, so after a
-    /// takeover the new epoch's SSTs got *lower* seqs than inherited old-epoch
-    /// SSTs. `compact_inner`'s `sort_by_key(seq)` then produced
-    /// `[e1/seq4, e2/seq4, e1/seq9]` — the oldest data listed last, inverting
-    /// the "list position == recency" invariant every read depends on.
+    /// Regression: `sst_seq` was rebuilt from the SSTs of this epoch only. After
+    /// a takeover, the SSTs of the new epoch got *lower* seqs than the
+    /// inherited SSTs of the old epoch. Then `compact_inner`'s `sort_by_key(seq)`
+    /// produced `[e1/seq4, e2/seq4, e1/seq9]`. That list placed the oldest data
+    /// last. It inverted the "list position == recency" invariant that every
+    /// read depends on.
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn sst_seq_is_prefix_wide_across_an_epoch_takeover() {
@@ -1748,21 +1791,24 @@ mod tests {
                 .unwrap()
         };
 
-        // Epoch 1: burn sequences so its retained L1s carry high seqs. Keys
-        // "a*" never overlap epoch 2's "x*", so these L1s are retained.
+        // Epoch 1 burns sequences so that its retained L1s carry high seqs. The
+        // `a*` keys never overlap the `x*` keys of epoch 2. Therefore these L1s
+        // are retained.
         let a = mk(std::sync::Arc::clone(&backend), p.clone()).await;
         for i in 0..8 {
             a.set_bytes(&format!("a{i}"), b"old").await.unwrap();
             a.flush_mem_to_sst_force().await.unwrap().unwrap();
         }
         a.compact().await.unwrap();
-        // Drop epoch-1 WALs so the epoch-2 open does not replay them into its
-        // memtable — otherwise its first flush overlaps epoch 1's range, the
-        // L1s legitimately merge, and the ordering question stays hidden.
+        // The test drops the WALs of epoch 1 so that the open of epoch 2 does
+        // not replay them into its memtable. Otherwise its first flush overlaps
+        // the range of epoch 1. The L1s then merge legitimately. The ordering
+        // question stays hidden.
         a.gc_wal().await.unwrap();
         drop(a);
 
-        // Takeover: `sst_seq` restarts at 0 unless it is rebuilt prefix-wide.
+        // Takeover: `sst_seq` restarts at 0 unless the store rebuilds it
+        // prefix-wide.
         let b = mk(std::sync::Arc::clone(&backend), p.clone()).await;
         for i in 0..4 {
             b.set_bytes(&format!("x{i}"), b"new").await.unwrap();

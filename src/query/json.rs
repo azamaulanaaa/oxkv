@@ -1,39 +1,44 @@
 //! JSON document matcher for [`Query`] ASTs.
 //!
-//! A query is lowered once into a [`CompiledQuery`] (regexes compiled, range
-//! bounds parsed) and then evaluated against any [`serde_json::Value`].
+//! The matcher lowers a query once into a [`CompiledQuery`]. The matcher
+//! compiles the regexes and parses the range bounds. The matcher then
+//! evaluates the compiled query against any [`serde_json::Value`].
 //!
 //! # Evaluation semantics
 //!
-//! - **Explicit operators**: `AND` binds tighter than `OR`; the query is
-//!   evaluated as an OR-of-AND-clauses. Items without an explicit operator
-//!   default to `OR`.
-//! - **Occurrence mode** (no explicit operators anywhere in the group):
-//!   Lucene-style semantics — all `+required` items must match, no
-//!   `-prohibited`/`NOT` item may match, and at least one optional item must
-//!   match if any are present. A group of only required/prohibited items
-//!   matches when its constraints hold.
-//! - **Terms** match uniformly regardless of scoping — scoping selects which
-//!   leaf is examined, not how it matches. Bare terms match fuzzily against
-//!   word tokens of text values (Levenshtein distance <= 2 by default,
-//!   overridable with `~N`, so `carrs` still finds `cars`); quoted phrases
-//!   are case-insensitive substring containment (`"born on"` finds
-//!   `"i am born on 2000"`); `*`/`?` wildcards are anchored globs;
-//!   `/regex/` terms use the regex crate; boosts are accepted by the parser
-//!   but do not affect boolean matching. Numeric leaves compare numerically
-//!   whenever the term parses as a number.
-//! - **Field scopes** resolve dot-separated paths, fanning out across arrays
-//!   (`tags:kv` matches `["rust", "kv"]`, `a.b:2` matches nested objects);
-//!   unscoped terms search every leaf in the document. A backslash escapes
-//!   the next character in a field name: `a\\.b:1` addresses a JSON key
-//!   literally named `a.b`, while `a.b:1` descends into `{"a": {"b": 1}}`.
+//! - **Explicit operators**: `AND` binds tighter than `OR`. The matcher
+//!   evaluates the query as an OR-of-AND-clauses. An item without an
+//!   explicit operator defaults to `OR`.
+//! - **Occurrence mode** (no explicit operator appears in the group):
+//!   Lucene-style semantics apply. All `+required` items must match. No
+//!   `-prohibited` item and no `NOT` item may match. At least one optional
+//!   item must match if the group has optional items. A group of only
+//!   required or prohibited items matches when its constraints hold.
+//! - **Terms**: scoping selects which leaf the matcher examines. Scoping
+//!   does not select how the term matches.
+//!   - A bare term matches fuzzily against word tokens of text values. The
+//!     Levenshtein distance is <= 2 by default. A trailing `~N` overrides
+//!     the default. With that override, `carrs` still finds `cars`.
+//!   - A quoted phrase is case-insensitive substring containment. The phrase
+//!     `"born on"` finds `"i am born on 2000"`.
+//!   - A `*` or `?` wildcard is an anchored glob.
+//!   - A `/regex/` term uses the regex crate.
+//!   - The parser accepts boosts. Boosts do not affect boolean matching.
+//!   - A numeric leaf compares numerically whenever the term parses as a
+//!     number.
+//! - **Field scopes** resolve dot-separated paths. The matcher fans the path
+//!   out across arrays. `tags:kv` matches `["rust", "kv"]`. `a.b:2` matches
+//!   nested objects. An unscoped term searches every leaf in the document. A
+//!   backslash escapes the next character in a field name. `a\\.b:1`
+//!   addresses a JSON key that is literally named `a.b`. `a.b:1` descends
+//!   into `{"a": {"b": 1}}`.
 //! - **Calendar dates**: bounds or plain terms shaped like ISO-8601 dates
-//!   (`2025`, `2025-03`, `2025-03-08`, full timestamps with optional `Z` or
+//!   (`2025`, `2025-03`, `2025-03-08`, full timestamps with an optional `Z` or
 //!   `±HH:MM`) compare as UTC calendar intervals instead of text. Granularity
-//!   comes from the literal's precision, so `created:[2025 TO 2026]` matches
-//!   every timestamp inside those years and `created:2025-03-08` matches any
-//!   instant on that day. Naive datetimes (no offset) are read as UTC.
-//!   Non-date-shaped strings keep the classic comparison behavior.
+//!   comes from the precision of the literal. `created:[2025 TO 2026]` matches
+//!   every timestamp inside those years. `created:2025-03-08` matches any
+//!   instant on that day. The matcher reads a naive datetime (no offset) as
+//!   UTC. Non-date-shaped strings keep the classic comparison behavior.
 
 use regex::Regex;
 use serde_json::Value;
@@ -146,11 +151,12 @@ fn compile_expr(expr: &Expression) -> CompiledExpr {
     }
 }
 
-/// Compiles a term uniformly regardless of scoping: scoping selects *which*
-/// leaf to search, not how it matches. Bare terms are token-level fuzzy with
-/// default slop 2, quoted phrases are case-insensitive containment, and
-/// wildcards/regex keep their anchored whole-value behavior. Date-shaped
-/// literals are routed to calendar intervals before this runs.
+/// Compiles a term in the same way regardless of scoping. Scoping selects
+/// *which* leaf to search, not how it matches. Bare terms are token-level
+/// fuzzy with default slop 2. Quoted phrases are case-insensitive
+/// containment. Wildcards and regexes keep their anchored whole-value
+/// behavior. Date-shaped literals are routed to calendar intervals before
+/// this function runs.
 fn compile_term(term: &TermExpr) -> CompiledTerm {
     let kind = if term.is_regex {
         TermKind::Pattern(Regex::new(&term.value).ok())
@@ -198,8 +204,8 @@ enum DatePrecision {
 
 impl DatePrecision {
     /// Whether the literal identifies at least a whole calendar month.
-    /// Year-only literals stay on the text path so numeric-looking leaves
-    /// keep their existing textual/numeric matching behavior.
+    /// Year-only literals stay on the text path. A numeric-looking leaf then
+    /// keeps its existing textual or numeric matching behavior.
     fn at_least_month(self) -> bool {
         !matches!(self, Self::Year)
     }
@@ -264,13 +270,14 @@ impl DateLit {
 }
 
 /// Parses the accepted ISO-8601 shapes: `YYYY`, `YYYY-MM`, `YYYY-MM-DD`,
-/// and `YYYY-MM-DD[T| ]HH:MM[:SS[.fff]]` with optional `Z` or `±HH:MM`.
-/// Naive datetimes are read as UTC.
+/// and `YYYY-MM-DD[T| ]HH:MM[:SS[.fff]]` with an optional `Z` or `±HH:MM`.
+/// The function reads a naive datetime as UTC.
 ///
-/// Day-of-month is validated loosely (`01-31`); impossible dates such as
-/// February 30th roll forward harmlessly inside the interval arithmetic.
-/// Returns `None` for anything else — including plain numbers — so callers
-/// keep ordinary string/number comparison untouched when this fails.
+/// The function validates the day of the month loosely (`01-31`). An
+/// impossible date such as February 30th rolls forward harmlessly inside the
+/// interval arithmetic. The function returns `None` for every other input,
+/// including plain numbers. The caller then keeps ordinary string or number
+/// comparison.
 fn parse_date_literal(raw: &str) -> Option<DateLit> {
     let b = raw.as_bytes();
     let (year, month, day) = parse_ymd(b)?;
@@ -322,8 +329,9 @@ fn parse_ymd(b: &[u8]) -> Option<(i32, u32, u32)> {
 }
 
 /// Parses the time-and-zone suffix starting at byte 10
-/// (`T|t|<space>HH:MM[:SS[.fff]]` with optional trailing `Z` or `±HH:MM`).
-/// Returns the seconds to add to local midnight and the resulting precision.
+/// (`T|t|<space>HH:MM[:SS[.fff]]` with an optional trailing `Z` or `±HH:MM`).
+/// Returns the seconds to add to local midnight. It also returns the
+/// resulting precision.
 fn parse_time_zone(b: &[u8]) -> Option<(i64, DatePrecision)> {
     match b[10] {
         b'T' | b't' | b' ' => {}
@@ -385,8 +393,8 @@ struct DateInterval {
     end: i64,
 }
 
-/// Builds a calendar interval from range bounds when both parse as ISO-8601
-/// dates; `None` keeps the classic string/number comparison path.
+/// Builds a calendar interval from range bounds when both bounds parse as
+/// ISO-8601 dates. `None` keeps the classic string or number comparison path.
 fn date_interval(start: &str, end: &str, inclusive: bool) -> Option<DateInterval> {
     let lo = parse_date_literal(start)?;
     let hi = parse_date_literal(end)?;
@@ -423,8 +431,9 @@ fn glob_regex(pattern: &str) -> Option<Regex> {
     Regex::new(&source).ok()
 }
 
-/// Splits a raw field name into path segments on unescaped dots and unescapes
-/// each segment (`\.` becomes a literal `.`, `\\` a literal backslash).
+/// Splits a raw field name into path segments on unescaped dots. The function
+/// removes the escapes in each segment (`\.` becomes a literal `.`, and `\\`
+/// becomes a literal backslash).
 fn split_field_path(field: &str) -> Vec<String> {
     let mut segments = Vec::new();
     let mut current = String::new();
@@ -471,8 +480,8 @@ fn eval_boolean(items: &[CompiledItem], doc: &Value, current_path: &[String]) ->
 
     for item in items {
         clause.push(item);
-        // The operator stored on an item connects it to the *next* item, so a
-        // new clause starts right after an Or.
+        // The operator on an item connects it to the *next* item. A new
+        // clause starts right after an Or.
         if matches!(item.op, Some(BinaryOp::Or)) {
             clauses.push(std::mem::take(&mut clause));
         }
@@ -613,7 +622,8 @@ fn match_term(kind: &TermKind, val: &Value) -> bool {
     }
 }
 
-/// Numbers compare numerically when the term is numeric, else as formatted text.
+/// Numbers compare numerically when the term is numeric. Otherwise the
+/// function compares the formatted text.
 fn number_matches(kind: &TermKind, value: Option<f64>, rendered: &str) -> bool {
     if let Some(value) = value
         && let Some(term_num) = numeric_literal(kind)
@@ -625,8 +635,9 @@ fn number_matches(kind: &TermKind, value: Option<f64>, rendered: &str) -> bool {
 
 fn numeric_literal(kind: &TermKind) -> Option<f64> {
     match kind {
-        // Numeric leaves stay precise: a parseable target compares as a
-        // number instead of fuzzily against rendered digits.
+        // Numeric leaves stay precise. A target that parses as a number
+        // compares as a number instead of comparing fuzzily against the
+        // rendered digits.
         TermKind::Contains(text)
         | TermKind::FuzzyToken {
             target: text,
@@ -705,7 +716,7 @@ mod tests {
     // --- Term matching ---
 
     #[test]
-    fn test_unscoped_term_matches_anywhere_case_insensitive() {
+    fn test_an_unscoped_term_matches_anywhere_and_ignores_case() {
         let doc = sample_doc();
         assert!(eval_q("berlin", &doc));
         assert!(eval_q("BERLIN", &doc));
@@ -714,7 +725,7 @@ mod tests {
     }
 
     #[test]
-    fn test_quoted_phrases_are_case_insensitive_containment() {
+    fn test_a_quoted_phrase_matches_by_case_insensitive_containment() {
         let doc = sample_doc();
         assert!(eval_q("name:\"Rust Programming\"", &doc));
         assert!(eval_q("name:\"rust programming\"", &doc));
@@ -723,7 +734,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unscoped_quoted_phrases_match_substrings() {
+    fn test_an_unscoped_quoted_phrase_matches_a_substring() {
         let doc = json!({ "bio": "I ride my motorbike daily" });
         assert!(eval_q("\"motorbike\"", &doc));
         assert!(eval_q("\"ride my motorbike\"", &doc));
@@ -732,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unscoped_bare_terms_fuzzy_match_tokens_in_prose() {
+    fn test_an_unscoped_bare_term_fuzzy_matches_one_token() {
         let doc = json!({ "bio": "i am born on 2000 somewhere" });
         assert!(eval_q("born", &doc));
         assert!(eval_q("boren", &doc)); // typo within default slop 2
@@ -742,7 +753,7 @@ mod tests {
     }
 
     #[test]
-    fn test_field_scoped_terms_use_token_matching() {
+    fn test_a_field_scoped_term_matches_like_an_unscoped_term() {
         let doc = json!({ "bio": "i am born on 2000" });
         // Scoping selects WHICH leaf to search, not how it matches.
         assert!(eval_q("bio:born", &doc));
@@ -753,13 +764,13 @@ mod tests {
     }
 
     #[test]
-    fn test_unquoted_term_is_not_substring_match() {
+    fn test_an_unquoted_term_does_not_match_a_substring() {
         let doc = sample_doc();
         assert!(!eval_q("program", &doc));
     }
 
     #[test]
-    fn test_wildcard_terms() {
+    fn test_a_wildcard_term_matches_a_prefix() {
         let doc = sample_doc();
         assert!(eval_q("lang:r*", &doc));
         assert!(eval_q("lang:?ust", &doc));
@@ -769,7 +780,7 @@ mod tests {
     }
 
     #[test]
-    fn test_regex_terms() {
+    fn test_a_regex_term_matches_by_pattern() {
         let doc = sample_doc();
         assert!(eval_q("lang:/^rust$/", &doc));
         assert!(eval_q("name:/^Rust/", &doc));
@@ -777,19 +788,20 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_regex_never_matches_without_panicking() {
+    fn test_an_invalid_regex_term_never_matches() {
         let doc = sample_doc();
         assert!(!eval_q("lang:/([/", &doc));
     }
 
     #[test]
-    fn test_fuzzy_terms() {
+    fn test_a_fuzzy_term_matches_a_token_within_the_slop() {
         let doc = sample_doc();
-        // Targets lowercase before comparison, so case differences cost zero.
+        // The target becomes lowercase before the comparison. A case
+        // difference then costs zero.
         assert!(eval_q("lang:Rust~0", &doc));
         assert!(eval_q("lang:Rust~1", &doc));
-        // Plain Levenshtein has no transposition support ("ruts" -> "rust"
-        // costs 2), so a real one-edit typo is an insertion/substitution.
+        // Plain Levenshtein has no transposition support. `"ruts"` -> `"rust"`
+        // costs 2. A real one-edit typo is an insertion or a substitution.
         assert!(eval_q("lang:rutt~1", &doc));
         assert!(eval_q("lang:Rust~2", &doc));
         assert!(!eval_q("lang:python~2", &doc));
@@ -812,7 +824,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bool_terms() {
+    fn test_a_bool_term_matches_by_containment() {
         let doc = sample_doc();
         assert!(eval_q("active:true", &doc));
         assert!(eval_q("active:TRUE", &doc));
@@ -835,7 +847,7 @@ mod tests {
     // --- Ranges ---
 
     #[test]
-    fn test_numeric_inclusive_and_exclusive_ranges() {
+    fn test_square_brackets_include_the_bounds_and_braces_exclude_them() {
         let doc = sample_doc();
         assert!(eval_q("age:[10 TO 20]", &doc));
         assert!(eval_q("age:{14 TO 16}", &doc));
@@ -845,7 +857,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lexicographic_string_ranges() {
+    fn test_a_string_range_compares_the_bounds_lexicographically() {
         let doc = sample_doc();
         assert!(eval_q("address.city:[A TO Z]", &doc));
         assert!(eval_q("address.city:{A TO Zurich}", &doc));
@@ -861,14 +873,14 @@ mod tests {
     }
 
     #[test]
-    fn test_mixed_bound_types_never_match() {
+    fn test_a_range_with_mixed_bound_types_never_matches() {
         let doc = sample_doc();
         assert!(!eval_q("address.city:[10 TO 20]", &doc));
         assert!(!eval_q("age:[a TO z]", &doc));
     }
 
     #[test]
-    fn test_top_level_range_scans_anywhere() {
+    fn test_an_unscoped_range_scans_every_leaf() {
         let doc = sample_doc();
         assert!(eval_q("[30 TO 45]", &doc));
     }
@@ -876,7 +888,7 @@ mod tests {
     // --- Calendar dates (ISO-8601 shaped) ---
 
     #[test]
-    fn test_date_ranges_use_calendar_intervals() {
+    fn test_a_date_range_matches_a_calendar_interval() {
         let doc = json!({ "at": "2025-03-08T09:30:00Z" });
         assert!(eval_q("at:2025-03-08", &doc));
         assert!(eval_q("at:2025-03", &doc));
@@ -889,7 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn test_date_offsets_normalize_to_utc() {
+    fn test_a_datetime_offset_moves_the_day_in_utc() {
         let doc = json!({ "at": "2025-03-08T00:30:00+02:00" }); // 2025-03-07T22:30Z
         assert!(eval_q("at:2025-03-07", &doc));
         assert!(!eval_q("at:2025-03-08", &doc));
@@ -926,7 +938,7 @@ mod tests {
     // --- Field paths, arrays, scoping ---
 
     #[test]
-    fn test_nested_field_paths() {
+    fn test_a_dotted_field_path_selects_a_nested_leaf() {
         let doc = sample_doc();
         assert!(eval_q("address.city:Berlin", &doc));
         assert!(!eval_q("address.city:Paris", &doc));
@@ -934,13 +946,13 @@ mod tests {
     }
 
     #[test]
-    fn test_field_names_with_digits_and_spaces() {
+    fn test_an_escaped_field_name_can_hold_digits_and_spaces() {
         let doc = json!({ "2nd place": { "score": 7 }, "zip2": "x" });
         assert!(eval_q(r"zip2:x", &doc));
         assert!(eval_q(r"\2nd\ place.score:7", &doc));
 
-        // An unescaped space acts as a token separator, so this parses as
-        // two separate items instead of one dotted field name.
+        // An unescaped space acts as a token separator. The parser reads the
+        // input as two separate items instead of one dotted field name.
         let ast = parse(r"2nd place.score:7");
         assert!(ast.is_ok());
     }
@@ -957,7 +969,7 @@ mod tests {
     }
 
     #[test]
-    fn test_path_through_scalar_leaf_fails_gracefully() {
+    fn test_a_field_path_through_a_scalar_leaf_never_matches() {
         let doc = json!({ "name": "Rust" });
         assert!(!eval_q("name.sub:Rust", &doc));
 
@@ -966,7 +978,7 @@ mod tests {
     }
 
     #[test]
-    fn test_array_fan_out_on_field_paths() {
+    fn test_a_field_path_continues_into_each_array_item() {
         let doc = sample_doc();
         assert!(eval_q("tags:kv", &doc));
         assert!(!eval_q("tags:nosql", &doc));
@@ -1013,7 +1025,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sub_query_grouping_respects_parens() {
+    fn test_parentheses_group_items_before_the_operators_apply() {
         let doc = json!({ "x": "alpha", "y": "beta", "z": "gamma" });
         assert!(eval_q("(x:omega OR y:beta) AND z:gamma", &doc));
         assert!(!eval_q("x:omega OR y:beta AND z:omega", &doc));
@@ -1025,21 +1037,24 @@ mod tests {
     fn test_required_prohibited_and_optional_clauses() {
         let doc = sample_doc();
 
-        // required ok + prohibited absent + optional present
+        // The required item matches. The prohibited item is absent. The
+        // optional item matches.
         assert!(eval_q("+lang:rust -lang:python tags:kv", &doc));
 
-        // required ok + prohibited absent + optional missing -> no match
+        // The required item matches. The prohibited item is absent. The
+        // optional item is missing, so the query does not match.
         assert!(!eval_q("+lang:rust -lang:python tags:nosql", &doc));
 
-        // a required clause fails
+        // A required clause fails.
         assert!(!eval_q("+lang:rust +lang:go tags:kv", &doc));
 
-        // a prohibited clause matches -> excluded even with other matches
+        // A prohibited clause matches. The query then returns no match, even
+        // if the other items match.
         assert!(!eval_q("+lang:rust -lang:rust name:Rust", &doc));
     }
 
     #[test]
-    fn test_only_required_and_prohibited_can_match_alone() {
+    fn test_a_prohibited_item_alone_never_matches() {
         let doc = sample_doc();
         assert!(eval_q("+lang:rust -lang:python", &doc));
         assert!(!eval_q("+lang:python -lang:go", &doc));

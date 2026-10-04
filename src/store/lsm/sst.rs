@@ -1,8 +1,9 @@
-//! SST (Sorted String Table) builder and reader for `OxKvStore` — L0.
+//! Builds and reads the L0 SST (Sorted String Table) files of `OxKvStore`.
 #![allow(unreachable_pub, missing_docs)]
 #![allow(clippy::pedantic, clippy::all)]
 //!
-//! Fixed `32 KiB` blocks, `CRC32` per block, `bloom` filter, footer index.
+//! Each block has a fixed size of `32 KiB`. Each block stores a `CRC32`. Each
+//! file stores a `bloom` filter and a footer index.
 
 use std::collections::BTreeMap;
 
@@ -58,7 +59,7 @@ pub(crate) struct SstFooter {
     pub file_crc: u64,
 }
 
-/// Simple bloom filter — 10 bits per key, k=3.
+/// Simple bloom filter. The filter uses 10 bits per key and k=3.
 #[derive(Debug, Clone)]
 pub(crate) struct Bloom {
     bits: Vec<u8>,
@@ -126,9 +127,10 @@ pub fn build_sst(
     let mut offset: u64 = 0;
 
     for (key, value) in entries {
-        // Compute record length without allocating, so we can decide to cut
-        // the block before writing. Tombstone and empty value both occupy
-        // 4+key.len()+4 bytes; non-empty value adds value.len().
+        // Computes the record length without allocating, so that the code can
+        // decide to cut the block before writing. A tombstone and an empty
+        // value both occupy `4+key.len()+4` bytes. A non-empty value adds
+        // `value.len()`.
         let rec_len = 4 + key.len() + 4 + value.as_ref().map_or(0, Vec::len);
         if !cur_block.is_empty() && cur_block.len() + rec_len > block_size {
             let crc = crc32fast::hash(&cur_block);
@@ -149,7 +151,8 @@ pub fn build_sst(
             cur_min = Some(key.clone());
         }
         cur_max = Some(key.clone());
-        // Write record directly into cur_block without intermediate Vec.
+        // Writes the record directly into `cur_block` without an intermediate
+        // `Vec`.
         let klen = u32::try_from(key.len())
             .map_err(|e| StoreError::Serialization(format!("key too long: {e}")))?;
         cur_block.extend_from_slice(&klen.to_le_bytes());
@@ -232,7 +235,7 @@ pub struct SstFile {
     data: Vec<u8>,
     /// Footer.
     footer: SstFooter,
-    /// Offset where blocks end / footer begins.
+    /// Offset where the blocks end and the footer begins.
     footer_offset: usize,
 }
 
@@ -264,9 +267,9 @@ impl SstFile {
             data[footer_len_offset + 2],
             data[footer_len_offset + 3],
         ]) as usize;
-        // `footer_len` comes from the object, so it can exceed the offset: a
-        // plain subtraction underflows (panics under overflow checks) before
-        // the bounds check below could run.
+        // `footer_len` comes from the object, so it can exceed the offset.
+        // A plain subtraction then underflows. The subtraction panics under
+        // overflow checks. This happens before the bounds check below can run.
         let Some(footer_start) = footer_len_offset.checked_sub(footer_len) else {
             return Err(StoreError::Storage("sst footer out of bounds".to_string()));
         };
@@ -276,9 +279,10 @@ impl SstFile {
         let footer_bytes = &data[footer_start..footer_len_offset];
         let footer: SstFooter = serde_json::from_slice(footer_bytes)
             .map_err(|e| StoreError::Storage(format!("parse footer: {e}")))?;
-        // `bloom_k` drives a loop on the point-lookup hot path. `build_sst`
-        // always writes 3, so anything wild is corruption or a hostile object,
-        // and accepting it would turn every read into a CPU denial of service.
+        // `bloom_k` drives a loop on the point lookup hot path. `build_sst`
+        // always writes 3. Therefore a value that is implausible is corruption
+        // or a hostile object. Accepting such a value would turn every read
+        // into a CPU denial of service.
         if footer.bloom_k == 0 || footer.bloom_k > 32 {
             return Err(StoreError::Storage(format!(
                 "sst implausible bloom_k {}",
@@ -292,16 +296,19 @@ impl SstFile {
         })
     }
 
-    /// File size in bytes, used as the cache weight (`moka` weigher).
+    /// File size in bytes. The cache uses this size as its weight (`moka`
+    /// weigher).
     ///
-    /// The only part of [`SstFile`] that is public API: the engine
-    /// constructs files itself, so everything else is crate-internal.
+    /// This function is the only part of [`SstFile`] that is public API. The
+    /// engine constructs the files itself. Therefore everything else is
+    /// crate-internal.
     #[must_use]
     pub fn size(&self) -> usize {
         self.data.len()
     }
 
-    /// Checks bloom (false-positive possible, never false-negative).
+    /// Checks the bloom filter. A false positive is possible. A false
+    /// negative never occurs.
     #[must_use]
     pub(crate) fn may_contain(&self, key: &str) -> bool {
         if self.footer.index.is_empty() {
@@ -315,8 +322,8 @@ impl SstFile {
         let k = self.footer.bloom_k;
         // `bloom_m` and `bloom_bits` are deserialized independently from a
         // remote object, so the implied width can exceed the buffer. Every
-        // other footer field is bounds-checked; this one is not, and it is on
-        // the hot read path.
+        // other footer field is bounds-checked. This field is not bounds-checked.
+        // This field is on the hot read path.
         if m > bits.len().saturating_mul(8) {
             return false;
         }
@@ -351,8 +358,10 @@ impl SstFile {
         Ok(bytes)
     }
 
-    /// Point lookup with tombstone distinction: `Ok(Some(Some(v)))` = value,
-    /// `Ok(Some(None))` = tombstone, `Ok(None)` = not in this SST.
+    /// Looks up one key and distinguishes a tombstone from a value.
+    /// `Ok(Some(Some(v)))` means that the value is `v`.
+    /// `Ok(Some(None))` means that the key is a tombstone.
+    /// `Ok(None)` means that the key is not in this SST.
     pub(crate) fn get_option(&self, key: &str) -> Result<Option<Option<Vec<u8>>>> {
         if !self.may_contain(key) {
             return Ok(None);
@@ -402,9 +411,11 @@ impl SstFile {
         Ok(None)
     }
 
-    /// Point lookup: returns value if present (`None` for missing or tombstone).
-    /// Empty `Some(vec![])` is a valid empty value, not tombstone. Tests
-    /// only; the read path uses `get_option`, which reports tombstones.
+    /// Looks up one key and returns the value if the key is present.
+    /// The function returns `None` for a missing key or for a tombstone.
+    /// An empty `Some(vec![])` is a valid empty value, not a tombstone.
+    /// Tests only. The read path uses `get_option`. That function reports
+    /// tombstones.
     #[cfg(test)]
     pub(crate) fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
         if !self.may_contain(key) {
@@ -455,9 +466,9 @@ impl SstFile {
         Ok(None)
     }
 
-    /// Range scan: returns sorted KVs in `[start, end]` inclusive, honoring
-    /// direction. `limit` caps results. Tombstones are omitted; empty values
-    /// are returned.
+    /// Scans a range and returns the sorted key and value pairs in `[start, end]`
+    /// inclusive. The scan honors the direction. `limit` caps the number of
+    /// results. The scan omits tombstones. The scan returns empty values.
     #[cfg(test)]
     pub fn scan(
         &self,
@@ -537,8 +548,8 @@ impl SstFile {
         Ok(out)
     }
 
-    /// Range scan including tombstones: returns `(key, Option<value>)` where
-    /// `None` is tombstone.
+    /// Scans a range and includes tombstones. The function returns
+    /// `(key, Option<value>)` pairs. A `None` value is a tombstone.
     pub(crate) fn scan_with_tombstones(
         &self,
         start: Option<&str>,
@@ -615,13 +626,14 @@ impl SstFile {
         Ok(out)
     }
 
-    /// Lazily scans entries in `[start, end]` inclusive, in file order.
+    /// Lazily scans the entries in `[start, end]` inclusive, in file order.
     ///
-    /// Yields `(key, value)` with `None` marking tombstones; blocks outside
-    /// the range are skipped via the footer index and entries decode on pull,
-    /// so a capped consumer never pays for the unread tail. Truncation ends
-    /// the stream, matching `scan`; encoding errors surface as `Err` items
-    /// and terminate iteration on the next pull.
+    /// The iterator yields `(key, value)` pairs. A `None` value marks a
+    /// tombstone. The footer index skips the blocks outside the range. Entries
+    /// decode on pull. Therefore a capped consumer never pays for the unread
+    /// tail. Truncation ends the stream, which matches `scan`. Encoding errors
+    /// appear as `Err` items. An encoding error ends the iteration on the next
+    /// pull.
     #[must_use]
     pub(crate) fn scan_iter<'a>(
         &'a self,
@@ -657,9 +669,10 @@ impl SstFile {
     }
 }
 
-/// Decodes one entry at `pos`: key, value (`None` for tombstones), and the
-/// next position. Returns `Ok(None)` on truncation (callers stop, matching
-/// [`SstFile::scan`]) and `Err` on invalid UTF-8, also matching `scan`.
+/// Decodes one entry at `pos`. The function returns the key, the value, and
+/// the next position. A `None` value marks a tombstone. The function returns
+/// `Ok(None)` on truncation. Callers stop, which matches [`SstFile::scan`].
+/// The function returns `Err` on invalid UTF-8. This also matches `scan`.
 fn decode_entry(bytes: &[u8], pos: usize) -> Result<Option<(String, Option<Vec<u8>>, usize)>> {
     if pos + 4 > bytes.len() {
         return Ok(None);
@@ -696,10 +709,10 @@ fn decode_entry(bytes: &[u8], pos: usize) -> Result<Option<(String, Option<Vec<u
     Ok(Some((key_str, value, next)))
 }
 
-/// Lazy in-range scan over one [`SstFile`], tombstone-inclusive.
+/// Lazy in-range scan over one [`SstFile`]. The scan includes tombstones.
 ///
-/// See [`SstFile::scan_iter`]: entries decode on pull in file order, so a
-/// consumer that stops early never pays for the unread tail.
+/// See [`SstFile::scan_iter`]. Entries decode on pull in file order.
+/// Therefore a consumer that stops early never pays for the unread tail.
 #[derive(Debug)]
 pub struct SstScan<'a> {
     file: &'a SstFile,
@@ -712,8 +725,8 @@ pub struct SstScan<'a> {
 }
 
 impl<'a> SstScan<'a> {
-    /// Range overlap for a block: kept outside `next` so block pruning
-    /// reads as one predicate.
+    /// Checks the range overlap for a block. The function stays outside `next`
+    /// so that block pruning reads as one predicate.
     fn overlaps(&self, meta: &BlockMeta) -> bool {
         if let Some(start_key) = self.start {
             if meta.max_key.as_str() < start_key {
@@ -894,10 +907,11 @@ mod tests {
         assert_eq!(scan[0].1, Vec::<u8>::new());
     }
 
-    /// A corrupt footer length must be an error, never a panic. Regression:
-    /// `footer_len_offset - footer_len` underflowed before the bounds check,
-    /// so a garbage length panicked under overflow checks — on the one path
-    /// that is supposed to tolerate corrupt objects.
+    /// A corrupt footer length must be an error, never a panic.
+    /// This is a regression test. `footer_len_offset - footer_len` underflowed
+    /// before the bounds check. Therefore a garbage length panicked under
+    /// overflow checks. That happened on the one path that is supposed to
+    /// tolerate corrupt objects.
     #[test]
     fn parse_rejects_footer_length_past_the_offset() {
         let data = build_sst(&sample_entries(), 1024).unwrap();
@@ -909,7 +923,7 @@ mod tests {
             SstFile::parse(bad).is_err(),
             "footer length beyond the offset must be rejected"
         );
-        // And a length that lands exactly one byte before the offset.
+        // Also tests a length that lands exactly one byte before the offset.
         let mut bad = data;
         let overshoot = u32::try_from(footer_len_offset + 1).unwrap();
         bad[footer_len_offset..footer_len_offset + 4].copy_from_slice(&overshoot.to_le_bytes());
@@ -917,8 +931,8 @@ mod tests {
     }
 
     /// Truncated objects must be errors, not partial parses. Raw storage bytes
-    /// go straight into `SstFile::parse`, so a partially uploaded SST lands
-    /// here.
+    /// go straight into `SstFile::parse`. Therefore a partially uploaded SST
+    /// lands here.
     #[test]
     fn parse_rejects_truncated_object() {
         let data = build_sst(&sample_entries(), 1024).unwrap();
@@ -930,9 +944,9 @@ mod tests {
         }
     }
 
-    /// The per-read file CRC gate must actually reject a corrupted block.
-    /// Only `get` was covered before, so the gate every read calls had zero
-    /// negative coverage.
+    /// The per-read file CRC gate must reject a corrupted block.
+    /// Only `get` had coverage before. Therefore the gate that every read
+    /// calls had zero negative coverage.
     #[test]
     fn verify_file_crc_detects_block_corruption() {
         let entries = sample_entries();
@@ -949,8 +963,8 @@ mod tests {
         }
     }
 
-    /// A footer claiming more bloom bits than it carries must not index out of
-    /// bounds — `bloom_m` and `bloom_bits` deserialize independently.
+    /// A footer that claims more bloom bits than it carries must not index out
+    /// of bounds. `bloom_m` and `bloom_bits` deserialize independently.
     #[test]
     fn may_contain_rejects_oversized_bloom_width() {
         let data = build_sst(&sample_entries(), 1024).unwrap();
@@ -963,15 +977,17 @@ mod tests {
             footer_offset: sst.footer_offset,
         };
         assert!(!skewed.may_contain("a"), "must not read past bloom_bits");
-        // Sanity: the unskewed footer still answers.
+        // Sanity check. The unskewed footer still answers.
         skewed = SstFile::parse(sst.data.clone()).unwrap();
         assert!(skewed.may_contain("a"));
     }
 
-    /// Bloom behaviour that can actually fail: present keys must be reported,
-    /// and absent keys must mostly be rejected (not always — false positives
-    /// are allowed). The old test asserted only positives, so a `check` that
-    /// always returned `true` passed it.
+    /// Bloom behaviour that can actually fail. The test requires the filter to
+    /// report the present keys. The test requires the filter to reject most of
+    /// the absent keys. The filter does not reject all of the absent keys,
+    /// because false positives are allowed. The old test asserted only the
+    /// positives. Therefore a `check` that always returned `true` passed that
+    /// test.
     #[test]
     fn bloom_rejects_most_absent_keys() {
         let entries = sample_entries();

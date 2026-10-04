@@ -1,22 +1,23 @@
 #![allow(missing_docs)]
 
-//! Benchmarks for the Lucene-style query engine in isolation: the pest-based
-//! parser ([`oxkv::parse`]) and the JSON matcher ([`oxkv::eval`]). No backend
-//! store is involved — documents live in a plain `Vec<Value>`.
+//! Benchmarks for the Lucene-style query engine in isolation. The engine has
+//! two parts: the pest-based parser ([`oxkv::parse`]) and the JSON matcher
+//! ([`oxkv::eval`]). No backend store takes part. The documents live in a plain
+//! `Vec<Value>`.
 //!
-//! Run everything with `cargo bench --bench query_bench`, or filter by stage,
-//! e.g. `cargo bench --bench query_bench query_match` or
+//! Run every benchmark with `cargo bench --bench query_bench`. Filter by stage,
+//! for example `cargo bench --bench query_bench query_match` or
 //! `cargo bench --bench query_bench query_parse/fuzzy`.
 //!
 //! Workloads:
-//! - `query_parse/{kind}` — parse one representative query string per engine
-//!   feature (pest tokenization + AST construction)
-//! - `query_match/{kind}/{n}docs` — evaluate a pre-parsed query over a corpus
-//!   of generated JSON documents (a full linear scan)
+//! - `query_parse/{kind}`: parse one representative query string per engine
+//!   feature. This workload covers pest tokenization and AST construction.
+//! - `query_match/{kind}/{n}docs`: evaluate a pre-parsed query over a corpus
+//!   of generated JSON documents. This workload is a full linear scan.
 //!
-//! Corpus sizes are 1,000 and 100,000 documents. Matching is pure per-doc CPU
-//! work with no I/O, so 100k already exposes scaling behavior without paying
-//! multi-minute sample loops per query kind.
+//! The corpus sizes are 1,000 and 100,000 documents. Matching is pure per-doc
+//! CPU work with no I/O. Therefore 100k documents already expose scaling
+//! behavior, without paying for multi-minute sample loops per query kind.
 
 use std::hint::black_box;
 
@@ -39,9 +40,9 @@ const TOPICS: [&str; 5] = [
 
 /// Generates the deterministic corpus document for index `i`.
 ///
-/// Fields deliberately exercise every matcher path: leaf terms, dotted nested
-/// paths, array fan-out (`tags`), numeric and lexicographic ranges, booleans,
-/// and free-text bodies.
+/// The fields deliberately exercise every matcher path: leaf terms, dotted
+/// nested paths, array fan-out (`tags`), numeric and lexicographic ranges,
+/// booleans, and free-text bodies.
 fn doc(i: usize) -> Value {
     json!({
         "id": format!("doc-{i:06}"),
@@ -72,11 +73,12 @@ const QUERIES: [(&str, &str); 14] = [
     ("regex", r"id:/doc-\d{3}/"),
     ("fuzzy", "lang:rust~1"),
     ("range_numeric", "age:[30 TO 40]"),
-    // Bounds are deliberately not ISO-8601 shaped, so this exercises the
-    // classic string-comparison path.
+    // The bounds are deliberately not ISO-8601 shaped. This query exercises
+    // the classic string-comparison path.
     ("range_lexicographic", "id:[doc-000000 TO doc-049999]"),
-    // Calendar-aware comparison over the same field shape as
-    // range_lexicographic; run both to quantify date-matching overhead.
+    // Calendar-aware comparison over the same field shape as the
+    // `range_lexicographic` query. Run both queries to quantify date-matching
+    // overhead.
     ("range_date_iso", "created:[2021-01-01 TO 2022-12-31]"),
     ("date_term_day", "created:2021-06-15"),
     ("boolean_operators", "+lang:go AND -active:false"),

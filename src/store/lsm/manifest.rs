@@ -3,7 +3,7 @@
 #![allow(clippy::pedantic, clippy::all)]
 //!
 //! The manifest is the single consistent point for the store. Writers CAS it
-//! with `If-Match: etag`; readers poll `ETag` with a 1 s TTL.
+//! with `If-Match: etag`. Readers poll `ETag` with a 1 s TTL.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,17 +15,17 @@ use crate::store::{Result, StoreError, now_millis};
 
 /// Metadata for one SST file recorded in the manifest.
 ///
-/// Entries are listed oldest-first; every read path walks the list in reverse
-/// and stops at the first hit, so list position *is* recency. `seq` is what
-/// makes that position recoverable — sorting by key range destroys it.
+/// Entries are listed oldest first. Every read path walks the list in reverse
+/// and stops at the first hit. The list position *is* the recency. `seq` makes
+/// that position recoverable. Sorting by key range destroys it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SstMeta {
     /// Object id, e.g. `e000007/sst/L0/000000123.sst`.
     pub id: String,
-    /// Monotonic write order within the epoch; higher is newer.
+    /// Monotonic write order within the epoch. A higher value is newer.
     ///
-    /// Defaults to 0 for manifests written before this field existed, which
-    /// leaves their relative order exactly as stored.
+    /// The default is 0 for manifests that were written before this field
+    /// existed. The default leaves their relative order exactly as stored.
     #[serde(default)]
     pub seq: u64,
     /// Level `0` (overlapping) or `1` (non-overlapping).
@@ -43,7 +43,7 @@ pub struct SstMeta {
 /// Manifest stored at `{prefix}/manifest.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
-    /// Monotonic version — bumped on every CAS.
+    /// Monotonic version. The value increases on every CAS.
     pub version: u64,
     /// Epoch that owns this manifest.
     pub epoch: u64,
@@ -76,7 +76,8 @@ pub(crate) fn manifest_path(prefix: &ObjectPath) -> ObjectPath {
     }
 }
 
-/// Reads manifest at `prefix/manifest.json`; `None` if not found.
+/// Reads the manifest at `prefix/manifest.json`. Returns `None` if the
+/// manifest does not exist.
 pub(crate) async fn read_manifest(
     store: Arc<dyn Storage>,
     prefix: &ObjectPath,
@@ -94,10 +95,11 @@ pub(crate) async fn read_manifest(
     }
 }
 
-/// CAS writes `manifest` via `If-Match` (or `Create` if no etag).
+/// CAS writes `manifest` through `If-Match`. The function uses `Create` if the
+/// store has no etag.
 ///
-/// `expected_etag` is `None` for create, `Some(etag)` for update.
-/// On success returns the new etag.
+/// `expected_etag` is `None` for a create. `expected_etag` is `Some(etag)` for
+/// an update. On success the function returns the new etag.
 pub(crate) async fn cas_manifest(
     store: Arc<dyn Storage>,
     prefix: &ObjectPath,
@@ -130,10 +132,11 @@ pub(crate) struct ManifestCache {
     entry: Option<CachedEntry>,
     /// Skip revalidation polls on `TTL`-fresh entries.
     ///
-    /// Only set when no other writer touches the prefix (see builder
-    /// `assume_single_writer`): the cache is then authoritative between our
-    /// own mutations, and every poll is a wasted roundtrip. Takeover is
-    /// still detected via ownership checks and manifest CAS conflicts.
+    /// Set the flag only when no other writer touches the prefix. See the
+    /// builder `assume_single_writer`. In that case the cache is authoritative
+    /// between our own mutations. Every poll is then a wasted roundtrip.
+    /// Takeover is still detected through ownership checks and manifest CAS
+    /// conflicts.
     skip_revalidation: bool,
 }
 
@@ -154,12 +157,12 @@ impl ManifestCache {
         }
     }
 
-    /// Sets single-writer mode: `TTL`-fresh entries return without polling.
+    /// Sets single-writer mode. A `TTL`-fresh entry returns without a poll.
     pub fn set_skip_revalidation(&mut self, skip: bool) {
         self.skip_revalidation = skip;
     }
 
-    /// Returns cached manifest if `TTL` not expired.
+    /// Returns the cached manifest if the `TTL` did not expire.
     #[must_use]
     pub fn get_cached(&self, ttl: Duration) -> Option<(Arc<Manifest>, String)> {
         let entry = self.entry.as_ref()?;
@@ -170,7 +173,8 @@ impl ManifestCache {
         }
     }
 
-    /// Updates cache with `manifest`+`etag` at now.
+    /// Updates the cache with `manifest` and `etag`. The cache stores the
+    /// current time.
     pub fn update(&mut self, manifest: Manifest, etag: String) {
         self.entry = Some(CachedEntry {
             manifest: Arc::new(manifest),
@@ -187,11 +191,12 @@ impl ManifestCache {
 
 /// Loads the current manifest without holding the cache lock across I/O.
 ///
-/// Snapshots the cached entry under a brief lock, releases the guard, polls
-/// (`If-None-Match`) or re-reads storage, then publishes under a second
-/// brief lock. Concurrent loads may publish out of order; last-writer-wins
-/// applies, which stays inside the accepted TTL-staleness envelope because
-/// every writer revalidates through manifest CAS.
+/// The function takes a snapshot of the cached entry under a brief lock. Then
+/// it releases the guard. Then it polls with `If-None-Match` or re-reads
+/// storage. Then it publishes the result under a second brief lock. Concurrent
+/// loads may publish out of order. The last writer wins in that case. This
+/// stays inside the accepted TTL staleness envelope because every writer
+/// revalidates through manifest CAS.
 pub(crate) async fn load_manifest(
     store: Arc<dyn Storage>,
     prefix: &ObjectPath,
@@ -199,10 +204,11 @@ pub(crate) async fn load_manifest(
     cache: &Arc<async_lock::Mutex<ManifestCache>>,
     ttl: Duration,
 ) -> Result<(Arc<Manifest>, String)> {
-    // Phase 1: snapshot under a brief lock — cloned `Arc`s, no I/O.
+    // Phase 1: snapshot under a brief lock. The snapshot holds cloned `Arc`s.
+    // The snapshot does no I/O.
     let snapshot = {
         let guard = cache.lock().await;
-        // Single-writer fast path: a TTL-fresh entry is authoritative.
+        // Single-writer fast path. A `TTL`-fresh entry is authoritative.
         if guard.skip_revalidation
             && let Some(cached) = guard.get_cached(ttl)
         {

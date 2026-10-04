@@ -1,11 +1,13 @@
 //! Single lookup engine for point and scan reads.
 //!
 //! The writer, the transaction, and the reader differ only in the newest
-//! layers they snapshot (replay overlay, transaction overlay, `MemTable`);
-//! everything below — manifest load, SST fetch, blob deref, newest-wins
-//! merge — runs here once. Stale-manifest races (a compaction deleting a
-//! listed file between the manifest load and the file `GET`) restart the
-//! lookup against a fresh manifest before surfacing the error.
+//! layers that they snapshot (replay overlay, transaction overlay,
+//! `MemTable`). This module runs each lower step once. The lower steps are
+//! the manifest load, the SST fetch, the blob dereference, and the
+//! newest-wins merge. A stale-manifest race restarts the lookup against a
+//! fresh manifest before the module surfaces the error. One example of such a
+//! race is a compaction that deletes a listed file between the manifest load
+//! and the file `GET`.
 
 use std::sync::Arc;
 
@@ -19,7 +21,8 @@ use crate::store::cache::Cache;
 use crate::store::storage::{ObjectPath, Storage};
 use crate::store::{Direction, KeyValue, Result, StoreError};
 
-/// Shared inputs for one lookup: storage plus the SST cache.
+/// Shared inputs for one lookup. The inputs are the storage and the SST
+/// cache.
 pub(crate) struct ReadCtx<'a, C> {
     pub inner: &'a Arc<dyn Storage>,
     pub prefix: &'a ObjectPath,
@@ -91,10 +94,11 @@ pub(crate) async fn resolve_value<C>(ctx: &ReadCtx<'_, C>, raw: Vec<u8>) -> Resu
     }
 }
 
-/// Reads and parses `id` straight from storage, bypassing the SST cache.
+/// Reads and parses `id` straight from storage. This function bypasses the
+/// SST cache.
 ///
-/// Window scans (`gets`) use this so a wide range never evicts hot
-/// point-lookup entries.
+/// The window scans (`gets`) use this function. Therefore a wide range never
+/// evicts the hot point-lookup entries.
 pub(crate) async fn read_sst<C>(ctx: &ReadCtx<'_, C>, id: &str) -> Result<Arc<SstFile>>
 where
     C: Cache<String, Arc<SstFile>>,
@@ -123,11 +127,13 @@ where
     Ok(sst)
 }
 
-/// Runs `op`, and on a stale-manifest `not found` clears the manifest cache
-/// and runs it once more against a fresh manifest.
+/// The function runs `op`. On a stale-manifest `not found`, the function
+/// clears the manifest cache. The function then runs `op` once more against a
+/// fresh manifest.
 ///
-/// The snapshot a lookup takes can predate a compaction that deleted a file
-/// it listed. Six call sites used to spell this out by hand.
+/// The snapshot that a lookup takes can predate a compaction. That compaction
+/// deleted a file that the snapshot listed. Six call sites used to spell this
+/// out by hand.
 pub(crate) async fn retry_once_not_found<T, F, Fut>(
     manifest_cache: &Arc<async_lock::Mutex<ManifestCache>>,
     mut op: F,
@@ -145,12 +151,15 @@ where
     }
 }
 
-/// Reads `key` via an optional staged hit, then SSTs newest-first.
+/// Reads `key` through an optional staged hit. The function then reads the
+/// SSTs in newest-first order.
 ///
-/// `staged` is the caller-snapshotted newest layers (`Some` hit — value or
-/// tombstone — or `None` on a miss); callers snapshot under brief locks so no
-/// guard is held across the SST I/O below. Single attempt: callers restart
-/// with a fresh snapshot when [`is_not_found`] matches the error.
+/// `staged` holds the newest layers that the caller snapshotted. A `Some`
+/// value marks a hit. The hit holds a value or a tombstone. `None` marks a
+/// miss. The callers snapshot under brief locks. Therefore no guard stays
+/// held across the SST I/O below. The function makes a single attempt. The
+/// callers restart with a fresh snapshot when [`is_not_found`] matches the
+/// error.
 ///
 /// # Errors
 ///
@@ -192,11 +201,13 @@ where
     Ok(None)
 }
 
-/// Range scan merging caller-snapshotted newest-first `layers` with SSTs.
+/// Range scan that merges the caller-snapshotted newest-first `layers` with
+/// the SSTs.
 ///
-/// Layers arrive as owned rows so callers never hold table guards across the
-/// SST I/O below. Single attempt: callers restart with a fresh snapshot when
-/// [`is_not_found`] matches the error.
+/// The layers arrive as owned rows. Therefore the callers never hold table
+/// guards across the SST I/O below. The function makes a single attempt. The
+/// callers restart with a fresh snapshot when [`is_not_found`] matches the
+/// error.
 ///
 /// # Errors
 ///

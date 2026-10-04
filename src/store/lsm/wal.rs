@@ -1,7 +1,8 @@
-//! WAL record decoding and startup replay.
+//! This module decodes WAL records. It also replays the WAL at startup.
 //!
-//! The writer startup path and the reader open share both the framed-record
-//! decoder and the loop applying every listed WAL file to a table.
+//! The writer startup path and the reader open share the framed-record
+//! decoder. They also share the loop that applies every listed WAL file
+//! to a table.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,7 +17,8 @@ use crate::store::{Result, StoreError};
 /// Decodes length-prefixed WAL records (`[u32 key len][key][u32 value len][value]`).
 ///
 /// A value length of [`TOMBSTONE_VLEN`] marks a tombstone (`None`). Decoding
-/// stops at the first truncated tail, tolerating partially written files.
+/// stops at the first truncated tail. A partially written file therefore
+/// decodes without an error.
 #[must_use]
 pub(crate) fn decode_wal_records(data: &[u8]) -> Vec<(String, Option<Vec<u8>>)> {
     let mut records = Vec::new();
@@ -55,19 +57,22 @@ pub(crate) fn decode_wal_records(data: &[u8]) -> Vec<(String, Option<Vec<u8>>)> 
     records
 }
 
-/// Applies every listed WAL file to `table`, newest file winning per key.
+/// Applies every listed WAL file to `table`. The newest file wins per key.
 ///
-/// A listed WAL that is *gone* means the caller's listing is stale — a
-/// concurrent `gc_wal` already folded those records into an SST — so the
-/// listing is refreshed and replay retried against it. Any other read error
-/// is surfaced: silently skipping a transient failure would leave the
-/// `MemTable` missing committed records, which the next flush then writes
-/// into an SST as if it were complete.
+/// A listed WAL that is *gone* means that the caller's listing is stale.
+/// A concurrent `gc_wal` already folded those records into an SST. The
+/// function refreshes the listing and retries the replay against it.
+///
+/// The function surfaces any other read error. Silently skipping a
+/// transient failure would leave the `MemTable` without committed records.
+/// The next flush would then write those records into an SST as if the SST
+/// were complete.
 ///
 /// # Errors
 ///
-/// Returns `StoreError` when a listed WAL is still absent after one refresh,
-/// or when its read fails for any reason other than absence.
+/// Returns `StoreError` when a listed WAL is still absent after one refresh.
+/// It also returns `StoreError` when the read fails for any reason other
+/// than absence.
 pub(crate) async fn replay_listed_wals(
     inner: &Arc<dyn Storage>,
     prefix: &ObjectPath,
@@ -107,7 +112,7 @@ pub(crate) async fn replay_listed_wals(
                 missing.join(", ")
             )));
         }
-        // Refresh: `gc_wal` cleared these ids, so their records live in an SST.
+        // Refresh. `gc_wal` cleared these ids. Their records live in an SST.
         manifest_cache.lock().await.clear();
         let (manifest, _etag) = load_manifest(
             Arc::clone(inner),

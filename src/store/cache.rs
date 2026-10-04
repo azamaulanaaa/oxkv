@@ -1,10 +1,10 @@
 //! Cache abstraction for SST files.
 //!
-//! Provides a minimal async trait so the LSM engine does not depend directly
-//! on any single cache. The production implementation is the built-in
-//! `LruCache`, an `S3-FIFO` eviction policy, while `moka` remains an optional
-//! alternative and `WASM` and future targets can supply their own `Cache`
-//! without `tokio`.
+//! This module defines a minimal async trait so the LSM engine does not
+//! depend on one cache implementation. The production implementation is the
+//! built-in `LruCache`. Its eviction policy is `S3-FIFO`. The optional
+//! `moka` crate remains an alternative. `WASM` and future targets can supply
+//! their own `Cache` implementation without `tokio`.
 
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
@@ -20,7 +20,8 @@ where
     /// Returns a cached value if present.
     async fn get(&self, key: &K) -> Option<V>;
 
-    /// Inserts `value` under `key`, evicting according to the implementation's policy.
+    /// Inserts `value` under `key`. The implementation applies its own eviction
+    /// policy.
     async fn insert(&self, key: K, value: V);
 
     /// Removes the entry for `key` if present.
@@ -31,8 +32,8 @@ where
         self.get(key).await.is_some()
     }
 
-    /// Returns hit/miss statistics, or `None` when the implementation does
-    /// not track them (e.g. the optional `moka` backend).
+    /// Returns the hit and miss statistics. The result is `None` when the
+    /// implementation does not track them (e.g. the optional `moka` backend).
     fn stats(&self) -> Option<CacheStats> {
         None
     }
@@ -52,8 +53,8 @@ pub struct CacheStats {
 }
 
 impl CacheStats {
-    /// Fraction of `get` calls served from the cache, `0.0` when no `get`
-    /// has been recorded yet.
+    /// Fraction of `get` calls that the cache served from the cache. The fraction
+    /// is `0.0` when the cache has recorded no `get` call yet.
     #[must_use]
     // Precision beyond 2^53 counter values is irrelevant for a ratio.
     #[allow(clippy::cast_precision_loss)]
@@ -98,15 +99,16 @@ type Weigher<K, V> = Arc<dyn Fn(&K, &V) -> u32 + Send + Sync>;
 /// Saturating per-entry frequency counter cap (`S3-FIFO` tracks 0..=3).
 const MAX_FREQ: u8 = 3;
 
-/// Backstop on remembered ghost keys, bounding memory when the weigher
-/// reports zero weights (weight-based trimming alone cannot shrink then).
+/// Backstop on remembered ghost keys. It bounds memory when the weigher
+/// reports zero weights. Weight-based trimming alone cannot shrink then.
 const GHOST_MAX_ENTRIES: usize = 1024;
 
-/// Queue an entry currently lives in.
+/// Queue that holds an entry.
 ///
-/// Fresh entries enter [`Queue::Small`]; entries re-admitted after a ghost hit
-/// enter [`Queue::Medium`]; entries hit while queued are demoted to
-/// [`Queue::Large`], which evicts with a second-chance decrement.
+/// A fresh entry enters [`Queue::Small`]. An entry that a ghost hit
+/// re-admits enters [`Queue::Medium`]. An entry that receives a hit while it
+/// sits in a queue moves to [`Queue::Large`]. The large queue evicts with a
+/// second-chance decrement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Queue {
     Small,
@@ -129,8 +131,9 @@ struct S3Inner<K, V> {
     small: VecDeque<(u64, K)>,
     medium: VecDeque<(u64, K)>,
     large: VecDeque<(u64, K)>,
-    /// Recently evicted-cold keys with their weights. A reinsert hitting here
-    /// is admitted to the main queue instead of competing as brand new.
+    /// Recently evicted-cold keys with their weights. A reinsert that hits this
+    /// queue is admitted to the main queue. A reinsert does not compete as a
+    /// brand-new entry.
     ghost: VecDeque<(K, usize)>,
     ghost_map: HashMap<K, usize>,
     ghost_weight: usize,
@@ -142,17 +145,18 @@ impl<K, V> S3Inner<K, V>
 where
     K: Eq + Hash + Clone,
 {
-    /// Issues a fresh sequence number for a queue slot. Slots are matched by
-    /// sequence, so moves and re-inserts leave stale slots that eviction
-    /// skips — amortized `O(1)` without an intrusive linked list.
+    /// Issues a fresh sequence number for a queue slot. The code matches slots
+    /// by sequence. Therefore moves and re-inserts leave stale slots that
+    /// eviction skips. This design gives amortized `O(1)` behaviour without an
+    /// intrusive linked list.
     fn bump(&mut self) -> u64 {
         let seq = self.next_seq;
         self.next_seq = self.next_seq.wrapping_add(1);
         seq
     }
 
-    /// Pops the oldest live key from `queue`, skipping stale slots left behind
-    /// by moves, updates, and removals.
+    /// Pops the oldest live key from `queue`. The function skips stale slots
+    /// that moves, updates and removals left behind.
     fn pop_live_key(&mut self, queue: Queue) -> Option<K> {
         let slots = match queue {
             Queue::Small => &mut self.small,
@@ -178,8 +182,8 @@ where
         }
     }
 
-    /// Remembers a cold-evicted key for admission decisions, trimming the
-    /// ghost queue to its weight and entry-count caps.
+    /// Remembers a cold-evicted key for admission decisions. The function trims
+    /// the ghost queue to its weight cap and its entry-count cap.
     fn remember_ghost(&mut self, key: K, weight: usize, ghost_cap: usize) {
         if self.ghost_map.contains_key(&key) {
             return;
@@ -197,9 +201,10 @@ where
         }
     }
 
-    /// Evicts one entry from the small queue: cold entries leave to the ghost
-    /// queue, hot entries are demoted to the main queue. Returns `true` on
-    /// progress (a removal or a demotion), `false` when the queue is empty.
+    /// Evicts one entry from the small queue. A cold entry leaves for the ghost
+    /// queue. A hot entry moves to the main queue. The result is `true` when
+    /// the function made progress, through a removal or a demotion. The
+    /// result is `false` when the queue is empty.
     fn evict_from_small(&mut self, ghost_cap: usize) -> bool {
         let Some(key) = self.pop_live_key(Queue::Small) else {
             return false;
@@ -222,9 +227,9 @@ where
         true
     }
 
-    /// Evicts one entry from the medium queue: cold entries are dropped, hot
-    /// entries move to the large queue. Returns `true` on progress,
-    /// `false` when the queue is empty.
+    /// Evicts one entry from the medium queue. A cold entry is dropped. A hot
+    /// entry moves to the large queue. The result is `true` when the function
+    /// made progress. The result is `false` when the queue is empty.
     fn evict_from_medium(&mut self) -> bool {
         let Some(key) = self.pop_live_key(Queue::Medium) else {
             return false;
@@ -246,9 +251,10 @@ where
         true
     }
 
-    /// Evicts one entry from the large queue with a second-chance decrement:
-    /// hot heads are requeued with a decreased counter, cold heads are
-    /// dropped. Returns `true` on progress, `false` when the queue is empty.
+    /// Evicts one entry from the large queue with a second-chance decrement. A
+    /// hot head is requeued with a decreased counter. A cold head is dropped.
+    /// The result is `true` when the function made progress. The result is
+    /// `false` when the queue is empty.
     fn evict_from_large(&mut self) -> bool {
         let mut progress = false;
         while let Some(key) = self.pop_live_key(Queue::Large) {
@@ -271,10 +277,11 @@ where
         progress
     }
 
-    /// Evicts until total weight fits `capacity`, draining the small queue
-    /// first so one-hit floods cannot flush the main queue. The iteration
-    /// bound is a backstop; queue flow (small/medium demote toward large,
-    /// large strictly decrements) otherwise guarantees termination.
+    /// Evicts entries until the total weight fits `capacity`. The function
+    /// drains the small queue first, so that a one-hit flood cannot flush the
+    /// main queue. The iteration bound is a backstop. Queue flow guarantees
+    /// termination in every other case: the small and medium queues demote
+    /// toward the large queue, and the large queue strictly decrements.
     fn evict_while_over(&mut self, capacity: usize, ghost_cap: usize) {
         let bound = self.map.len().saturating_mul(4).saturating_add(32);
         for _ in 0..bound {
@@ -291,8 +298,8 @@ where
     }
 }
 
-/// Shared hit/miss counters behind [`LruCache`]: every clone observes the
-/// same totals, and atomics keep `get` off the mutex for accounting.
+/// Shared hit and miss counters behind [`LruCache`]: every clone observes the
+/// same totals. The atomics keep `get` off the mutex for accounting.
 #[derive(Debug, Default)]
 struct Counters {
     hits: std::sync::atomic::AtomicU64,
@@ -335,15 +342,17 @@ impl Counters {
 /// Scan-resistant weight-aware cache suitable for `WASM` and single-threaded
 /// targets.
 ///
-/// Eviction follows `S3-FIFO`: fresh entries enter a small `FIFO`, hits bump a
-/// saturating frequency counter, and evicted-cold keys are remembered in a
-/// ghost queue so an immediate reinsert is admitted to the main queue. Point
-/// lookups never reorder queues, so one-hit reads and scans cannot flush hot
-/// entries the way they do under plain `LRU` — the main behavioral gap to
-/// `moka`'s admission filter, closed here without background threads, timers,
-/// or `tokio`, keeping `wasm32` compatibility. All operations are amortized
-/// `O(1)`; critical sections hold a single `futures::lock::Mutex` only for
-/// queue bookkeeping with no `.await` inside.
+/// Eviction follows `S3-FIFO`. A fresh entry enters a small `FIFO`. A hit
+/// increments a saturating frequency counter. The cache remembers each
+/// evicted-cold key in a ghost queue, so an immediate reinsert is admitted to
+/// the main queue. A point lookup never reorders a queue. Therefore a one-hit
+/// read and a scan cannot flush a hot entry. Plain `LRU` can flush a hot
+/// entry. That behavior is the main gap between this cache and the `moka`
+/// admission filter. This cache closes the gap without background threads,
+/// timers or `tokio`. It keeps `wasm32` compatibility. All operations are
+/// amortized `O(1)`. A critical section holds a single
+/// `futures::lock::Mutex`. It takes the lock for queue bookkeeping only. It
+/// contains no `.await`.
 ///
 /// to become `LruCache`, which is the name the trait's own docs and the
 /// benches use.
@@ -413,7 +422,7 @@ where
                 None
             }
         };
-        // Account outside the mutex: atomics need no guard.
+        // Account outside the mutex. Atomics need no guard.
         if hit.is_some() {
             self.counters.record_hit();
         } else {
@@ -437,10 +446,11 @@ where
                     .saturating_sub(old_weight)
                     .saturating_add(weight);
             } else if weight <= self.capacity {
-                // Entries heavier than the whole cache are not retained, but
-                // the insert counter is still bumped below: a rejected
-                // oversize entry is exactly the case where the count explains
-                // why nothing is being cached.
+                // The cache does not retain an entry that is
+                // heavier than the whole cache. The code below still
+                // increments the insert counter. A rejected oversize
+                // entry is exactly the case where the count explains
+                // why the cache holds nothing.
                 let promoted = match inner.ghost_map.remove(&key) {
                     Some(weight) => {
                         inner.ghost_weight = inner.ghost_weight.saturating_sub(weight);
@@ -471,7 +481,7 @@ where
             inner.evict_while_over(self.capacity, self.ghost_cap);
             before.saturating_sub(inner.map.len())
         };
-        // Account outside the mutex: atomics need no guard.
+        // Account outside the mutex. Atomics need no guard.
         self.counters.record_insert();
         self.counters.record_evictions(evicted as u64);
     }
@@ -488,8 +498,9 @@ where
     }
 
     async fn contains(&self, key: &K) -> bool {
-        // Presence check only: unlike the default `get`-based implementation,
-        // probing must not bump frequency and shelter cold entries.
+        // The function checks presence only. The default `get`-based
+        // implementation behaves differently. A probe must not increment
+        // the frequency counter. A probe must not shelter a cold entry.
         self.inner.lock().await.map.contains_key(key)
     }
 
@@ -554,8 +565,9 @@ mod tests {
         cache.insert("h2".to_string(), 3).await;
         let _ = cache.get(&"h1".to_string()).await;
         let _ = cache.get(&"h2".to_string()).await;
-        // A one-hit flood larger than the cache: plain `LRU` would evict both
-        // hot entries, `S3-FIFO` absorbs it in the small queue + ghost.
+        // A one-hit flood larger than the cache: plain `LRU` would evict
+        // both hot entries. `S3-FIFO` absorbs the flood in the small
+        // queue and the ghost queue.
         for i in 1..=5 {
             cache.insert(format!("s{i}"), 2).await;
         }
@@ -595,8 +607,9 @@ mod tests {
         cache.insert("a".to_string(), 6).await;
         cache.insert("b".to_string(), 6).await;
         assert!(cache.get(&"a".to_string()).await.is_none());
-        // Reinserting a ghost-remembered key admits it to the main queue, so
-        // it survives pressure that evicts the newer one-hit entry instead.
+        // The reinsert admits the ghost-remembered key to the main
+        // queue. The key therefore survives pressure that evicts the
+        // newer one-hit entry instead.
         cache.insert("a".to_string(), 6).await;
         assert_eq!(cache.get(&"a".to_string()).await, Some(6));
         assert!(cache.get(&"b".to_string()).await.is_none());
@@ -647,8 +660,9 @@ mod tests {
         assert!(cache.get(&"c".to_string()).await.is_some());
     }
 
-    /// An entry too heavy for the cache is rejected, but still counted — that
-    /// is exactly the case where `inserts` explains why nothing is cached.
+    /// The cache rejects an entry that is too heavy. The code still
+    /// counts the entry. `inserts` explains why the cache holds nothing in
+    /// exactly this case.
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn oversized_insert_is_counted_but_not_retained() {

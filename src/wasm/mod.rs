@@ -1,11 +1,12 @@
-//! WASM bindings — `BTreeStore` (light baseline), `OxKvStore` (LSM engine),
+//! WASM bindings for `BTreeStore` (light baseline), `OxKvStore` (LSM engine),
 //! and `CachedOxKvStore` (write-through RAM mirror).
 //!
-//! The OXKV snapshot wire format (`snapshot.rs` magic `OXKV` + version 1) is
-//! identical across `BTreeStore` and `OxKvStore` on every target, so
-//! `save` bytes restore everywhere via `load`. `OxKvStore` binds the LSM
-//! engine to an in-memory [`store::MemStorage`]; durable browser storage
-//! (OPFS) arrives later as another [`store::Storage`] backend.
+//! The OXKV snapshot wire format is identical across `BTreeStore` and
+//! `OxKvStore` on every target. The format comes from `snapshot.rs`. It uses
+//! the magic `OXKV` and version 1. Bytes from `save` restore everywhere via
+//! `load`. `OxKvStore` binds the LSM engine to an in-memory
+//! [`store::MemStorage`]. Durable browser storage (OPFS) arrives later as
+//! another [`store::Storage`] backend.
 
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -43,15 +44,15 @@ impl From<store::StoreError> for JsValue {
     }
 }
 
-/// Announces that a browser-only test is about to assert nothing here.
+/// Announce that a browser-only test will check nothing here.
 ///
-/// `wasm-pack test --node` — the job most contributors run locally, and the
-/// one CI's `wasm` job runs — has no `window`, so OPFS tests there would pass
-/// without checking anything. `eprintln!` is a no-op on
-/// `wasm32-unknown-unknown` and the Node harness swallows `console.*`, so we
-/// write straight to the host process's stderr and fall back to
-/// `console.error` in a browser. The Chrome CI job
-/// (`wasm-pack test --headless --chrome`) is what actually runs these tests.
+/// `wasm-pack test --node` has no `window`. Most contributors run this job
+/// locally. The `wasm` job of CI runs it too. OPFS tests there would pass
+/// without checking anything. `eprintln!` is a no-op on `wasm32-unknown-unknown`.
+/// The Node harness swallows `console.*`. This function writes straight to the
+/// host process's stderr. It falls back to `console.error` in a browser. The
+/// Chrome CI job (`wasm-pack test --headless --chrome`) is what actually runs
+/// these tests.
 #[cfg(test)]
 pub(crate) fn announce_skip(test: &str, reason: &str) {
     let message = format!("SKIPPED {test}: {reason}\n");
@@ -61,7 +62,8 @@ pub(crate) fn announce_skip(test: &str, reason: &str) {
     web_sys::console::error_1(&JsValue::from_str(&message));
 }
 
-/// Writes `message` to the host process's stderr; `false` when there is none.
+/// Write `message` to the host process's stderr. Returns `false` when the
+/// host process has no stderr.
 #[cfg(test)]
 fn write_host_stderr(message: &str) -> bool {
     fn property(object: &JsValue, key: &str) -> Result<JsValue, JsValue> {
@@ -80,25 +82,27 @@ fn write_host_stderr(message: &str) -> bool {
     write.call1(&stderr, &JsValue::from_str(message)).is_ok()
 }
 
-/// Serializes a value into a plain, JSON-compatible `JsValue`.
+/// Serialize a value into a plain, JSON-compatible `JsValue`.
 ///
-/// Unlike [`serde_wasm_bindgen::to_value`], which encodes maps as ES6 `Map`
-/// objects (opaque `{}` to JavaScript property access and `JSON.stringify`),
-/// this produces plain objects so callers see real JSON documents.
+/// [`serde_wasm_bindgen::to_value`] encodes maps as ES6 `Map` objects. The
+/// objects look like opaque `{}` to JavaScript property access and to
+/// `JSON.stringify`. This function produces plain objects, so callers see real
+/// JSON documents.
 fn json_compatible<T: Serialize>(value: &T) -> Result<JsValue, store::StoreError> {
     value
         .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
         .map_err(|e| store::StoreError::Serialization(e.to_string()))
 }
 
-/// Generates the `wasm_bindgen` transaction wrapper shared by every backend.
+/// Generate the `wasm_bindgen` transaction wrapper shared by every backend.
 ///
 /// `BTreeStore`, `OxKvStore` and `CachedOxKvStore` each carried a ~220-line
-/// copy of this wrapper, differing only in the store type and the JS class
-/// name — eight copies of the same "transaction already committed or rolled
-/// back" guard, free to drift apart. Only the store type varies, so it is a
-/// macro parameter and the wrapper is written once. The JS surface is the
-/// same for all three; only the store behind it differs.
+/// copy of this wrapper. The copies differed only in the store type and in the
+/// JS class name. The result was eight copies of the same "transaction already
+/// committed or rolled back" guard. The copies were free to drift apart. Only
+/// the store type varies, so it is a macro parameter and the wrapper is written
+/// once. The JS surface is the same for all three backends. Only the store
+/// behind it differs.
 macro_rules! js_tx {
     ($name:ident, $js_name:literal, $store:ty, $doc:literal) => {
         #[doc = $doc]
@@ -123,7 +127,8 @@ macro_rules! js_tx {
 
             /// Retrieve a value within an active transaction.
             /// # Errors
-            /// * `StoreError` - if the transaction was already committed or rolled back, or if an I/O error occurs
+            /// * `StoreError` - if the transaction was already committed or rolled back
+            /// * `StoreError` - if an I/O error occurs
             #[wasm_bindgen(return_description = "Raw bytes as a Uint8Array, or null when not found")]
             pub async fn get_bytes(
                 &self,
@@ -145,7 +150,8 @@ macro_rules! js_tx {
 
             /// Checks if a key exists within an active transaction.
             /// # Errors
-            /// * `StoreError` - if the transaction was already committed or rolled back, or if an I/O error occurs
+            /// * `StoreError` - if the transaction was already committed or rolled back
+            /// * `StoreError` - if an I/O error occurs
             #[wasm_bindgen(
                 return_description = "true when the key exists within the transaction, false otherwise"
             )]
@@ -165,7 +171,8 @@ macro_rules! js_tx {
 
             /// Set a key-value pair within an active transaction.
             /// # Errors
-            /// * `StoreError` - if the transaction was already committed or rolled back, or if an I/O error occurs
+            /// * `StoreError` - if the transaction was already committed or rolled back
+            /// * `StoreError` - if an I/O error occurs
             #[wasm_bindgen(
                 return_description = "Previous value as a Uint8Array if the key already existed, or null if it was newly inserted"
             )]
@@ -191,7 +198,8 @@ macro_rules! js_tx {
 
             /// Delete a key from within an active transaction.
             /// # Errors
-            /// * `StoreError` - if the transaction was already committed or rolled back, or if an I/O error occurs
+            /// * `StoreError` - if the transaction was already committed or rolled back
+            /// * `StoreError` - if an I/O error occurs
             #[wasm_bindgen(
                 return_description = "true if a key existed and was removed; false when no prior value was present"
             )]
@@ -209,12 +217,13 @@ macro_rules! js_tx {
                 }
             }
 
-            /// Set a key to an arbitrary JSON-shaped value within an active transaction. Accepts any `JsValue` from JavaScript — objects, arrays, strings, numbers, booleans, or nested structures. The value is serialized with `serde_json`, stored as raw bytes, and the previous value (if any) is returned as a deserialized `Option<T>`.
+            /// Set a key to an arbitrary JSON-shaped value within an active transaction. Accepts any `JsValue` from JavaScript. The value can be an object, an array, a string, a number, a boolean, or a nested structure. This method serializes the value with `serde_json`, stores it as raw bytes, and returns the previous value, if any, as a deserialized `Option<T>`.
             ///
-            /// This is the JSON-level counterpart to [`set_bytes`]; use it when you want to work with typed Rust structs instead of raw byte arrays.
+            /// This is the JSON-level counterpart to [`set_bytes`]. Use it when you want to work with typed Rust structs instead of raw byte arrays.
             ///
             /// # Errors
-            /// * `StoreError` - if serialization of the value or an I/O error occurs
+            /// * `StoreError` - if serialization of the value fails
+            /// * `StoreError` - if an I/O error occurs
             #[wasm_bindgen(js_name = "set")]
             pub async fn set(
                 &self,
@@ -237,12 +246,13 @@ macro_rules! js_tx {
                 }
             }
 
-            /// Retrieve a JSON-shaped value from within an active transaction. Returns the stored value deserialized into an arbitrary `serde_json::Value` (objects, arrays, strings, numbers, booleans, or nested structures), or null when not found.
+            /// Retrieve a JSON-shaped value from within an active transaction. This method returns the stored value deserialized into an arbitrary `serde_json::Value`. That value can be an object, an array, a string, a number, a boolean, or a nested structure. The method returns null when the key is not found.
             ///
-            /// This is the JSON-level counterpart to [`get_bytes`]; use it when you want typed access instead of raw byte arrays.
+            /// This is the JSON-level counterpart to [`get_bytes`]. Use it when you want typed access instead of raw byte arrays.
             ///
             /// # Errors
-            /// * `StoreError` - if deserialization of the stored value or an I/O error occurs
+            /// * `StoreError` - if deserialization of the stored value fails
+            /// * `StoreError` - if an I/O error occurs
             #[wasm_bindgen(js_name = "get")]
             pub async fn get(
                 &self,
@@ -264,7 +274,8 @@ macro_rules! js_tx {
 
             /// Retrieve key-value pairs within an active transaction.
             /// # Errors
-            /// * `StoreError` - if the transaction was already committed or rolled back, or if an I/O error occurs
+            /// * `StoreError` - if the transaction was already committed or rolled back
+            /// * `StoreError` - if an I/O error occurs
             #[wasm_bindgen(return_description = "An array of key-value objects")]
             pub async fn gets_bytes(
                 &self,

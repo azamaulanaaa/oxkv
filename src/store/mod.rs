@@ -1,8 +1,10 @@
 //! Core traits and types for a key-value store with transaction support.
 //!
-//! This module defines the foundational abstractions for a persistent key-value
-//! store, with operations for CRUD (Create, Read, Update, Delete), batched
-//! retrieval with bidirectional cursors, and atomic transactions.
+//! This module defines the core abstractions for a persistent key-value store:
+//!
+//! - CRUD (Create, Read, Update, Delete) operations.
+//! - Batched retrieval with bidirectional cursors.
+//! - Atomic transactions.
 //!
 //! The primary traits are:
 //! - [`GetSet`]: Basic key-value operations.
@@ -58,18 +60,19 @@ pub type Result<T> = std::result::Result<T, StoreError>;
 
 /// Portable async sleep for retry backoff.
 ///
-/// Uses `futures-timer` so it resolves on every target, including `wasm32`
-/// where `tokio::time` is unavailable.
+/// Uses `futures-timer`, so it resolves on every target. This includes
+/// `wasm32`, where `tokio::time` is unavailable.
 #[cfg(feature = "oxkv")]
 pub(crate) async fn sleep(duration: std::time::Duration) {
     futures_timer::Delay::new(duration).await;
 }
 
-/// Portable millisecond clock for TTLs and ids.
+/// Portable millisecond clock for TTLs and identifiers.
 ///
-/// `std::time::Instant` panics on `wasm32-unknown-unknown`, so TTLs use this
-/// instead: epoch millis natively, `Date.now()` on wasm. Backwards jumps only
-/// ever extend a cache TTL — never a correctness issue.
+/// `std::time::Instant` panics on `wasm32-unknown-unknown`. TTLs use this clock
+/// instead. This clock reads epoch milliseconds on native targets. On wasm it
+/// reads `Date.now()`. A backwards jump only ever extends a cache TTL. A
+/// backwards jump is never a correctness issue.
 #[cfg(feature = "oxkv")]
 pub(crate) fn now_millis() -> u64 {
     #[cfg(not(target_arch = "wasm32"))]
@@ -95,11 +98,12 @@ pub enum StoreError {
     #[error("storage error: {0}")]
     Storage(String),
 
-    /// A conditional-write precondition failed (`If-None-Match` on create,
-    /// `If-Match` on update): someone else won the CAS race.
+    /// A conditional-write precondition failed. A create uses `If-None-Match`.
+    /// An update uses `If-Match`. Someone else won the CAS race.
     ///
-    /// Backends report this variant (never a stringly `Storage` message) so
-    /// callers match on the type. Retryable unless fencing says otherwise.
+    /// Backends report this variant instead of a `Storage` string message, so
+    /// callers match on the type. Callers may retry unless fencing says
+    /// otherwise.
     #[error("CAS conflict: {0}")]
     CasConflict(String),
 
@@ -113,8 +117,8 @@ pub enum StoreError {
 
     /// A JSON serialization or deserialization error.
     ///
-    /// Shared ownership keeps the whole error tree `Clone` without
-    /// duplicating payloads.
+    /// Shared ownership keeps the whole error tree `Clone`. It does not
+    /// duplicate payloads.
     #[error("JSON error: {0}")]
     Json(Arc<serde_json::Error>),
 
@@ -126,14 +130,14 @@ pub enum StoreError {
     #[error("{0}")]
     Other(String),
 
-    /// The store has been fenced — another owner acquired the epoch.
+    /// The store has been fenced. Another owner acquired the epoch.
     ///
-    /// Terminal: the current process must stop writing and restart via
-    /// `ownership.json` CAS.
+    /// This state is terminal. The current process must stop writing. It must
+    /// then restart via `ownership.json` CAS.
     #[error("fenced: {0}")]
     Fenced(String),
 
-    /// Conditional read not modified — `ETag` matches `If-None-Match`.
+    /// Conditional read not modified. The `ETag` matches `If-None-Match`.
     #[error("not modified")]
     NotModified,
 }
@@ -171,11 +175,12 @@ impl From<&str> for StoreError {
 
 /// Locks a `std` mutex, continuing through poisoning.
 ///
-/// Policy: a poisoned lock means a previous holder panicked mid-mutation.
-/// The mutexes below guard reconstructible or best-effort state (caches,
-/// staged overlays, subscriber lists), so availability wins over fail-fast:
-/// take the guard and continue rather than failing every subsequent
-/// operation. Durable state never relies on this — it goes through CAS.
+/// Policy: a poisoned lock means a previous holder panicked during a mutation.
+/// The mutexes below guard state that this crate can rebuild or that this crate
+/// accepts as best effort (caches, staged overlays, subscriber lists).
+/// Availability wins over fail-fast for that state: take the guard and continue
+/// instead of failing every subsequent operation. Durable state never relies on
+/// this. Durable state goes through CAS.
 pub(crate) fn lock_ignore_poison<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
@@ -196,9 +201,9 @@ impl From<std::string::String> for StoreError {
     }
 }
 
-/// A single key-value pair, where the value is raw bytes.
+/// A single key-value pair. The value is raw bytes.
 ///
-/// This is used as the return type for batched retrieval operations.
+/// Batched retrieval operations return this type.
 #[derive(Debug, Clone)]
 pub struct KeyValue {
     /// The string key.
@@ -218,13 +223,15 @@ pub enum Direction {
 
 /// Basic operations for a key-value store.
 ///
-/// This trait provides the fundamental operations for interacting with the store.
-/// All operations are atomic and immediately durable (unless wrapped in a transaction).
+/// This trait provides the basic operations for store access. Every operation
+/// is atomic. Every operation is immediately durable, unless a transaction
+/// wraps the call.
 #[async_trait]
 pub trait GetSet {
     /// Retrieves the value associated with the given key.
     ///
-    /// Returns `Ok(Some(bytes))` if the key exists, `Ok(None)` otherwise.
+    /// Returns `Ok(Some(bytes))` if the key exists. It returns `Ok(None)`
+    /// otherwise.
     ///
     /// # Errors
     ///
@@ -233,7 +240,7 @@ pub trait GetSet {
 
     /// Checks if a key exists in the store.
     ///
-    /// Returns `Ok(true)` if the key exists, `Ok(false)` otherwise.
+    /// Returns `Ok(true)` if the key exists. It returns `Ok(false)` otherwise.
     ///
     /// # Errors
     ///
@@ -242,17 +249,20 @@ pub trait GetSet {
 
     /// Deletes the key-value pair for the given key.
     ///
-    /// Returns `Ok(true)` if the key existed and was deleted, `Ok(false)` otherwise.
+    /// Returns `Ok(true)` if the key existed and this call deleted it. It
+    /// returns `Ok(false)` otherwise.
     ///
     /// # Errors
     ///
     /// Returns a [`StoreError`] if the underlying storage fails.
     async fn delete(&self, key: &str) -> Result<bool>;
 
-    /// Sets a key-value pair, inserting if absent or updating if present.
+    /// Sets a key-value pair. It inserts the pair if the key is absent. It
+    /// updates the pair if the key is present.
     ///
-    /// Returns the previous value if the key already existed (an update),
-    /// or `None` if the key did not exist before (a new insertion).
+    /// Returns the previous value if the key already existed. The store treats
+    /// that case as an update. Returns `None` if the key did not exist before.
+    /// The store treats that case as a new insertion.
     ///
     /// # Errors
     ///
@@ -261,13 +271,14 @@ pub trait GetSet {
 
     /// Sets a key-value pair without reading the previous value.
     ///
-    /// Same durability as [`GetSet::set_bytes`] but skips the read-your-write
-    /// lookup, so blind inserts avoid a full read path (manifest + SST scan).
-    /// Prefer this for ingest where the previous value is discarded.
+    /// This method has the same durability as [`GetSet::set_bytes`]. It skips
+    /// the read-your-write lookup, so a blind insert avoids the full read path
+    /// (manifest + SST scan). Prefer this method for ingest where the previous
+    /// value is discarded.
     ///
     /// The default body delegates to `set_bytes` and discards the result, so
-    /// existing implementors are unaffected; backends that read-then-write
-    /// internally override it.
+    /// existing implementors are unaffected. A backend that reads and writes
+    /// internally overrides this method.
     ///
     /// # Errors
     ///
@@ -286,21 +297,22 @@ pub trait GetSet {
     /// - `cursor`: A tuple of optional start and end cursors (both inclusive).
     ///
     ///   **For `Direction::Next` (ascending):**
-    ///   - `(Some(start), Some(end))`: Range from `start` to `end` (inclusive), both bounds must satisfy `start <= end`.
+    ///   - `(Some(start), Some(end))`: Range from `start` to `end` (inclusive). Both bounds must satisfy `start <= end`.
     ///   - `(Some(start), None)`: From `start` (inclusive) to the end of the range.
     ///   - `(None, Some(end))`: From the beginning to `end` (inclusive).
     ///   - `(None, None)`: All items.
     ///
     ///   **For `Direction::Prev` (descending):**
-    ///   - `(Some(start), Some(end))`: Range from `start` down to `end` (inclusive); requires `start >= end`, otherwise the result is empty.
+    ///   - `(Some(start), Some(end))`: Range from `start` down to `end` (inclusive). This range requires `start >= end`. Otherwise the result is empty.
     ///   - `(Some(start), None)`: From `start` (inclusive) down to the beginning of the range.
-    ///   - `(None, Some(end))`: **Empty** – because there is no starting point to traverse backwards from.
-    ///   - `(None, None)`: **Empty** – same reason.
+    ///   - `(None, Some(end))`: **Empty**. There is no starting point to traverse backwards from.
+    ///   - `(None, None)`: **Empty**. The same reason applies.
     ///
     /// # Returns
     ///
-    /// A vector of [`KeyValue`] pairs matching the query, ordered according to `direction`
-    /// (ascending for `Next`, descending for `Prev`).
+    /// A vector of [`KeyValue`] pairs that match the query. The vector is ordered
+    /// according to `direction`. The order is ascending for `Next` and descending
+    /// for `Prev`.
     ///
     /// # Errors
     ///
@@ -315,25 +327,24 @@ pub trait GetSet {
 
 /// A transaction that groups multiple operations atomically.
 ///
-/// All operations performed on a transaction are not visible to other readers
-/// until the transaction is committed. If the transaction is rolled back, all
-/// changes are discarded.
+/// Other readers do not see any operation on a transaction until the
+/// transaction commits. A rollback discards all changes.
 ///
 /// Transactions are obtained from a [`Store`] via [`Store::begin_tx`].
 #[async_trait]
 pub trait Transaction: GetSet {
-    /// Commits the transaction, making all changes durable and visible.
+    /// Commits the transaction. All changes become durable and visible.
     ///
-    /// After commit, the transaction handle should no longer be used.
+    /// After the commit, the caller should no longer use the transaction handle.
     ///
     /// # Errors
     ///
     /// Returns a [`StoreError`] if the commit fails (e.g., conflict, I/O error).
     async fn commit(self) -> Result<()>;
 
-    /// Aborts the transaction, discarding all changes made.
+    /// Aborts the transaction. This call discards every change.
     ///
-    /// After rollback, the transaction handle should no longer be used.
+    /// After the rollback, the caller should no longer use the transaction handle.
     ///
     /// # Errors
     ///
@@ -349,15 +360,18 @@ pub trait Transaction: GetSet {
 pub trait Store: GetSet {
     /// The transaction type produced by [`begin_tx`][Self::begin_tx].
     ///
-    /// Each concrete backend declares its own `Transaction` type here via the
-    /// associated-type pattern — e.g., `type Transaction = OxKvTx;`. This
-    /// allows zero-cost monomorphization: no heap allocation, no vtable dispatch.
+    /// Each concrete backend declares its own `Transaction` type here with the
+    /// associated-type pattern. The declaration looks like
+    /// `type Transaction = OxKvTx;`. This design allows zero-cost
+    /// monomorphization. Zero-cost monomorphization requires no heap allocation
+    /// and no vtable dispatch.
     type Transaction: Transaction + Send;
 
     /// Begins a new write transaction.
     ///
-    /// The returned transaction object provides the same CRUD operations as the store,
-    /// but they are staged until [`Transaction::commit`] is called.
+    /// The returned transaction object provides the same CRUD operations as the
+    /// store. The transaction stages those operations until
+    /// [`Transaction::commit`] is called.
     ///
     /// # Errors
     ///
@@ -379,7 +393,7 @@ pub trait StoreExt: Store {
     /// Returns a [`StoreError`] if retrieval fails.
     async fn save(&self) -> Result<Vec<u8>>
     where
-        // Required to drive the SaveStream returned by save_stream.
+        // The SaveStream returned by save_stream requires this bound.
         Self: Sync + Sized,
     {
         let mut out = Vec::with_capacity(4096);
@@ -392,16 +406,17 @@ pub trait StoreExt: Store {
 
     /// Streams the store's serialized form as byte chunks.
     ///
-    /// The returned [`futures::Stream`] paginates through the store lazily and
-    /// yields chunks of at least 16 KiB (except for the final chunk), so memory
-    /// use stays bounded regardless of store size. Chunks concatenate to exactly
-    /// what [`save`](Self::save) returns; boundaries always fall between whole
-    /// records, so each chunk can be decoded independently downstream.
+    /// The returned [`futures::Stream`] paginates through the store lazily.
+    /// The stream yields chunks of at least 16 KiB, except for the final chunk.
+    /// Memory use therefore stays bounded regardless of store size. Chunks
+    /// concatenate to exactly what [`save`](Self::save) returns. Boundaries
+    /// always fall between whole records, so each chunk can be decoded
+    /// independently downstream.
     fn save_stream(&self) -> Pin<Box<dyn Stream<Item = Result<Vec<u8>>> + Send + '_>>
     where
-        // The returned stream must itself be Send, which requires the inner
-        // batch-read future (&self) to be Send; Sized because the concrete
-        // SaveStream is boxed here.
+        // The returned stream must itself be Send. That requirement needs the
+        // inner batch-read future (&self) to be Send. Sized is required because
+        // the concrete SaveStream is boxed here.
         Self: Sync + Sized,
     {
         Box::pin(SaveStream::new(self))
@@ -431,8 +446,9 @@ const SNAPSHOT_MAGIC: [u8; 4] = *b"OXKV";
 
 /// Wire-format version written by this build and accepted by the load paths.
 ///
-/// Bump on any incompatible change to the header or record layout; loaders
-/// reject other versions with a descriptive error instead of mis-parsing.
+/// Bump this value on any incompatible change to the header or the record
+/// layout. Loaders reject other versions with a descriptive error instead of
+/// mis-parsing them.
 const SNAPSHOT_VERSION: u32 = 1;
 
 /// Length of the snapshot header: magic bytes + little-endian version.
@@ -447,26 +463,31 @@ fn write_snapshot_header(buffer: &mut Vec<u8>) {
 /// Loads key-value pairs directly from an arbitrary source of byte chunks into
 /// `store`, inside one transaction committed on success.
 ///
-/// This is the streaming counterpart of [`StoreExt::load`]. Chunks may split
-/// anywhere — mid-header, mid-key, mid-value — and arrive in any size; decoding
-/// is fully incremental, so memory stays bounded by the largest pending record
-/// rather than the total payload. Typical sources: files, network bodies, or
-/// JS `ReadableStream`s bridged via `wasm-streams` (see the WASM bindings).
+/// This function is the streaming counterpart of [`StoreExt::load`]. A chunk
+/// may split anywhere. A chunk may split mid-header, mid-key, or mid-value. A
+/// chunk may arrive in any size. Decoding is fully incremental, so memory stays
+/// bounded by the largest pending record. Memory does not scale with the total
+/// payload. Typical sources are files, network bodies, and JS `ReadableStream`s
+/// bridged via `wasm-streams` (see the WASM bindings).
 ///
-/// A failure leaves `store` untouched: the transaction is dropped without
-/// commit, discarding all staged writes.
+/// A failure leaves `store` untouched. This function drops the transaction
+/// without a commit. The drop discards every staged write.
 ///
 /// Returns the number of records loaded.
 ///
 /// # Errors
 ///
-/// Returns a [`StoreError`] if any chunk errors (`E: Into<StoreError>`), the
-/// payload is not an oxkv snapshot, its format version is unsupported, the
-/// stream ends mid-header or mid-record, or writing fails.
+/// Returns a [`StoreError`] in the following cases:
+/// - Any chunk returns an error (`E: Into<StoreError>`).
+/// - The payload is not an oxkv snapshot.
+/// - The format version of the payload is not supported.
+/// - The stream ends mid-header or mid-record.
+/// - A write fails.
 ///
-/// Note that the returned future is only `Send` when the chunk stream is: this
-/// is inferred per call site rather than imposed by a trait, so non-`Send`
-/// sources (such as `wasm-streams` adapters on `wasm32`) are accepted there.
+/// The returned future is `Send` only if the chunk stream is `Send`. The
+/// compiler infers this at each call site instead of taking it from a trait.
+/// Sources that are not `Send`, such as `wasm-streams` adapters on `wasm32`,
+/// are accepted at such a call site.
 pub async fn load_stream<T, C, E, S>(store: &T, chunks: S) -> Result<usize>
 where
     T: Store + ?Sized,
@@ -484,7 +505,7 @@ where
         decoder.push(chunk.as_ref());
 
         // Validate and consume the versioned header before any record is
-        // accepted; unknown producers are rejected up-front.
+        // accepted. The function rejects an unknown producer up front.
         if !decoder.header_validated && !decoder.validate_header()? {
             continue; // header still arriving
         }
@@ -524,10 +545,10 @@ type PendingBatch<'a> = Pin<Box<dyn Future<Output = Result<Vec<KeyValue>>> + Sen
 
 /// A [`futures::Stream`] yielding the store's serialization as byte chunks.
 ///
-/// Created via [`StoreExt::save_stream`]. Records are emitted in ascending key
-/// order; boundaries always fall between records, so each chunk decodes
-/// independently. Reading is lazy: nothing is fetched until polled, and only
-/// one page of 256 entries is held at a time.
+/// Create this stream with [`StoreExt::save_stream`]. The stream emits records
+/// in ascending key order. Boundaries always fall between records, so each
+/// chunk decodes independently. Reading is lazy. Nothing is fetched until the
+/// stream is polled. Only one page of 256 entries is held at a time.
 #[must_use = "streams do nothing unless polled"]
 pub struct SaveStream<'a, S> {
     inner: &'a S,
@@ -540,8 +561,8 @@ pub struct SaveStream<'a, S> {
 impl<'a, S> SaveStream<'a, S> {
     fn new(inner: &'a S) -> Self {
         let mut buffer = Vec::with_capacity(SAVE_CHUNK_TARGET);
-        // The header leads every stream so even an empty store produces a
-        // valid, version-identifiable artifact.
+        // The header leads every stream. An empty store therefore produces a
+        // valid artifact that identifies the version.
         write_snapshot_header(&mut buffer);
         Self {
             inner,
@@ -601,8 +622,9 @@ where
                             this.cursor = last_key;
 
                             let is_last_batch = batch.len() < SAVE_BATCH_SIZE as usize;
-                            // Also stop when everything was skipped to avoid
-                            // re-fetching the same inclusive-cursor page forever.
+                            // The stream also stops when every entry was
+                            // skipped. That step avoids fetching the same
+                            // inclusive-cursor page forever.
                             if is_last_batch || processed == 0 {
                                 this.exhausted = true;
                             }
@@ -625,8 +647,8 @@ where
                 };
             }
 
-            // Fetch the next page. The future borrows the inner store, which is
-            // why SaveStream carries a lifetime instead of owning its source.
+            // Fetch the next page. The future borrows the inner store, so
+            // SaveStream carries a lifetime. SaveStream does not own its source.
             let inner = this.inner;
             let cursor = this.cursor.clone();
             this.pending = Some(Box::pin(async move {
@@ -654,8 +676,8 @@ pub(crate) fn encode_record(buffer: &mut Vec<u8>, key: &str, value: &[u8]) -> Re
     Ok(())
 }
 
-/// Incremental decoder for the save/load record format, tolerant of arbitrary
-/// chunk boundaries.
+/// Incremental decoder for the save/load record format. The decoder tolerates
+/// arbitrary chunk boundaries.
 struct RecordDecoder {
     buf: Vec<u8>,
     pos: usize,
@@ -682,8 +704,8 @@ impl RecordDecoder {
     }
 
     /// Validates and consumes the snapshot header once enough bytes have
-    /// arrived. Returns `Ok(false)` while more bytes are needed; an error
-    /// means the payload can never be a snapshot this build accepts.
+    /// arrived. Returns `Ok(false)` while more bytes are needed. An error
+    /// means the payload can never be a snapshot that this build accepts.
     fn validate_header(&mut self) -> Result<bool> {
         let avail = &self.buf[self.pos..];
         if avail.len() >= SNAPSHOT_MAGIC.len() && avail[..SNAPSHOT_MAGIC.len()] != SNAPSHOT_MAGIC {
@@ -710,7 +732,7 @@ impl RecordDecoder {
         Ok(true)
     }
 
-    /// Attempts to decode the next complete record; returns `Ok(None)` while
+    /// Attempts to decode the next complete record. Returns `Ok(None)` while
     /// more bytes are needed.
     fn next_record(&mut self) -> Result<Option<(String, Vec<u8>)>> {
         let avail = &self.buf[self.pos..];
@@ -758,11 +780,13 @@ impl RecordDecoder {
 pub trait GetSetExt: GetSet {
     /// Sets a value serialized with JSON, stored as raw bytes.
     ///
-    /// The value is serialized using `serde_json` and stored directly as bytes.
-    /// If the key already exists, it will be overwritten (treated as an update).
+    /// The value is serialized with `serde_json`. The store writes the bytes
+    /// directly. If the key already exists, this call overwrites it. The store
+    /// treats that call as an update.
     ///
-    /// Returns the previous value deserialized as `T` if the key already existed
-    /// (an update), or `None` if the key did not exist before (a new insertion).
+    /// Returns the previous value deserialized as `T` if the key already
+    /// existed. The store treats that case as an update. Returns `None` if the
+    /// key did not exist before. The store treats that case as a new insertion.
     ///
     /// # Errors
     ///
@@ -780,9 +804,9 @@ pub trait GetSetExt: GetSet {
 
     /// Sets a JSON-serialized value without reading the previous value.
     ///
-    /// Blind-write counterpart to [`GetSetExt::set`]: same durability, no
-    /// read-your-write lookup. Backends that override [`GetSet::put_bytes`]
-    /// skip the read path entirely.
+    /// This method is the blind-write counterpart to [`GetSetExt::set`]. It
+    /// has the same durability. It runs no read-your-write lookup. A backend
+    /// that overrides [`GetSet::put_bytes`] skips the read path entirely.
     ///
     /// # Errors
     ///
@@ -804,23 +828,24 @@ pub trait GetSetExt: GetSet {
         }
     }
 
-    /// Retrieves JSON documents with cursor-based pagination, optionally
-    /// filtered by a query string.
+    /// Retrieves JSON documents with cursor-based pagination. A query string
+    /// can filter the documents.
     ///
-    /// This mirrors [`GetSet::gets_bytes`]: the `limit`, `direction`, and
-    /// `cursor` parameters carry identical semantics. When `query` is `None`
-    /// this is a direct pass-through to [`gets_bytes`][GetSet::gets_bytes].
+    /// This method mirrors [`GetSet::gets_bytes`]. The `limit`, `direction`,
+    /// and `cursor` parameters carry identical semantics. When `query` is
+    /// `None`, this method passes through directly to
+    /// [`gets_bytes`][GetSet::gets_bytes].
     ///
     /// When a query is provided (Lucene-style syntax parsed by
-    /// [`crate::parse`]), entries are scanned in the requested order and an
-    /// entry matches when its stored bytes deserialize as a
-    /// `serde_json::Value` that satisfies the query. Entries whose values are
-    /// not valid JSON are skipped. Here `limit` caps the number of *matching*
-    /// entries returned; scanning continues across batches until the limit is
-    /// reached or the range is exhausted.
+    /// [`crate::parse`]), the method scans entries in the requested order. An
+    /// entry matches if its stored bytes deserialize as a `serde_json::Value`
+    /// that satisfies the query. The method skips entries whose values are not
+    /// valid JSON. Here `limit` caps the number of *matching* entries returned.
+    /// Scanning continues across batches until the limit is reached or the
+    /// range is exhausted.
     ///
-    /// Matching is evaluated with [`crate::eval`]; see the `query` module docs
-    /// for the full matching semantics.
+    /// Matching is evaluated with [`crate::eval`]. See the `query` module
+    /// documentation for the full matching semantics.
     ///
     /// # Errors
     ///
@@ -839,8 +864,8 @@ pub trait GetSetExt: GetSet {
         };
 
         let max_results = limit.map_or(usize::MAX, |l| usize::try_from(l).unwrap_or(usize::MAX));
-        // Checked before the scan: the loop below tests the limit *after* each
-        // push, so `Some(0)` would otherwise return one row.
+        // Checked before the scan. The loop below tests the limit *after* each
+        // push. So `Some(0)` would otherwise return one row.
         if max_results == 0 {
             return Ok(Vec::new());
         }
@@ -901,8 +926,8 @@ mod tests {
     use futures::stream;
 
     /// `limit = 0` means zero rows. Regression: the loop tested the limit
-    /// *after* each push, so `Some(0)` returned one row — and since this is a
-    /// `GetSet` default method, every backend was affected.
+    /// *after* each push, so `Some(0)` returned one row. This method is a
+    /// `GetSet` default method, so every backend was affected.
     async fn assert_limit_semantics<T: GetSet + Sync>(store: &T, name: &str) {
         let rows = |limit| async move {
             store
@@ -964,8 +989,8 @@ mod tests {
         );
     }
 
-    /// The public UTF-8 error variants were never constructed by any test, so
-    /// their `#[from]` conversions and `PartialEq` arms were untested.
+    /// No test ever constructed the public UTF-8 error variants. Their
+    /// `#[from]` conversions and `PartialEq` arms were therefore untested.
     #[test]
     fn utf8_error_variants_round_trip() {
         let invalid = vec![0xFF_u8, 0xFE];

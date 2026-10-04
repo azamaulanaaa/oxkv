@@ -89,7 +89,8 @@ impl GetSet for BTreeTx {
     }
 
     async fn delete(&self, key: &str) -> Result<bool> {
-        // Single lookup: consult the staged overlay first, then the store.
+        // Look up the key once. Check the staged overlay first. Check the store
+        // if the overlay has no entry.
         let existed = match self.overlay.lock().unwrap().get(key) {
             Some(staged) => staged.is_some(),
             None => self.store.read().unwrap().contains_key(key),
@@ -127,8 +128,9 @@ impl GetSet for BTreeTx {
 #[async_trait]
 impl Transaction for BTreeTx {
     async fn commit(self) -> Result<()> {
-        // Recover the guards like the rest of the crate does: a panic in one
-        // holder should degrade this commit, not fail every later one.
+        // Recover the guards in the same way as the rest of the crate. A panic
+        // in one guard owner should degrade this commit. The panic should not
+        // fail a later commit.
         let overlay = std::mem::take(&mut *lock_ignore_poison(&self.overlay));
         let mut guard = rwlock_ignore_poison(&self.store);
         for (k, v) in overlay {
@@ -246,8 +248,9 @@ fn limit_of(limit: Option<u32>) -> Option<usize> {
     limit.map(|l| l as usize)
 }
 
-/// Store-side iterator for the given cursor and direction, excluding every
-/// key present in the overlay (the overlay value wins there, even deletions).
+/// Store-side iterator for the given cursor and direction. The iterator skips
+/// every key that the overlay contains. The overlay value wins for a skipped
+/// key, even for a deletion.
 fn store_side<'a>(
     store: &'a BTreeMap<String, Vec<u8>>,
     cursor: &(Option<String>, Option<String>),
@@ -297,8 +300,8 @@ fn store_side<'a>(
     Box::new(base.filter(move |(k, _)| !overlay_keys.contains(k)))
 }
 
-/// Overlay-side iterator for the given cursor and direction, skipping
-/// tombstoned keys (staged deletes produce no items).
+/// Overlay-side iterator for the given cursor and direction. The iterator skips
+/// tombstoned keys. A staged delete produces no item.
 fn overlay_side<'a>(
     overlay: &'a BTreeMap<String, Option<Vec<u8>>>,
     cursor: &(Option<String>, Option<String>),
@@ -347,8 +350,8 @@ fn overlay_side<'a>(
     Box::new(base.filter_map(|(k, v)| v.as_ref().map(|val| (k, val))))
 }
 
-/// Merges two sorted side iterators into owned key-value pairs, walking in
-/// the requested direction and stopping as soon as `limit` is reached.
+/// Merges two sorted side iterators into owned key-value pairs. The merge walks
+/// in the requested direction. The merge stops as soon as `limit` is reached.
 fn merge_sides(
     mut store: std::iter::Peekable<SideIter<'_>>,
     mut overlay: std::iter::Peekable<SideIter<'_>>,
@@ -385,10 +388,11 @@ fn merge_sides(
     out
 }
 
-/// Builds a vector of `KeyValue` in ascending order merging store and overlay.
+/// Builds a vector of `KeyValue` in ascending order. The merge reads the store
+/// and the overlay.
 ///
-/// Both sides are consumed lazily, so a small `limit` never materializes the
-/// whole matching range.
+/// Both sides are consumed lazily. A small `limit` never materializes the whole
+/// matching range.
 fn build_next_overlay(
     store: &BTreeMap<String, Vec<u8>>,
     overlay: &BTreeMap<String, Option<Vec<u8>>>,
@@ -404,9 +408,10 @@ fn build_next_overlay(
     )
 }
 
-/// Builds a vector of `KeyValue` in descending order merging store and overlay.
+/// Builds a vector of `KeyValue` in descending order. The merge reads the store
+/// and the overlay.
 ///
-/// Semantics mirror [`build_next_overlay`].
+/// The semantics match [`build_next_overlay`].
 fn build_prev_overlay(
     store: &BTreeMap<String, Vec<u8>>,
     overlay: &BTreeMap<String, Option<Vec<u8>>>,
@@ -444,7 +449,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_iterator_on_empty_store() {
+    async fn test_gets_returns_no_items_for_every_cursor_on_an_empty_store() {
         let store = BTreeStore::default();
 
         assert!(
@@ -481,7 +486,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_set() {
+    async fn test_set_bytes_then_get_bytes_returns_the_value() {
         let store = new_store();
         let inserted = store.set_bytes("key1", b"value1").await.unwrap();
         assert_eq!(inserted, None);
@@ -489,38 +494,40 @@ mod tests {
         let val = store.get_bytes("key1").await.unwrap();
         assert_eq!(val, Some(b"value1".to_vec()));
 
-        // Update existing key — should return the previous value
+        // Update an existing key. The call should return the previous value.
         let updated = store.set_bytes("key1", b"new_value").await.unwrap();
         assert_eq!(updated, Some(b"value1".to_vec()));
     }
 
     #[tokio::test]
-    async fn test_set_missing_key() {
+    async fn test_set_bytes_on_a_missing_key_returns_none() {
         let store = new_store();
 
-        // Setting a missing key should return None (it's a new insertion)
+        // Setting a missing key should return `None`. The call is a new insertion.
         let set_missing = store.set_bytes("missing", b"anything").await.unwrap();
         assert_eq!(set_missing, None);
     }
 
     #[tokio::test]
-    async fn test_update() {
+    async fn test_set_bytes_on_an_existing_key_returns_the_previous_value() {
         let store = new_store();
         store.set_bytes("key1", b"old").await.unwrap();
 
-        // set_bytes on existing key returns the previous value (was an update)
+        // `set_bytes` on an existing key returns the previous value. The call
+        // was an update.
         let updated = store.set_bytes("key1", b"new").await.unwrap();
         assert_eq!(updated, Some(b"old".to_vec()));
         let val = store.get_bytes("key1").await.unwrap();
         assert_eq!(val, Some(b"new".to_vec()));
 
-        // set_bytes on missing key returns None (it's a new insertion)
+        // `set_bytes` on a missing key returns `None`. The call was a new
+        // insertion.
         let updated_missing = store.set_bytes("missing", b"anything").await.unwrap();
         assert_eq!(updated_missing, None);
     }
 
     #[tokio::test]
-    async fn test_delete() {
+    async fn test_delete_removes_an_existing_key() {
         let store = new_store();
         store.set_bytes("key1", b"value").await.unwrap();
 
@@ -534,7 +541,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_gets_all() {
+    async fn test_gets_next_returns_every_key_in_order() {
         let mut store = new_store();
         populate_store(&mut store).await;
         let result = store
@@ -546,7 +553,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_gets_with_limit() {
+    async fn test_gets_next_returns_the_first_keys_up_to_the_limit() {
         let mut store = new_store();
         populate_store(&mut store).await;
         let result = store
@@ -558,7 +565,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_gets_range_inclusive() {
+    async fn test_gets_next_includes_both_range_ends() {
         let mut store = new_store();
         populate_store(&mut store).await;
         let result = store
@@ -574,7 +581,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_gets_range_start_only() {
+    async fn test_gets_next_from_a_start_without_an_end() {
         let mut store = new_store();
         populate_store(&mut store).await;
         let result = store
@@ -586,7 +593,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_gets_range_end_only() {
+    async fn test_gets_next_to_an_end_without_a_start() {
         let mut store = new_store();
         populate_store(&mut store).await;
         let result = store
@@ -598,7 +605,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_gets_prev_without_start_returns_empty() {
+    async fn test_gets_prev_without_a_start_returns_no_items() {
         let mut store = new_store();
         populate_store(&mut store).await;
         let result = store
@@ -609,10 +616,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_gets_prev_with_valid_range() {
+    async fn test_gets_prev_walks_backward_across_a_descending_range() {
         let mut store = new_store();
         populate_store(&mut store).await;
-        // start > end, so walking backward from "b2" to "a2" inclusive
+        // The start is greater than the end. The walk runs backward from "b2"
+        // to "a2". The range includes both keys.
         let result = store
             .gets_bytes(
                 None,
@@ -626,7 +634,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_gets_prev_with_start_only() {
+    async fn test_gets_prev_from_a_start_without_an_end() {
         let mut store = new_store();
         populate_store(&mut store).await;
         let result = store
@@ -638,10 +646,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_gets_prev_with_start_less_than_end_returns_empty() {
+    async fn test_gets_prev_returns_no_items_when_the_start_is_below_the_end() {
         let mut store = new_store();
         populate_store(&mut store).await;
-        // start < end, invalid for Prev should be empty
+        // The start is less than the end. The range is invalid for `Prev`. The
+        // result should be empty.
         let result = store
             .gets_bytes(
                 None,
@@ -654,70 +663,76 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_transaction_commit() {
+    async fn test_commit_publishes_the_change_to_the_store() {
         let mut store = new_store();
         populate_store(&mut store).await;
 
-        // Start a transaction and make changes
+        // Start a transaction and make a change.
         let tx = store.begin_tx().unwrap();
         tx.set_bytes("key1", b"updated_in_tx").await.unwrap();
         tx.commit().await.unwrap();
 
-        // Verify the change is visible after commit
+        // Check that the change is visible after the commit.
         let val = store.get_bytes("key1").await.unwrap();
         assert_eq!(val, Some(b"updated_in_tx".to_vec()));
     }
 
     #[tokio::test]
-    async fn test_transaction_rollback() {
+    async fn test_rollback_discards_the_change() {
         let store = new_store();
 
-        // Start a transaction and make changes that don't affect existing keys
+        // Start a transaction and make a change. The change does not affect an
+        // existing key.
         let tx = store.begin_tx().unwrap();
         tx.set_bytes("new_key", b"will_be_rolled_back")
             .await
             .unwrap();
 
-        // Verify the uncommitted change is visible within the transaction
+        // Check that the uncommitted change is visible within the transaction.
         let val_in_tx = tx.get_bytes("new_key").await.unwrap();
         assert_eq!(val_in_tx, Some(b"will_be_rolled_back".to_vec()));
 
-        // Rollback the transaction — changes should be discarded
+        // Roll back the transaction. The transaction should discard the changes.
         tx.rollback().await.unwrap();
 
-        // After rollback, the key should not exist (change was discarded)
+        // After the rollback, the key should not exist. The rollback discarded
+        // the change.
         let val_after_rollback = store.get_bytes("new_key").await.unwrap();
         assert_eq!(val_after_rollback, None);
     }
 
     #[tokio::test]
-    async fn test_transaction_isolation() {
-        // Note: redb uses MVCC which provides isolation differently than HashMap snapshot.
-        // In redb, changes within a transaction are not visible to concurrent read transactions
-        // until the transaction is committed. This test verifies that behavior.
+    async fn test_a_read_inside_the_transaction_sees_its_own_uncommitted_write() {
+        // Note: `redb` uses MVCC. MVCC provides isolation in a different way than a
+        // `HashMap` snapshot. In `redb`, a concurrent read transaction does not
+        // see the changes inside a transaction until the transaction is
+        // committed. This test checks that behavior.
         let store = new_store();
 
-        // Start a write transaction and make changes
+        // Start a write transaction and make a change.
         let tx = store.begin_tx().unwrap();
         tx.set_bytes("key1", b"isolation_test_value").await.unwrap();
 
-        // Try to read in the same transaction — should see the uncommitted change
+        // Try to read in the same transaction. The read should see the
+        // uncommitted change.
         let val_in_tx = tx.get_bytes("key1").await.unwrap();
         assert_eq!(val_in_tx, Some(b"isolation_test_value".to_vec()));
 
-        // Commit the transaction
+        // Commit the transaction.
         tx.commit().await.unwrap();
 
-        // Now read from outside — should see the committed value
+        // Now read from outside the transaction. The read should see the
+        // committed value.
         let val_after_commit = store.get_bytes("key1").await.unwrap();
         assert_eq!(val_after_commit, Some(b"isolation_test_value".to_vec()));
     }
 
-    /// Tests basic operations on a freshly created (empty) store.
+    /// Checks the basic operations on a store that was just created. The store
+    /// is empty.
     #[tokio::test]
-    async fn test_gets_from_empty_store() {
+    async fn test_get_bytes_on_an_empty_store_returns_none() {
         let store = new_store();
-        // Reading from an empty store should return None for any key
+        // Reading from an empty store should return `None` for any key.
         let val = store.get_bytes("nonexistent").await.unwrap();
         assert_eq!(val, None);
 
@@ -725,63 +740,69 @@ mod tests {
         assert!(!exists);
     }
 
-    /// Tests that deleting a non-existent key returns false and doesn't error.
+    /// Checks that a delete of a key that does not exist returns false. The
+    /// call must not return an error.
     #[tokio::test]
-    async fn test_delete_non_existent() {
+    async fn test_delete_returns_false_for_a_missing_key() {
         let store = new_store();
-        // Deleting from an empty store should return false without panicking
+        // Deleting from an empty store should return false. The call should not
+        // panic.
         let deleted = store.delete("does_not_exist").await.unwrap();
         assert!(!deleted);
     }
 
-    /// Tests that `exists` returns correct values across set/delete operations.
+    /// Checks that `has` returns the correct values after a set and after a
+    /// delete.
     #[tokio::test]
-    async fn test_exists_after_set_and_delete() {
+    async fn test_has_reports_whether_a_key_is_present() {
         let store = new_store();
-        // Key does not exist yet
+        // The key does not exist yet.
         assert!(!store.has("key1").await.unwrap());
 
-        // After set, key should exist
+        // The key should exist after the set.
         store.set_bytes("key1", b"value1").await.unwrap();
         assert!(store.has("key1").await.unwrap());
 
-        // After delete, key should not exist again
+        // The key should not exist after the delete.
         store.delete("key1").await.unwrap();
         assert!(!store.has("key1").await.unwrap());
     }
 
-    /// Tests `BTreeStore::new()` constructor creates a valid in-memory database.
+    /// Checks that the `BTreeStore::new()` constructor creates a valid
+    /// in-memory database.
     #[tokio::test]
-    async fn test_store_new() {
+    async fn test_a_default_store_holds_no_keys() {
         let store = BTreeStore::default();
         // A freshly constructed store should behave like an empty store
         assert!(store.get_bytes("any").await.unwrap().is_none());
         assert!(!store.has("any").await.unwrap());
     }
 
-    /// Tests transactional `BTreeTx` operations: `get_bytes`, `exists`, `delete`, `set_bytes` inside tx.
+    /// Checks the `BTreeTx` operations in a transaction. The operations are
+    /// `get_bytes`, `has`, `delete`, and `set_bytes`.
     #[tokio::test]
-    async fn test_btree_tx_operations() {
+    async fn test_a_transaction_sees_its_own_writes() {
         let mut store = new_store();
         populate_store(&mut store).await;
 
-        // Begin a transaction and use all GetSet methods on BTreeTx directly
+        // Begin a transaction. Use all `GetSet` methods on `BTreeTx` directly.
         let tx = store.begin_tx().unwrap();
 
-        // get_bytes in tx should see existing data
+        // `get_bytes` in the transaction should see the existing data.
         let val = tx.get_bytes("a1").await.unwrap();
         assert_eq!(val, Some(b"apple".to_vec()));
 
-        // exists in tx
+        // `has` in the transaction.
         assert!(tx.has("b2").await.unwrap());
         assert!(!tx.has("missing").await.unwrap());
 
-        // delete in tx — should return true and the value is gone within this tx scope
+        // `delete` in the transaction should return true. The value is gone
+        // within this transaction scope.
         let del = tx.delete("c1").await.unwrap();
         assert!(del);
         assert_eq!(tx.get_bytes("c1").await.unwrap(), None);
 
-        // set_bytes in tx
+        // `set_bytes` in the transaction.
         let prev = tx.set_bytes("new_key", b"hello").await.unwrap();
         assert_eq!(prev, None);
         assert_eq!(
@@ -790,18 +811,20 @@ mod tests {
         );
     }
 
-    /// Tests transaction commit makes `BTreeTx` changes visible to the outer store.
+    /// Checks that a commit makes the `BTreeTx` changes visible to the outer
+    /// store.
     #[tokio::test]
-    async fn test_tx_commit_direct() {
+    async fn test_a_commit_publishes_a_transaction_change() {
         let mut store = new_store();
         populate_store(&mut store).await;
 
         let tx = store.begin_tx().unwrap();
-        // Modify an existing key inside the transaction
+        // Modify an existing key inside the transaction.
         let old_val = tx.set_bytes("a1", b"changed").await.unwrap();
         assert_eq!(old_val, Some(b"apple".to_vec()));
 
-        // Before commit, outer store still sees original value (MVCC isolation)
+        // Before the commit, the outer store still sees the original value.
+        // MVCC isolation causes this result.
         assert_eq!(
             store.get_bytes("a1").await.unwrap(),
             Some(b"apple".to_vec())
@@ -809,45 +832,48 @@ mod tests {
 
         tx.commit().await.unwrap();
 
-        // After commit, outer store sees updated value
+        // After the commit, the outer store sees the updated value.
         assert_eq!(
             store.get_bytes("a1").await.unwrap(),
             Some(b"changed".to_vec())
         );
     }
 
-    /// Tests transaction rollback discards `BTreeTx` changes and keeps outer store consistent.
+    /// Checks that a rollback discards the `BTreeTx` changes. The rollback also
+    /// keeps the outer store consistent.
     #[tokio::test]
-    async fn test_tx_rollback_direct() {
+    async fn test_a_rollback_discards_a_transaction_change() {
         let mut store = new_store();
         populate_store(&mut store).await;
 
         let tx = store.begin_tx().unwrap();
-        // Add a brand-new key inside the transaction
+        // Add a new key inside the transaction.
         tx.set_bytes("secret", b"top_secret").await.unwrap();
 
-        // Inside tx, we can see our change
+        // Inside the transaction, the read sees the change.
         assert_eq!(
             tx.get_bytes("secret").await.unwrap(),
             Some(b"top_secret".to_vec())
         );
 
-        // Outside tx, it's not visible yet (MVCC isolation)
+        // Outside the transaction, the key is not visible yet. MVCC isolation causes
+        // this result.
         assert_eq!(store.get_bytes("secret").await.unwrap(), None);
 
         tx.rollback().await.unwrap();
 
-        // After rollback, the key should never have existed outside the tx
+        // After the rollback, the key should not exist outside the transaction.
         assert_eq!(store.get_bytes("secret").await.unwrap(), None);
     }
 
-    /// Tests committing a delete inside a transaction propagates to the outer store.
+    /// Checks that a commit of a delete inside a transaction makes the delete
+    /// visible to the outer store.
     #[tokio::test]
-    async fn test_tx_commit_delete() {
+    async fn test_a_commit_publishes_a_transaction_delete() {
         let mut store = new_store();
         populate_store(&mut store).await;
 
-        // Insert a key that will be deleted in the transaction
+        // Insert a key. The transaction deletes the key.
         store
             .set_bytes("to_delete", b"should_disappear")
             .await
@@ -859,7 +885,8 @@ mod tests {
             Some(b"should_disappear".to_vec())
         );
 
-        // Delete inside the transaction — not yet visible outside (MVCC isolation)
+        // Delete inside the transaction. The delete is not visible outside yet. MVCC
+        // isolation causes this result.
         assert_eq!(
             store.get_bytes("to_delete").await.unwrap(),
             Some(b"should_disappear".to_vec())
@@ -867,23 +894,26 @@ mod tests {
 
         tx.delete("to_delete").await.unwrap();
 
-        // Outside tx, key still exists until commit (MVCC isolation)
+        // Outside the transaction, the key still exists until the commit. MVCC
+        // isolation causes this result.
         let val = store.get_bytes("to_delete").await.unwrap();
         assert_eq!(val, Some(b"should_disappear".to_vec()));
 
         tx.commit().await.unwrap();
 
-        // After commit, the outer store must reflect the deletion
+        // After the commit, the outer store must reflect the deletion.
         assert_eq!(store.get_bytes("to_delete").await.unwrap(), None);
     }
 
-    /// Tests rolling back a delete inside a transaction restores the original key.
+    /// Checks that a rollback of a delete inside a transaction restores the
+    /// original key.
     #[tokio::test]
-    async fn test_tx_rollback_delete() {
+    async fn test_a_rollback_leaves_a_deleted_key_in_the_store() {
         let mut store = new_store();
         populate_store(&mut store).await;
 
-        // Insert an existing key — it will be deleted in the transaction and rolled back
+        // Insert an existing key. The transaction deletes the key. The rollback
+        // undoes the delete.
         store
             .set_bytes("protected_key", b"important_data")
             .await
@@ -895,41 +925,47 @@ mod tests {
             Some(b"important_data".to_vec())
         );
 
-        // Outside tx, key still exists (MVCC isolation)
+        // Outside the transaction, the key still exists. MVCC isolation causes this
+        // result.
         assert_eq!(
             store.get_bytes("protected_key").await.unwrap(),
             Some(b"important_data".to_vec())
         );
 
-        // Delete inside the transaction
+        // Delete inside the transaction.
         tx.delete("protected_key").await.unwrap();
 
-        // Outside tx, key is still visible until commit/rollback
+        // Outside the transaction, the key is still visible until the commit
+        // or the rollback.
         let val = store.get_bytes("protected_key").await.unwrap();
         assert_eq!(val, Some(b"important_data".to_vec()));
 
-        // Rollback — delete should be undone, original value restored
+        // Roll back. The rollback should undo the delete. The rollback restores the
+        // original value.
         tx.rollback().await.unwrap();
 
-        // After rollback, the key must still exist with its original value
+        // After the rollback, the key must still exist. The key must still
+        // have its original value.
         let val_after_rollback = store.get_bytes("protected_key").await.unwrap();
         assert_eq!(val_after_rollback, Some(b"important_data".to_vec()));
     }
 
-    /// Tests transaction isolation: concurrent reads don't see uncommitted writes.
+    /// Checks transaction isolation. A concurrent read must not see an
+    /// uncommitted write.
     #[tokio::test]
-    async fn test_tx_isolation_direct() {
+    async fn test_the_store_does_not_see_an_uncommitted_write() {
         let mut store = new_store();
         populate_store(&mut store).await;
 
-        // Start a write tx and insert a key
+        // Start a write transaction and insert a key.
         let writer = store.begin_tx().unwrap();
         writer
             .set_bytes("isolated_key", b"writer_value")
             .await
             .unwrap();
 
-        // The outer store must NOT see this uncommitted change (MVCC isolation)
+        // The outer store must NOT see this uncommitted change. MVCC isolation
+        // causes this result.
         assert_eq!(store.get_bytes("isolated_key").await.unwrap(), None);
         assert!(!store.has("isolated_key").await.unwrap());
 
@@ -942,12 +978,14 @@ mod tests {
         );
     }
 
-    /// Tests `gets`  — range next with start > end returns empty.
+    /// Checks `gets` for a `Next` range. A start that is greater than the end
+    /// should return an empty result.
     #[tokio::test]
-    async fn test_gets_next_invalid_range() {
+    async fn test_gets_next_returns_no_items_when_the_start_is_above_the_end() {
         let mut store = new_store();
         populate_store(&mut store).await;
-        // start > end for Next means invalid ascending range → should return empty
+        // A start that is greater than the end is an invalid ascending range
+        // for `Next`. The result should be empty.
         let result = store
             .gets_bytes(
                 None,
@@ -959,12 +997,14 @@ mod tests {
         assert!(result.is_empty());
     }
 
-    /// Tests `gets`  — range prev with start < end returns empty.
+    /// Checks `gets` for a `Prev` range. A start that is less than the end
+    /// should return an empty result.
     #[tokio::test]
-    async fn test_gets_prev_invalid_range() {
+    async fn test_gets_prev_returns_no_items_for_an_ascending_range() {
         let mut store = new_store();
         populate_store(&mut store).await;
-        // start < end for Prev means invalid descending range → should return empty
+        // A start that is less than the end is an invalid descending range for
+        // `Prev`. The result should be empty.
         let result = store
             .gets_bytes(
                 None,
@@ -976,12 +1016,14 @@ mod tests {
         assert!(result.is_empty());
     }
 
-    /// Tests `gets_bytes` Prev direction with limit on a populated store.
+    /// Checks `gets_bytes` with a `Prev` direction and a limit on a populated
+    /// store.
     #[tokio::test]
-    async fn test_gets_prev_with_limit() {
+    async fn test_gets_prev_stops_at_the_limit_from_a_start() {
         let mut store = new_store();
         populate_store(&mut store).await;
-        // From "c1" backwards, limited to 2 items → should return ["c1", "b2"]
+        // The walk starts from "c1" and moves backward. The walk is limited to 2
+        // items. The result should be ["c1", "b2"].
         let result = store
             .gets_bytes(Some(2), Direction::Prev, (Some("c1".to_string()), None))
             .await
@@ -990,12 +1032,14 @@ mod tests {
         assert_eq!(keys, vec!["c1", "b2"]);
     }
 
-    /// Tests `gets_bytes` Next direction with limit on a populated store.
+    /// Checks `gets_bytes` with a `Next` direction and a limit on a populated
+    /// store.
     #[tokio::test]
-    async fn test_gets_next_with_limit() {
+    async fn test_gets_next_stops_at_the_limit_from_a_start() {
         let mut store = new_store();
         populate_store(&mut store).await;
-        // From "b2" forward, limited to 1 item → should return ["b2"]
+        // The walk starts from "b2" and moves forward. The walk is limited to 1 item.
+        // The result should be ["b2"].
         let result = store
             .gets_bytes(Some(1), Direction::Next, (Some("b2".to_string()), None))
             .await
@@ -1004,18 +1048,19 @@ mod tests {
         assert_eq!(keys, vec!["b2"]);
     }
 
-    /// Tests that getting a value with an empty value string works correctly.
+    /// Checks that a get of an empty value returns that empty value.
     #[tokio::test]
-    async fn test_set_get_empty_value() {
+    async fn test_get_bytes_returns_the_empty_value() {
         let store = new_store();
         store.set_bytes("empty", b"").await.unwrap();
         let val = store.get_bytes("empty").await.unwrap();
         assert_eq!(val, Some(b"".to_vec()));
     }
 
-    /// Tests that `delete` returns false when the key does not exist in a transaction.
+    /// Checks that `delete` returns false when the key does not exist in a
+    /// transaction.
     #[tokio::test]
-    async fn test_delete_non_existent_in_tx() {
+    async fn test_a_transaction_delete_returns_false_for_a_missing_key() {
         let mut store = new_store();
         populate_store(&mut store).await;
 
@@ -1024,21 +1069,24 @@ mod tests {
         assert!(!result);
     }
 
-    /// Tests that `set_bytes` with an existing key updates the value and returns previous.
+    /// Checks that `set_bytes` with an existing key updates the value. The call
+    /// should return the previous value.
     #[tokio::test]
-    async fn test_update_returns_previous_value() {
+    async fn test_set_bytes_returns_the_previous_value() {
         let store = new_store();
         store.set_bytes("k", b"v1").await.unwrap();
         let prev = store.set_bytes("k", b"v2").await.unwrap();
         assert_eq!(prev, Some(b"v1".to_vec()));
     }
 
-    /// Tests that `gets_bytes` Prev direction with `start_only` returns items in descending order.
+    /// Checks that `gets_bytes` with a `Prev` direction and `start_only`
+    /// returns the items in descending order.
     #[tokio::test]
-    async fn test_gets_prev_start_only_ordering() {
+    async fn test_gets_prev_returns_the_keys_in_descending_order() {
         let mut store = new_store();
         populate_store(&mut store).await;
-        // From "c1" backwards, no limit → full reverse traversal
+        // The walk starts from "c1" and moves backward. The walk has no limit. The
+        // traversal covers the full range in reverse.
         let result = store
             .gets_bytes(None, Direction::Prev, (Some("c1".to_string()), None))
             .await
@@ -1047,12 +1095,13 @@ mod tests {
         assert_eq!(keys, vec!["c1", "b2", "b1", "a2", "a1"]);
     }
 
-    /// Tests `gets_bytes` Next direction with full range and limit.
+    /// Checks `gets_bytes` with a `Next` direction, a full range, and a limit.
     #[tokio::test]
-    async fn test_gets_range_full_limit() {
+    async fn test_gets_next_returns_the_limit_number_of_keys() {
         let mut store = new_store();
         populate_store(&mut store).await;
-        // All items, limited to 3 → should return ["a1", "a2", "b1"]
+        // All items are returned. The walk is limited to 3 items. The result should be
+        // ["a1", "a2", "b1"].
         let result = store
             .gets_bytes(Some(3), Direction::Next, (None, None))
             .await
@@ -1060,13 +1109,14 @@ mod tests {
         assert_eq!(result.len(), 3);
     }
 
-    /// Tests `begin_tx` returns a valid transaction handle that can be committed.
+    /// Checks that `begin_tx` returns a valid transaction handle. The code can
+    /// commit the handle.
     #[tokio::test]
-    async fn test_begin_tx_and_commit() {
+    async fn test_begin_tx_returns_a_handle_that_commits() {
         let mut store = new_store();
         populate_store(&mut store).await;
 
-        let tx = store.begin_tx().unwrap(); // previously untested direct path
+        let tx = store.begin_tx().unwrap(); // No earlier test covered the direct path.
         tx.set_bytes("tx_key", b"tx_value").await.unwrap();
         tx.commit().await.unwrap();
 
@@ -1076,13 +1126,14 @@ mod tests {
         );
     }
 
-    /// Tests `begin_tx` returns a valid transaction handle that can be rolled back.
+    /// Checks that `begin_tx` returns a valid transaction handle. The code can
+    /// roll back the handle.
     #[tokio::test]
-    async fn test_begin_tx_and_rollback() {
+    async fn test_begin_tx_returns_a_handle_that_rolls_back() {
         let mut store = new_store();
         populate_store(&mut store).await;
 
-        let tx = store.begin_tx().unwrap(); // previously untested direct path
+        let tx = store.begin_tx().unwrap(); // No earlier test covered the direct path.
         tx.set_bytes("tx_key", b"tx_value").await.unwrap();
         tx.rollback().await.unwrap();
 
@@ -1090,9 +1141,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_gets_limit_on_empty_store() {
+    async fn test_gets_next_applies_the_limit_to_an_empty_store() {
         let store = new_store();
-        // Empty store with limit should return no items
+        // An empty store with a limit should return no items.
         let result = store
             .gets_bytes(Some(10), Direction::Next, (None, None))
             .await
@@ -1100,11 +1151,12 @@ mod tests {
         assert!(result.is_empty());
     }
 
-    /// Tests getting a range in Prev direction on an empty store returns empty.
+    /// Checks that a get of a range in the `Prev` direction on an empty store
+    /// returns an empty result.
     #[tokio::test]
-    async fn test_gets_prev_on_empty_store() {
+    async fn test_gets_prev_returns_no_items_on_an_empty_store() {
         let store = new_store();
-        // Empty store with Prev should return no items for any cursor config
+        // An empty store with `Prev` should return no items for any cursor.
         let result = store
             .gets_bytes(None, Direction::Prev, (Some("z".to_string()), None))
             .await
@@ -1115,7 +1167,7 @@ mod tests {
             .gets_bytes(None, Direction::Prev, (None, Some("z".to_string())))
             .await
             .unwrap();
-        // Prev with end-only on empty should also be empty
+        // `Prev` with only an end on an empty store should also return no items.
         assert!(result2.is_empty());
     }
 }

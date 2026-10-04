@@ -10,14 +10,15 @@ use super::{Direction, json_compatible};
 
 /// Wrapper around the LSM [`store::OxKvStore`] for use in a WASM environment.
 ///
-/// Backed by an in-memory [`store::MemStorage`], so contents live only as
-/// long as the page (no browser persistence yet — OPFS arrives as another
-/// [`store::Storage`] backend). Snapshots are byte-identical with every other
-/// backend, so `save` bytes restore anywhere via `load`.
+/// The wrapper uses an in-memory [`store::MemStorage`], so contents live only
+/// as long as the page. The page has no browser persistence yet. OPFS arrives
+/// as another [`store::Storage`] backend. Snapshots are byte-identical with the
+/// snapshots of every other backend. The `load` method restores `save` bytes
+/// anywhere.
 ///
 /// The wrapper holds an `Arc<Mutex<OxKvStore>>` so that multiple concurrent
 /// JavaScript calls share one underlying store. Each method acquires the lock,
-/// runs the operation (async), and releases before returning.
+/// runs the operation asynchronously, and releases the lock before returning.
 #[wasm_bindgen(js_name = OxKvStore)]
 pub struct JsOxKvStore {
     inner: std::sync::Arc<futures::lock::Mutex<store::OxKvStore>>,
@@ -27,8 +28,8 @@ pub struct JsOxKvStore {
 impl JsOxKvStore {
     /// Create a new in-memory LSM store (`MemStorage`, probe skipped).
     ///
-    /// Resolves once the initial ownership epoch is acquired; from then on
-    /// the instance behaves like any other [`store::Store`].
+    /// This function resolves once the initial ownership epoch is acquired.
+    /// After that point the instance behaves like any other [`store::Store`].
     /// # Errors
     /// * `StoreError` - if the store fails to initialize
     #[wasm_bindgen(js_name = "create", return_description = "A new OxKvStore handle")]
@@ -54,12 +55,12 @@ impl JsOxKvStore {
 
     /// Create a persistent LSM store backed by origin private storage (OPFS).
     ///
-    /// Same API as [`create`](Self::create), but contents survive page reloads:
-    /// objects live as real files under one `oxkv` OPFS directory, with
-    /// content-hash etags so fencing and CAS work across sessions. The storage
-    /// probe runs on every open, so a broken backend fails fast instead of
-    /// corrupting data. Main-thread only; cross-tab races resolve
-    /// last-writer-wins.
+    /// This function offers the same API as [`create`](Self::create). The
+    /// contents survive page reloads. Objects live as real files under one
+    /// `oxkv` OPFS directory. The directory uses content-hash etags, so fencing
+    /// and CAS work across sessions. The storage probe runs on every open, so a
+    /// broken backend fails fast instead of corrupting data. This function runs
+    /// on the main thread only. Cross-tab races resolve last-writer-wins.
     /// # Errors
     /// * `StoreError` - if OPFS is unavailable/denied or the store fails to initialize
     #[wasm_bindgen(
@@ -317,8 +318,9 @@ impl JsOxKvStore {
 
     /// Serializes all key-value pairs into a single contiguous `Uint8Array`.
     ///
-    /// Byte-identical with every other backend, so the bytes restore anywhere
-    /// via `load` — including `BTreeStore` and native `OxKvStore`.
+    /// These bytes are byte-identical with the bytes of every other backend. The
+    /// `load` method restores them anywhere. This includes `BTreeStore` and
+    /// native `OxKvStore`.
     ///
     /// # Errors
     /// * `StoreError` - if retrieval fails while serializing the store
@@ -357,13 +359,14 @@ impl JsOxKvStore {
 
     /// Streams the entire store as a `ReadableStream` of `Uint8Array` chunks.
     ///
-    /// Chunks concatenate to exactly what [`save`](Self::save) returns; chunk
+    /// Chunks concatenate to exactly what [`save`](Self::save) returns. Chunk
     /// boundaries always fall between whole records, so each chunk can be
-    /// decoded independently downstream (e.g. piped straight into a file or
-    /// fetch upload).
+    /// decoded independently downstream (for example, piped straight into a
+    /// file or a fetch upload).
     ///
-    /// The stream reads lazily and clones the store handle out of the mutex, so
-    /// no other method on this handle is blocked for the stream lifetime.
+    /// The stream reads lazily. The stream clones the store handle out of the
+    /// mutex. No other method on this handle is blocked for the lifetime of the
+    /// stream.
     ///
     /// # Errors
     /// * `StoreError` - if retrieval fails while streaming
@@ -374,18 +377,19 @@ impl JsOxKvStore {
         use futures::{SinkExt, StreamExt, TryStreamExt};
 
         // The core save_stream borrows its source, but JS streams must own
-        // their data ('static). Drive the borrowed stream in a background task
-        // through a bounded channel, which also provides backpressure: the
-        // next page is only fetched once the consumer drains a chunk. When the
-        // consumer cancels, the sink errors out, the task exits, and the lock
-        // is released.
+        // their data ('static). This function drives the borrowed stream in a
+        // background task through a bounded channel. The channel also provides
+        // backpressure. The next page is fetched only after the consumer
+        // drains a chunk. When the consumer cancels, the sink errors out. The
+        // task then exits and the lock is released.
         let (mut sender, receiver) = futures::channel::mpsc::channel::<store::Result<Vec<u8>>>(16);
         let inner = std::sync::Arc::clone(&self.inner);
         wasm_bindgen_futures::spawn_local(async move {
-            // Cloning out of the mutex instead of holding the guard: a consumer
-            // that stalls on a full channel would otherwise park this task
-            // holding the store lock and freeze every other method on the
-            // handle until it resumed or was cancelled.
+            // This code clones out of the mutex instead of holding the guard.
+            // A consumer that stalls on a full channel would otherwise park
+            // this task while it holds the store lock. That stall would freeze
+            // every other method on the handle until the task resumed or the
+            // consumer cancelled.
             let store = inner.lock().await.clone();
             let mut chunks = store.save_stream();
             while let Some(chunk) = chunks.next().await {
@@ -404,14 +408,15 @@ impl JsOxKvStore {
     /// Loads key-value pairs from a `ReadableStream` of byte chunks into the
     /// store inside one transaction.
     ///
-    /// Chunk boundaries are arbitrary — chunks may split mid-record; decoding
+    /// Chunk boundaries are arbitrary. A chunk may split mid-record. Decoding
     /// is incremental, so memory stays bounded regardless of payload size.
-    /// Typical sources: `File.stream()`, `fetch()` bodies, or the stream
+    /// Typical sources are `File.stream()`, `fetch()` bodies, and the stream
     /// returned by [`save_stream`](Self::save_stream).
     ///
     /// # Errors
     /// * `StoreError` - if any chunk fails to decode as bytes, the payload is
-    ///   malformed or truncated, or storage fails. On error nothing is committed.
+    ///   malformed or truncated, or storage fails. The store commits nothing
+    ///   on error.
     #[wasm_bindgen(return_description = "Number of key-value pairs successfully loaded")]
     pub async fn load_stream(
         &self,
@@ -443,7 +448,7 @@ impl JsOxKvStore {
     }
 }
 
-// Generated wrapper; see `js_tx!` in `wasm/mod.rs`.
+// Generated wrapper. See `js_tx!` in `wasm/mod.rs`.
 js_tx!(
     JsOxKvTx,
     "OxKvTx",
@@ -502,14 +507,15 @@ mod tests {
             reassembled.push(array.to_vec());
         }
 
-        // Chunks must concatenate to exactly what save() produces.
+        // Chunks must concatenate to exactly what `save` produces.
         let expected = to_bytes(&ok(js_store.save().await));
         let total: Vec<u8> = reassembled.concat();
         assert!(!reassembled.is_empty());
         assert_eq!(total, expected);
 
-        // Feed the same chunks (re-wrapped as a fresh ReadableStream) into a
-        // new store and confirm the round trip restores every entry.
+        // Feed the same chunks into a new store. The test re-wraps the
+        // chunks as a fresh `ReadableStream`. Then check that the round trip
+        // restores every entry.
         let restored = new_oxkv().await;
         let input = wasm_streams::readable::ReadableStream::from_stream(stream::iter(
             reassembled
@@ -614,8 +620,8 @@ mod tests {
 
     #[wasm_bindgen_test]
     async fn persistent_roundtrip_survives_reopen() {
-        // OPFS exists only in browsers; Node runs the rest of the suite.
-        // (Browser CI executes this test for real.)
+        // OPFS exists only in browsers. Node runs the rest of the suite.
+        // Browser CI executes this test for real.
         if web_sys::window().is_none() {
             crate::wasm::announce_skip(
                 "persistent_roundtrip_survives_reopen",
@@ -630,7 +636,8 @@ mod tests {
         ok(js_store.set_bytes("k", b"v").await);
         drop(js_store);
 
-        // Reopen on the same prefix: OPFS files (not memory) serve the read.
+        // Reopen the store with the same prefix. OPFS files, not memory,
+        // serve the read.
         let reopened = JsOxKvStore::create_persistent(prefix)
             .await
             .expect("reopen persistent store");

@@ -12,7 +12,7 @@ use crate::store::{Result, StoreError};
 /// Ownership record stored at `{prefix}/ownership.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct OwnershipRecord {
-    /// Monotonic epoch — bumped on every successful CAS.
+    /// Monotonic epoch. Every successful CAS bumps it.
     pub epoch: u64,
     /// Owner session identifier (e.g. `node-a:uuid`).
     pub owner_session: String,
@@ -70,9 +70,9 @@ pub(crate) fn sst_path(prefix: &ObjectPath, epoch: u64, level: u8, id: u64) -> O
 /// Backoff for CAS contention: `50ms*2^n + jitter`, cap `1s`.
 #[must_use]
 pub(crate) fn cas_backoff(attempt: u32) -> std::time::Duration {
-    // Jitter is reserved *inside* the cap, not added after it: capping the base
-    // and then adding jitter produced 1010ms against a documented 1 s ceiling,
-    // and left every contended writer sleeping the same flat amount once
+    // The code reserves jitter inside the cap, not after it. Capping the base
+    // and then adding jitter produced 1010ms against a documented 1 s ceiling.
+    // It also left every contended writer sleeping the same flat amount once
     // saturated.
     let jitter = u64::from(attempt).wrapping_mul(7) % 20;
     let base = 50u64.saturating_mul(1u64 << attempt.min(5));
@@ -82,8 +82,9 @@ pub(crate) fn cas_backoff(attempt: u32) -> std::time::Duration {
 
 /// Acquires ownership by CAS-bumping `ownership.json` epoch.
 ///
-/// `session` is the owner identifier. On success returns the new
-/// `OwnershipRecord` with `epoch = old.epoch + 1` (or `1` on first acquire).
+/// `session` is the owner identifier. On success, this function returns the new
+/// `OwnershipRecord`. It sets `epoch` to `old.epoch + 1`, or to `1` on the
+/// first acquire.
 pub(crate) async fn acquire_ownership(
     store: Arc<dyn Storage>,
     prefix: &ObjectPath,
@@ -105,8 +106,8 @@ pub(crate) async fn acquire_ownership(
         Err(e) => return Err(StoreError::Storage(format!("get ownership failed: {e}"))),
     };
 
-    // `saturating_add`, not `+ 1`: at `u64::MAX` the plain add panics under
-    // overflow checks instead of reporting an unusable epoch.
+    // The code uses `saturating_add`, not `+ 1`. At `u64::MAX`, the plain add
+    // panics under overflow checks instead of reporting an unusable epoch.
     let next_epoch = existing.as_ref().map_or(1, |r| r.epoch.saturating_add(1));
     let new_rec = OwnershipRecord {
         epoch: next_epoch,
@@ -191,7 +192,7 @@ mod tests {
                 cas_backoff(attempt)
             );
         }
-        // Jitter must survive at saturation, else every contended writer
+        // Jitter must survive at saturation. Otherwise every contended writer
         // sleeps the same flat amount and re-synchronises into a thundering
         // herd.
         let saturated: std::collections::BTreeSet<u64> =
@@ -202,8 +203,9 @@ mod tests {
         );
     }
 
-    /// A corrupt `ownership.json` must be reported, never silently treated as
-    /// "no owner" — that would let a second writer take over a live prefix.
+    /// The code must report a corrupt `ownership.json`. It must never treat a
+    /// corrupt record silently as "no owner". Otherwise a second writer could
+    /// take over a live prefix.
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn corrupt_ownership_record_is_reported() {
@@ -229,10 +231,11 @@ mod tests {
         );
     }
 
-    /// A second acquire takes ownership, and the previous holder is fenced.
+    /// A second acquire takes ownership. The function fences the previous
+    /// holder.
     ///
-    /// This is the guarantee fencing rests on: the epoch bump is what makes a
-    /// superseded writer discover it is no longer the owner.
+    /// The epoch bump is the guarantee that fencing rests on. The bump makes a
+    /// superseded writer discover that it is no longer the owner.
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn acquiring_twice_fences_the_first_holder() {
@@ -257,7 +260,7 @@ mod tests {
         );
     }
 
-    /// Epochs are monotonic; the bump at `u64::MAX` must not panic under
+    /// Epochs are monotonic. The bump at `u64::MAX` must not panic under
     /// overflow checks.
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
@@ -272,8 +275,9 @@ mod tests {
             .unwrap();
         assert_eq!(second.epoch, first.epoch + 1);
 
-        // Park the record at u64::MAX and confirm the next acquire reports a
-        // fencing/CAS failure rather than panicking on `+ 1`.
+        // The test parks the record at `u64::MAX`. It confirms that the next
+        // acquire reports a fencing/CAS failure rather than panicking on
+        // `+ 1`.
         let payload = serde_json::to_vec(&OwnershipRecord {
             epoch: u64::MAX,
             owner_session: "z".to_string(),

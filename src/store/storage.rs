@@ -1,15 +1,15 @@
 //! Storage abstraction for the LSM engine.
 //!
-//! The engine speaks only to [`Storage`], so the same manifest/SST/blob logic
-//! runs on S3 (via `object_store`, native-only), on a pure-Rust in-memory
-//! store ([`MemStorage`], every target including `wasm32`), or on future
-//! browser storage (OPFS/IndexedDB). The wire format (`OXKV` snapshot, SST,
-//! blob pointer) stays identical across all implementations.
+//! The engine speaks only to [`Storage`]. The same manifest/SST/blob logic
+//! runs on S3 (via `object_store`, native-only). It also runs on the pure-Rust
+//! in-memory store ([`MemStorage`], every target including `wasm32`). It also
+//! runs on future browser storage (OPFS/IndexedDB). The wire format (`OXKV`
+//! snapshot, SST, blob pointer) stays identical across all implementations.
 //!
 //! # Error contracts
 //!
-//! Backends report two conditions so the engine's CAS-retry logic works
-//! uniformly without backend-specific types:
+//! Backends report two conditions. These conditions let the engine's CAS-retry
+//! logic work uniformly without backend-specific types:
 //! - missing object: [`StoreError::Storage`] whose message contains `not found`
 //! - conditional-write conflict: [`StoreError::CasConflict`]
 //!
@@ -23,8 +23,8 @@ use crate::store::{Result, StoreError};
 /// `/`-delimited object path, e.g. `e000007/wal/00000042.log`.
 ///
 /// Owned replacement for `object_store::Path`. [`Display`](std::fmt::Display)
-/// output is the canonical string form also stored in manifests and blob
-/// pointers, so snapshots stay portable across backends.
+/// output is the canonical string form. Manifests and blob pointers also store
+/// this form. As a result, snapshots stay portable across backends.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct ObjectPath(String);
 
@@ -88,9 +88,9 @@ pub enum PutMode {
 /// Version precondition for [`PutMode::Update`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ObjectVersion {
-    /// Expected `ETag`; `None` skips the etag check.
+    /// Expected `ETag`. `None` skips the etag check.
     pub e_tag: Option<String>,
-    /// Expected backend version; `None` skips the version check.
+    /// Expected backend version. `None` skips the version check.
     pub version: Option<String>,
 }
 
@@ -138,7 +138,8 @@ pub trait Storage: Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError::NotModified`] on etag match, `not found` when missing.
+    /// Returns [`StoreError::NotModified`] on an etag match. It returns
+    /// `not found` when the object is missing.
     async fn get_opts(&self, path: &ObjectPath, options: GetOptions) -> Result<GetOutput>;
 
     /// Puts `payload` at `path` with `mode` (`Create` = `If-None-Match`,
@@ -154,7 +155,7 @@ pub trait Storage: Send + Sync + 'static {
         mode: PutMode,
     ) -> Result<PutOutcome>;
 
-    /// Deletes the object at `path`; missing objects are `Ok`.
+    /// Deletes the object at `path`. A missing object returns `Ok`.
     ///
     /// # Errors
     ///
@@ -164,9 +165,9 @@ pub trait Storage: Send + Sync + 'static {
 
 /// Pure-Rust in-memory [`Storage`].
 ///
-/// Works on every target, including `wasm32`: the `JsLsmStore` binds the LSM
-/// engine to this backend, and native tests use it instead of a cloud crate.
-/// `ETag`s are per-write sequence numbers; versions are sequence strings.
+/// Works on every target, including `wasm32`. The `JsLsmStore` binds the LSM
+/// engine to this backend. Native tests use it instead of a cloud crate. An
+/// `ETag` is a per-write sequence number. A version is a sequence string.
 #[derive(Clone, Default)]
 pub struct MemStorage {
     inner: Arc<futures::lock::Mutex<MemInner>>,
@@ -270,8 +271,8 @@ impl Storage for MemStorage {
     }
 }
 
-/// `Arc<dyn ObjectStore>` implements [`Storage`], keeping `object_store` as
-/// a native S3/memory/localfs backend behind the `oxkv-s3` feature.
+/// `Arc<dyn ObjectStore>` implements [`Storage`]. The `oxkv-s3` feature keeps
+/// `object_store` as a native S3/memory/localfs backend.
 #[cfg(all(not(target_arch = "wasm32"), feature = "oxkv-s3"))]
 #[async_trait::async_trait]
 impl Storage for Arc<dyn object_store::ObjectStore> {
@@ -559,31 +560,35 @@ mod opfs_lock;
 
 /// Origin-private-file-system [`Storage`] for browsers (`wasm32` only).
 ///
-/// Persists objects as real OPFS files under one `oxkv` root directory, so
-/// contents survive page reloads. Main-thread only: async file handles work
-/// on the main thread, while sync access handles are worker-only.
+/// Persists objects as real OPFS files under one `oxkv` root directory. The
+/// contents survive page reloads. This backend supports the main thread only.
+/// Async file handles work on the main thread. Sync access handles are
+/// worker-only.
 ///
-/// OPFS offers no conditional-write primitive on the main thread, so `Create`
-/// and `Update` preconditions are checked read-then-write. That read and the
-/// write it guards run inside a named
+/// OPFS offers no conditional-write primitive on the main thread. The code
+/// checks the `Create` and `Update` preconditions with a read, then with a
+/// write. The read and the write that it guards run inside a named
 /// [Web Lock](https://developer.mozilla.org/en-US/docs/Web/API/Web_Locks_API)
-/// (see [`opfs_lock`]), so tabs of this origin serialise per object instead of
-/// resolving last-writer-wins. `delete` takes the same lock; `get` needs none,
-/// because OPFS swaps a file atomically when its writable stream closes.
+/// (see [`opfs_lock`]). Tabs of this origin then serialise per object instead
+/// of resolving last-writer-wins. The `delete` method takes the same lock. The
+/// `get` method takes no lock. OPFS swaps a file atomically when its writable
+/// stream closes.
 ///
-/// Where `navigator.locks` is missing (older Safari, no browser) the guard is
-/// skipped and the preconditions degrade to a best-effort read-then-write —
-/// see [`OpfsStorage::cross_tab_cas_is_atomic`].
+/// If `navigator.locks` is missing (older Safari, no browser), the code skips
+/// the guard. The preconditions then degrade to a best-effort read, then write.
+/// See [`OpfsStorage::cross_tab_cas_is_atomic`].
 ///
-/// `ETag`s and versions are hex `SHA-256` content hashes: stable across
-/// reloads, unique per byte content, no sidecar files.
+/// An `ETag` and a version are hex `SHA-256` content hashes. The hashes are
+/// stable across reloads. Each hash is unique per byte content. The code uses
+/// no sidecar files.
 #[cfg(target_arch = "wasm32")]
 #[derive(Clone)]
 pub struct OpfsStorage {
     root: web_sys::FileSystemDirectoryHandle,
 }
 
-/// Hex `SHA-256` of `bytes` — stable etag/version across reloads.
+/// Hex `SHA-256` of `bytes`. The etag and the version stay stable across
+/// reloads.
 #[cfg(target_arch = "wasm32")]
 fn content_etag(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
@@ -615,12 +620,12 @@ fn js_err(context: &str, err: wasm_bindgen::JsValue) -> StoreError {
     StoreError::Storage(format!("{context}: {detail}"))
 }
 
-/// Drives a JS promise on the local task queue, bridging `!Send` JS futures
-/// into the `Send`-required [`Storage`] methods.
+/// Drives a JS promise on the local task queue. The function bridges `!Send`
+/// JS futures into the `Send`-required [`Storage`] methods.
 ///
-/// `wasm_bindgen_futures::JsFuture` is `!Send` on single-threaded wasm, so it
-/// can never be awaited directly here. Instead the promise runs in a
-/// `spawn_local` task and the result crosses back through a `Send` oneshot.
+/// `wasm_bindgen_futures::JsFuture` is `!Send` on single-threaded wasm, so the
+/// code can never await it directly here. Instead, the promise runs in a
+/// `spawn_local` task. The result crosses back through a `Send` oneshot.
 #[cfg(target_arch = "wasm32")]
 async fn js_await(
     promise: js_sys::Promise,
@@ -660,26 +665,28 @@ impl OpfsStorage {
         Ok(Self { root })
     }
 
-    /// Whether conditional writes are serialised across tabs by a Web Lock.
+    /// Reports whether a Web Lock serialises conditional writes across tabs.
     ///
-    /// `true` (any browser with `navigator.locks`, i.e. Chrome 69+, Firefox
-    /// 96+, Safari 15.4+): `put_opts` and `delete` check their preconditions
-    /// and write while holding a per-object lock, so tabs of this origin cannot
-    /// interleave a write between the read and the write.
+    /// The value is `true` in any browser with `navigator.locks` (Chrome 69+,
+    /// Firefox 96+, Safari 15.4+). In that case, `put_opts` and `delete` check
+    /// their preconditions and write while they hold a per-object lock. Tabs of
+    /// this origin cannot interleave a write between the read and the write.
     ///
-    /// `false`: the preconditions degrade to a best-effort read-then-write.
-    /// Still exact within one tab, but a concurrent tab can lose an update —
-    /// which is what the LSM layer's single-writer fencing is there to catch.
+    /// The value is `false` when the preconditions degrade to a best-effort
+    /// read, then write. The check stays exact within one tab. A concurrent tab
+    /// can lose an update. The LSM layer's single-writer fencing is there to
+    /// catch such an update.
     #[must_use]
     pub fn cross_tab_cas_is_atomic() -> bool {
         opfs_lock::locks_available()
     }
 
-    /// Number of [`put_opts`](Storage::put_opts)/`delete` calls that ran
-    /// without a Web Lock since this page loaded.
+    /// Returns the number of [`put_opts`](Storage::put_opts) and `delete` calls
+    /// that ran without a Web Lock since this page loaded.
     ///
-    /// Non-zero exactly when [`OpfsStorage::cross_tab_cas_is_atomic`] was
-    /// `false` — the observable signal that the degraded path was exercised.
+    /// The count is non-zero exactly when
+    /// [`OpfsStorage::cross_tab_cas_is_atomic`] was `false`. The count is the
+    /// observable signal that the code exercised the degraded path.
     #[must_use]
     pub fn unlocked_operation_count() -> u64 {
         opfs_lock::unlocked_operation_count()
@@ -727,7 +734,8 @@ impl OpfsStorage {
         Ok(Some(dir))
     }
 
-    /// Reads bytes + etag, or `None` when the object (or its directory) is missing.
+    /// Reads the bytes and the etag. Returns `None` when the object or its
+    /// directory is missing.
     async fn read_existing(&self, path: &ObjectPath) -> Result<Option<(Vec<u8>, String)>> {
         let (segments, name) = Self::split(path)?;
         let Some(dir) = self.parent(&segments, false).await? else {
@@ -788,10 +796,10 @@ impl OpfsStorage {
         Ok(content_etag(payload))
     }
 
-    /// Precondition check plus write for [`Storage::put_opts`], run with the
-    /// object's Web Lock already held.
+    /// The function checks the precondition and writes for
+    /// [`Storage::put_opts`]. The caller already holds the object's Web Lock.
     ///
-    /// Must not take the lock again: Web Locks are not reentrant.
+    /// The function must not take the lock again. Web Locks are not reentrant.
     async fn put_guarded(
         &self,
         path: &ObjectPath,
@@ -827,10 +835,11 @@ impl OpfsStorage {
         })
     }
 
-    /// Deletes the object at `path`, run with the object's Web Lock held so it
-    /// cannot land between another tab's precondition check and its write.
+    /// Deletes the object at `path`. The caller already holds the object's Web
+    /// Lock. The lock stops the delete from landing between another tab's
+    /// precondition check and its write.
     ///
-    /// Must not take the lock again: Web Locks are not reentrant.
+    /// The function must not take the lock again. Web Locks are not reentrant.
     async fn delete_guarded(&self, path: &ObjectPath) -> Result<()> {
         let (segments, name) = Self::split(path)?;
         let Some(dir) = self.parent(&segments, false).await? else {
@@ -872,9 +881,9 @@ impl Storage for OpfsStorage {
         payload: Vec<u8>,
         mode: PutMode,
     ) -> Result<PutOutcome> {
-        // The store handle and the path are cloned into the lock callback
-        // because a Web Lock callback must be `'static`: it outlives this
-        // call and is driven by the browser's microtask queue.
+        // The code clones the store handle and the path into the lock callback.
+        // A Web Lock callback must be `'static`. The callback outlives this
+        // call. The browser's microtask queue drives the callback.
         let lock_path = path.clone();
         let store = self.clone();
         let guarded_path = path.clone();
@@ -895,21 +904,22 @@ impl Storage for OpfsStorage {
     }
 }
 
-/// Contract tests for the OPFS backend, mirroring the [`MemStorage`] suite
-/// above: the engine only speaks [`Storage`], so every backend owes the same
-/// `Create`/`Update`/`get_opts`/`delete` behaviour.
+/// Contract tests for the OPFS backend. The tests mirror the [`MemStorage`]
+/// suite above. The engine speaks only [`Storage`], so every backend must
+/// provide the same `Create`, `Update`, `get_opts` and `delete` behaviour.
 ///
-/// These need a real browser (OPFS is not available under
-/// `wasm-pack test --node`), so they announce the skip rather than passing
-/// vacuously — see [`crate::wasm::announce_skip`]. CI's Chrome job
-/// (`wasm-pack test --headless --chrome`) is what executes them.
+/// These tests need a real browser. OPFS is not available under
+/// `wasm-pack test --node`. The tests announce the skip instead of passing
+/// vacuously. See [`crate::wasm::announce_skip`]. The CI Chrome job
+/// (`wasm-pack test --headless --chrome`) executes them.
 #[cfg(all(test, target_arch = "wasm32"))]
 mod opfs_tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
 
-    /// Opens a store under a prefix of its own, so tests cannot collide with
-    /// each other or with anything else left in OPFS by a previous run.
+    /// Opens a store under a prefix of its own. This prevents tests from
+    /// colliding with each other. It also prevents collisions with anything
+    /// else that a previous run left in OPFS.
     async fn store_for(test: &str) -> Option<OpfsStorage> {
         if web_sys::window().is_none() {
             crate::wasm::announce_skip(
@@ -1028,8 +1038,9 @@ mod opfs_tests {
             .expect("create");
 
         // A conflict returns from inside the locked section. If that path
-        // dropped the lock early — or kept it — the next operation on this
-        // very path would corrupt or hang; it must simply work.
+        // dropped the lock early, the next operation on this very path would
+        // corrupt or hang. If that path kept the lock, the next operation
+        // would also corrupt or hang. The next operation must simply work.
         let err = store
             .put_opts(
                 &path,
@@ -1071,16 +1082,19 @@ mod opfs_tests {
             .await
             .expect("create the blocking file");
 
-        // `a` is a file, so creating the directory `a/` fails from inside the
-        // locked section — an operational error, not a precondition conflict.
+        // `a` is a file, so the create of the directory `a/` fails from inside
+        // the locked section. This is an operational error, not a precondition
+        // conflict.
         let err = store
             .put_opts(&nested, b"x".to_vec(), PutMode::Create)
             .await
             .expect_err("a file cannot become a directory");
         assert!(!matches!(err, StoreError::CasConflict(_)), "{err:?}");
 
-        // Same lock name as the failed call: if the error path had leaked or
-        // released it early, this would hang or corrupt.
+        // The lock name is the same as the lock name in the failed call. If the
+        // error path had leaked the lock, this call would hang or corrupt. If
+        // the error path had released the lock early, this call would also
+        // hang or corrupt.
         store
             .delete(&blocker)
             .await
@@ -1094,10 +1108,11 @@ mod opfs_tests {
 
     #[wasm_bindgen_test]
     async fn opfs_lock_is_available_wherever_opfs_is() {
-        // Wherever OPFS itself works — a browser — the Web Lock must be there
-        // too, or `put_opts` is an unguarded read-then-write while claiming
-        // otherwise. Outside a browser the host may or may not ship Web Locks
-        // (`opfs_lock`'s detection test pins that to `navigator.locks`).
+        // OPFS itself works only in a browser. The Web Lock must be available
+        // there too, or `put_opts` is an unguarded read, then write while it
+        // claims otherwise. Outside a browser, the host may or may not ship
+        // Web Locks. The detection test in `opfs_lock` pins this to
+        // `navigator.locks`.
         if web_sys::window().is_none() {
             crate::wasm::announce_skip(
                 "opfs_lock_is_available_wherever_opfs_is",

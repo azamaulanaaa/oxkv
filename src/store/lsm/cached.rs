@@ -1,24 +1,26 @@
 //! Write-through RAM mirror over [`OxKvStore`].
 //!
-//! [`CachedOxKvStore`] pairs a durable LSM core with a [`BTreeStore`] holding
-//! every resolved key, so point and range reads serve from memory while writes
-//! keep WAL durability. [`BTreeStore`] is imported for the mirror type only;
-//! the durable behavior stays LSM.
+//! [`CachedOxKvStore`] pairs a durable LSM core with a [`BTreeStore`]. The
+//! [`BTreeStore`] holds every resolved key. Therefore point and range reads
+//! serve from memory. Writes keep WAL durability. The code imports
+//! [`BTreeStore`] for the mirror type only. The durable behavior stays LSM.
 //!
-//! The mirror is authoritative under a single writer: standalone writes apply
-//! to storage first and to memory second, and [`CachedTx`] applies its staged
-//! overlay to memory only after a successful commit. Blind `put` paths
-//! stay blind end to end — the previous value for `set` comes from the mirror
-//! instead of an LSM read.
+//! The mirror is authoritative under a single writer. A standalone write
+//! applies to storage first and to memory second. [`CachedTx`] applies its
+//! staged overlay to memory only after a successful commit. A blind `put` path
+//! stays blind from the start to the end. The previous value for `set` comes
+//! from the mirror instead of from an LSM read.
 //!
-//! A mirror can fall behind when another owner takes the epoch or writes
-//! through a different handle. Freshness is derived from `manifest.json`
-//! (`version` + `epoch` + SST set) via conditional polling; `ownership.json`
-//! is read only when the manifest suggests a takeover, never per read. Plain
-//! [`GetSet`] reads are always zero-I/O; the `*_checked` variants revalidate
-//! against a time-to-live first. A write rejected with [`StoreError::Fenced`]
-//! poisons the mirror: reads fail with the same fencing error until
-//! [`refresh`](CachedOxKvStore::refresh) rebuilds from the new owner.
+//! A mirror can fall behind when another owner takes the epoch. A mirror can
+//! also fall behind when another owner writes through a different handle. The
+//! code derives freshness from `manifest.json` (`version` + `epoch` + SST set)
+//! through conditional polling. The code reads `ownership.json` only when the
+//! manifest suggests a takeover. A read never reads that file. A plain
+//! [`GetSet`] read is always zero-I/O. The `*_checked` variants revalidate
+//! against a time-to-live first. A write that [`StoreError::Fenced`]
+//! rejects poisons the mirror. Reads then fail with the same fencing error.
+//! Reads fail that way until [`refresh`](CachedOxKvStore::refresh) rebuilds
+//! the mirror from the new owner.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -40,40 +42,43 @@ const SCAN_BATCH: u32 = 256;
 
 /// Staleness bound for [`CachedOxKvStore`] when none is configured.
 ///
-/// Matches the manifest poll TTL so a default mirror converges on the same
-/// envelope as an [`OxKvReader`](super::OxKvReader).
+/// This value matches the manifest poll TTL. A default mirror therefore
+/// converges on the same envelope as an [`OxKvReader`](super::OxKvReader).
 const DEFAULT_STALE_TTL: Duration = Duration::from_secs(1);
 
-/// Long cache peek for post-write syncs: the entry was just published by our
-/// own write, so any bound comfortably above zero hits without I/O.
+/// Long cache peek for post-write syncs. The entry was just published by our
+/// own write. Therefore any bound above zero hits without I/O.
 const CACHE_PEEK_TTL: Duration = Duration::from_secs(3600);
 
 /// How the mirror fills with the durable key set.
 ///
-/// The default is [`WarmMode::Eager`]: `open` returns only after every key
-/// is mirrored. The other modes return immediately and converge later —
-/// pick them when startup latency matters more than instant full speed.
+/// The default is [`WarmMode::Eager`]. In that mode, `open` returns only after
+/// the mirror holds every key. The other modes return immediately. They
+/// converge later. Choose them when startup latency matters more than instant
+/// full speed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WarmMode {
     /// Scan the whole store during `open` before serving reads.
     ///
-    /// Slowest start, fastest steady state: every read after `open` is
-    /// zero-I/O. Best when RAM comfortably holds the dataset.
+    /// This mode has the slowest start and the fastest steady state. Every
+    /// read after `open` is zero-I/O. Use this mode when RAM holds the dataset
+    /// with room to spare.
     #[default]
     Eager,
-    /// Return immediately and converge via an explicitly driven scan.
+    /// Return immediately and converge through an explicitly driven scan.
     ///
-    /// Reads fall through to the durable core until the scan completes;
-    /// drive it with [`warm`](CachedOxKvStore::warm) or
-    /// [`warm_step`](CachedOxKvStore::warm_step) from any task or timer.
-    /// Best when startup must stay instant but the full set fits in RAM.
+    /// Reads fall through to the durable core until the scan completes. Drive
+    /// the scan with [`warm`](CachedOxKvStore::warm) or
+    /// [`warm_step`](CachedOxKvStore::warm_step). Run that driver from any
+    /// task or timer. Use this mode when startup must stay instant and the
+    /// full set fits in RAM.
     Background,
-    /// Return immediately and converge key-by-key on read misses.
+    /// Return immediately and converge key by key on read misses.
     ///
-    /// No scan ever runs unless [`warm`](CachedOxKvStore::warm) is called:
-    /// each miss fetches from the core and fills the mirror, so hot keys
-    /// arrive first and untouched keys cost no RAM. Best when the dataset
-    /// exceeds RAM or access is sparse.
+    /// No scan ever runs unless [`warm`](CachedOxKvStore::warm) is called.
+    /// Each miss fetches from the core and fills the mirror. Therefore hot
+    /// keys arrive first. Untouched keys cost no RAM. Use this mode when the
+    /// dataset exceeds RAM or the access is sparse.
     Lazy,
 }
 
@@ -92,18 +97,20 @@ struct CachedState {
     last_check_ms: u64,
     /// Fencing message while the owning writer is superseded.
     poisoned: Option<String>,
-    /// Full dataset mirrored: reads serve from memory alone.
+    /// The mirror holds the full dataset. Reads then serve from memory alone.
     warmed: bool,
     /// Resume cursor for an explicitly driven scan.
     warm_cursor: Option<String>,
-    /// Keys already scanned by the driven scan, for the final diff.
+    /// Keys already scanned by the driven scan. The deletion difference uses
+    /// them.
     scanned_keys: BTreeSet<String>,
 }
 
 /// Records one manifest generation into `state`.
 ///
-/// The ownership epoch is tracked separately: `manifest.epoch` records the
-/// creation lineage and never moves on takeover, so it cannot detect one.
+/// The code tracks the ownership epoch separately. `manifest.epoch` records
+/// the creation lineage. That value never moves on takeover. Therefore it
+/// cannot detect a takeover.
 fn observe_manifest(state: &mut CachedState, manifest: &Manifest) {
     state.version = manifest.version;
     state.sst_ids = manifest.sst.iter().map(|meta| meta.id.clone()).collect();
@@ -146,9 +153,9 @@ fn in_window(key: &str, direction: Direction, cursor: &(Option<String>, Option<S
 
 /// Write-through RAM mirror over an [`OxKvStore`].
 ///
-/// Share with `Arc`: the mirror and the sync state are reference-counted
-/// through clones of the inner handles, so one `Arc<CachedOxKvStore>` serves
-/// every thread.
+/// Share the value with `Arc`. The code reference-counts the mirror and the
+/// sync state through clones of the inner handles. Therefore one
+/// `Arc<CachedOxKvStore>` serves every thread.
 pub struct CachedOxKvStore<C = LruCache<String, Arc<SstFile>>> {
     inner: OxKvStore<C>,
     mirror: BTreeStore,
@@ -167,9 +174,10 @@ impl<C> std::fmt::Debug for CachedOxKvStore<C> {
     }
 }
 
-/// Clones share the mirror and the sync state: the `BTreeStore` handle and
-/// the generation tracker are reference-counted, so clones observe the same
-/// keys. Required for decorator composition (`HookStore`, `OtelStore`).
+/// Clones share the mirror and the sync state. The code reference-counts the
+/// `BTreeStore` handle and the generation tracker. Therefore the clones
+/// observe the same keys. Decorator composition (`HookStore`, `OtelStore`)
+/// requires this behavior.
 impl<C> Clone for CachedOxKvStore<C>
 where
     C: Cache<String, Arc<SstFile>>,
@@ -204,9 +212,9 @@ where
 
     /// Opens a mirror over `inner` with the given fill policy.
     ///
-    /// Only [`WarmMode::Eager`] warms before returning; the other modes set
-    /// the ownership epoch and return immediately. The mirror still observes
-    /// every write made through this handle from the start in all modes.
+    /// Only [`WarmMode::Eager`] warms before returning. The other modes set
+    /// the ownership epoch and return immediately. In every mode, the mirror
+    /// observes every write that this handle makes from the start.
     ///
     /// # Errors
     ///
@@ -242,9 +250,10 @@ where
 
     /// Sets the staleness bound for the `*_checked` reads.
     ///
-    /// `Duration::ZERO` revalidates on every checked read; large bounds serve
-    /// from memory until [`refresh`](Self::refresh) or [`check_stale`](Self::check_stale)
-    /// is called explicitly.
+    /// `Duration::ZERO` revalidates on every checked read. A large bound
+    /// serves from memory until the caller calls
+    /// [`refresh`](Self::refresh) or [`check_stale`](Self::check_stale)
+    /// explicitly.
     #[must_use]
     pub fn with_stale_ttl(self, ttl: Duration) -> Self {
         self.ttl_ms.store(
@@ -262,9 +271,9 @@ where
 
     /// Returns the durable core for `flush`, `compact`, and `gc_wal`.
     ///
-    /// Mirror reads never touch these paths; maintenance issued here does not
-    /// invalidate the mirror because compactions and collections preserve the
-    /// logical key set.
+    /// Mirror reads never touch these paths. The maintenance that a caller
+    /// issues here does not invalidate the mirror. Compactions and collections
+    /// preserve the logical key set.
     #[must_use]
     pub fn inner(&self) -> &OxKvStore<C> {
         &self.inner
@@ -282,8 +291,8 @@ where
 
     /// Reports whether the mirror is poisoned by a fencing rejection.
     ///
-    /// A poisoned mirror fails reads with [`StoreError::Fenced`] until
-    /// [`refresh`](Self::refresh) adopts the new owner.
+    /// A poisoned mirror fails reads with [`StoreError::Fenced`]. The mirror
+    /// stays poisoned until [`refresh`](Self::refresh) adopts the new owner.
     pub async fn is_poisoned(&self) -> bool {
         self.state.lock().await.poisoned.is_some()
     }
@@ -310,8 +319,9 @@ where
 
     /// Pulls the just-published manifest generation into the sync state.
     ///
-    /// Our own writes publish before returning, so a cache peek observes them
-    /// without I/O and later refreshes skip re-applying our own WALs.
+    /// Our own writes publish before returning. Therefore a cache peek
+    /// observes them without I/O. Later refreshes skip re-applying our own
+    /// WALs.
     async fn sync_after_write(&self) {
         let snapshot = {
             let guard = self.inner.manifest_cache.lock().await;
@@ -340,9 +350,9 @@ where
 
     /// Returns `true` when the mirror lags the durable core.
     ///
-    /// Polls `manifest.json` conditionally and compares `version` and the SST
-    /// set; `ownership.json` is not read here. A poisoned mirror always
-    /// reports stale.
+    /// The method polls `manifest.json` conditionally. It compares `version`
+    /// and the SST set. The method does not read `ownership.json`. A poisoned
+    /// mirror always reports stale.
     ///
     /// # Errors
     ///
@@ -371,10 +381,11 @@ where
 
     /// Applies every missing generation to the mirror.
     ///
-    /// Same-owner WAL appends replay incrementally; a new ownership epoch or
-    /// an SST set change (a flush or collection window this mirror missed)
-    /// rebuilds from a full scan instead. Returns the number of key records
-    /// applied.
+    /// WAL appends from the same owner replay incrementally. A new ownership
+    /// epoch rebuilds from a full scan instead. An SST set change rebuilds
+    /// from a full scan instead. An SST set change means a flush or a
+    /// collection window that this mirror missed. The method returns the
+    /// number of key records that it applied.
     ///
     /// # Errors
     ///
@@ -455,25 +466,30 @@ where
 
     /// Rebuilds the mirror from a full scan of the durable core.
     ///
-    /// Listed WAL files overlay the scan newest-wins: the scan only sees
-    /// SSTs plus the local `MemTable`, so unflushed generations from another
-    /// owner would otherwise be missed.
+    /// The listed WAL files overlay the scan with a newest-wins rule. The
+    /// scan only sees the SSTs and the local `MemTable`. Without the overlay,
+    /// the scan would miss the unflushed generations from another owner.
     /// Reports whether the full dataset is mirrored.
     ///
-    /// Always true for [`WarmMode::Eager`] after `open`; for the other modes
-    /// it turns true once [`warm`](Self::warm) or enough
-    /// [`warm_step`](Self::warm_step) calls complete the scan, or a
-    /// [`refresh`](Self::refresh) rebuilds. Until then reads fall through to
-    /// the durable core on mirror misses.
+    /// The result is `true` in these cases:
+    ///
+    /// - The mode is [`WarmMode::Eager`] and `open` has returned.
+    /// - [`warm`](Self::warm) completed the scan.
+    /// - Enough [`warm_step`](Self::warm_step) calls completed the scan.
+    /// - A [`refresh`](Self::refresh) rebuilt the mirror.
+    ///
+    /// Until the result turns `true`, reads fall through to the durable core
+    /// on mirror misses.
     pub async fn is_warmed(&self) -> bool {
         self.state.lock().await.warmed
     }
 
     /// Scans the whole store into the mirror, however many pages it takes.
     ///
-    /// Converges [`WarmMode::Background`] and [`WarmMode::Lazy`] handles to
-    /// the eager steady state, and re-converges any handle after a missed
-    /// generation. Returns the number of key records applied.
+    /// The method converges [`WarmMode::Background`] and [`WarmMode::Lazy`]
+    /// handles to the eager steady state. The method also converges any
+    /// handle again after a missed generation. The method returns the number
+    /// of key records that it applied.
     ///
     /// # Errors
     ///
@@ -500,12 +516,14 @@ where
 
     /// Advances an explicitly driven scan by up to `pages` SST pages.
     ///
-    /// Drive this from any task or timer to converge a
-    /// [`WarmMode::Background`] handle without blocking `open`: each call
-    /// resumes where the previous one stopped, and the final call overlays
-    /// the listed WAL files, diffs deletions, and marks the mirror warmed.
-    /// Returns `true` once the full dataset is mirrored. Concurrent drivers
-    /// serialize on an internal gate, so double-driving only wastes work.
+    /// A caller drives this method from any task or timer. The method
+    /// converges a [`WarmMode::Background`] handle without blocking `open`.
+    /// Each call resumes where the previous call stopped. The final call
+    /// overlays the listed WAL files. The final call also computes the
+    /// deletion difference. The final call also marks the mirror warmed. The
+    /// method returns `true` once the full dataset is mirrored. Concurrent
+    /// drivers serialize on an internal gate. Therefore double-driving only
+    /// wastes work.
     ///
     /// # Errors
     ///
@@ -519,9 +537,11 @@ where
 
     /// Scans up to `max_pages` SST pages into the mirror.
     ///
-    /// Returns whether the scan exhausted the store plus the records applied
-    /// by this call. The final call finishes the generation: WAL overlay,
-    /// deletion diff, and sync-state publish.
+    /// The method returns whether the scan exhausted the store. The method
+    /// also returns the number of records that this call applied. The final
+    /// call finishes the generation. The final call applies the WAL overlay.
+    /// The final call also computes the deletion difference. The final call
+    /// also publishes the sync state.
     async fn warm_pages(&self, max_pages: u32) -> Result<(bool, usize)> {
         if self.state.lock().await.warmed {
             return Ok((true, 0));
@@ -573,8 +593,8 @@ where
         }
     }
 
-    /// Overlays listed WAL files, diffs deletions, and publishes the sync
-    /// state, completing one warming generation.
+    /// Overlays the listed WAL files. Computes the deletion difference.
+    /// Publishes the sync state. These steps complete one warming generation.
     async fn finish_warm(&self, manifest: &Manifest) -> Result<()> {
         for id in &manifest.wal {
             let path = ObjectPath::from(id.as_str());
@@ -614,7 +634,7 @@ where
         Ok(())
     }
 
-    /// Reads `key` from memory, revalidating first when the bound elapsed.
+    /// Reads `key` from memory. Revalidates first when the bound elapsed.
     ///
     /// # Errors
     ///
@@ -624,7 +644,7 @@ where
         self.get_bytes(key).await
     }
 
-    /// Checks `key` in memory, revalidating first when the bound elapsed.
+    /// Checks `key` in memory. Revalidates first when the bound elapsed.
     ///
     /// # Errors
     ///
@@ -634,7 +654,8 @@ where
         self.has(key).await
     }
 
-    /// Scans memory in `direction`, revalidating first when the bound elapsed.
+    /// Scans memory in `direction`. Revalidates first when the bound
+    /// elapsed.
     ///
     /// # Errors
     ///
@@ -755,9 +776,10 @@ where
 
 /// Merges staged transaction records over base rows in `direction` order.
 ///
-/// Staged deletes suppress their keys; staged sets replace or extend them.
-/// The result is truncated to `limit` after sorting, so callers pass
-/// unbounded base scans and pay only the merge.
+/// Staged deletes suppress their keys. Staged sets replace or extend them.
+/// The function truncates the result to `limit` after it sorts the result.
+/// Therefore the callers pass unbounded base scans. Therefore the callers pay
+/// only for the merge.
 fn merge_staged(
     mut rows: Vec<KeyValue>,
     staged: &BTreeMap<String, Option<Vec<u8>>>,
@@ -789,10 +811,11 @@ fn merge_staged(
 
 /// Transaction over a [`CachedOxKvStore`].
 ///
-/// Reads merge the staged overlay with the mirror, so no storage I/O happens
-/// before commit once warmed; before that they fall through to the durable
-/// transaction without filling the shared mirror. The overlay lands in memory
-/// only after the durable commit succeeds.
+/// The reads merge the staged overlay with the mirror. Therefore no storage
+/// I/O happens before the commit once the mirror is warmed. Before that, the
+/// reads fall through to the durable transaction. Those reads do not fill the
+/// shared mirror. The overlay reaches memory only after the durable commit
+/// succeeds.
 pub struct CachedTx<C = LruCache<String, Arc<SstFile>>> {
     tx: OxKvTx<C>,
     mirror: BTreeStore,

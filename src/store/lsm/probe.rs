@@ -1,4 +1,5 @@
-//! Storage probe — validates conditional writes (`If-None-Match` / `If-Match`).
+//! The storage probe validates conditional writes with `If-None-Match` and
+//! `If-Match`.
 #![allow(unreachable_pub, missing_docs)]
 #![allow(clippy::pedantic, clippy::all)]
 
@@ -19,7 +20,7 @@ fn probe_path(prefix: &ObjectPath) -> ObjectPath {
 /// Runs the storage probe against `store` at `prefix/probe/canary`.
 ///
 /// Validates that the store correctly enforces `If-None-Match` and `If-Match`
-/// conditional writes. Returns `Ok(())` only on
+/// conditional writes. It returns `Ok(())` only on
 /// `ok (create, reject-create, reject-stale)`.
 pub(crate) async fn probe_store(store: Arc<dyn Storage>, prefix: &ObjectPath) -> Result<()> {
     let path = probe_path(prefix);

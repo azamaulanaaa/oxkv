@@ -20,7 +20,7 @@ pub struct QueryItem {
     pub prefix: Option<Prefix>,
     /// The expression itself.
     pub expr: Expression,
-    /// Optional boolean operator connecting this item to the next one.
+    /// Optional boolean operator. It connects this item to the next one.
     pub op: Option<BinaryOp>,
 }
 
@@ -50,7 +50,8 @@ pub enum Expression {
     /// A bare term, optionally fuzzy or boosted.
     Term(TermExpr),
     /// A field-scoped expression (`field:expr`). The field name keeps its
-    /// escapes raw; path splitting and unescaping happen at match time.
+    /// escapes raw. The matcher splits the path and removes the escapes at
+    /// match time.
     Field {
         /// The field name before the colon (e.g. `address.city`, `a\\.b`).
         field: String,
@@ -287,7 +288,7 @@ fn parse_modified_term(pair: &Pair<'_, Rule>) -> TermExpr {
             Rule::fuzzy_slop => {
                 let slop_str = inner.as_str().trim_start_matches('~');
                 fuzzy_slop = if slop_str.is_empty() {
-                    Some(2) // Default edit distance per spec
+                    Some(2) // The default edit distance in the specification
                 } else {
                     slop_str.parse::<u8>().ok()
                 };
@@ -370,14 +371,14 @@ mod tests {
     }
 
     #[test]
-    fn test_simple_term() {
+    fn test_a_bare_word_parses_to_a_single_plain_term() {
         let ast = parse_to_ast("rust");
         let expected = group(vec![(&None, plain_term("rust"), &None)]);
         assert_eq!(ast, expected);
     }
 
     #[test]
-    fn test_wildcard_terms() {
+    fn test_wildcard_characters_stay_in_a_plain_term() {
         let ast = parse_to_ast("rus* j?va");
         let expected = group(vec![
             (&None, plain_term("rus*"), &None),
@@ -387,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_error_message() {
+    fn test_the_invalid_helper_names_the_missing_rule() {
         assert_eq!(
             invalid(Rule::field_query),
             "malformed parse tree: expected a `field_query` node"
@@ -395,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unescape_edge_cases() {
+    fn test_unescape_removes_an_escape_and_keeps_a_lone_backslash() {
         assert_eq!(unescape(""), "");
         assert_eq!(unescape("plain"), "plain");
         assert_eq!(unescape(r"a\+b"), "a+b");
@@ -410,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn test_escaped_special_chars() {
+    fn test_escaped_reserved_characters_become_a_plain_term() {
         let ast = parse_to_ast(r"hello\+\(world\)");
         let expected = group(vec![(&None, plain_term("hello+(world)"), &None)]);
         assert_eq!(ast, expected);
@@ -424,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn test_quoted_phrase() {
+    fn test_a_quoted_phrase_parses_to_one_quoted_term() {
         let ast = parse_to_ast("\"exact phrase\"");
         let expected = group(vec![(
             &None,
@@ -435,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn test_quoted_phrase_with_escaped_quote() {
+    fn test_a_quoted_phrase_keeps_an_escaped_quote() {
         let ast = parse_to_ast(r#""say \"hi\"""#);
         let expected = group(vec![(
             &None,
@@ -446,21 +447,21 @@ mod tests {
     }
 
     #[test]
-    fn test_regex_term() {
+    fn test_a_slash_wrapped_pattern_parses_to_a_regex_term() {
         let ast = parse_to_ast("/rus.*/");
         let expected = group(vec![(&None, term("rus.*", false, true, None, None), &None)]);
         assert_eq!(ast, expected);
     }
 
     #[test]
-    fn test_regex_with_escaped_slash() {
+    fn test_an_escaped_slash_stays_inside_a_regex_term() {
         let ast = parse_to_ast("/a\\/b/");
         let expected = group(vec![(&None, term("a/b", false, true, None, None), &None)]);
         assert_eq!(ast, expected);
     }
 
     #[test]
-    fn test_fuzzy_default_edit_distance() {
+    fn test_a_bare_tilde_sets_the_edit_distance_to_two() {
         let ast = parse_to_ast("roam~");
         let expected = group(vec![(
             &None,
@@ -471,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fuzzy_explicit_edit_distance() {
+    fn test_a_tilde_with_digits_sets_the_edit_distance() {
         let ast = parse_to_ast("roam~1");
         let expected = group(vec![(
             &None,
@@ -482,14 +483,14 @@ mod tests {
     }
 
     #[test]
-    fn test_fuzzy_distance_overflowing_u8_is_dropped() {
+    fn test_an_edit_distance_above_the_u8_range_is_dropped() {
         let ast = parse_to_ast("roam~999");
         let expected = group(vec![(&None, term("roam", false, false, None, None), &None)]);
         assert_eq!(ast, expected);
     }
 
     #[test]
-    fn test_boost_integer_and_float() {
+    fn test_a_boost_value_parses_to_a_float_factor() {
         let ast = parse_to_ast("rust^2 go^2.5");
         let expected = group(vec![
             (&None, term("rust", false, false, None, Some(2.0)), &None),
@@ -499,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn test_quoted_phrase_with_proximity() {
+    fn test_a_tilde_after_a_phrase_sets_the_proximity_distance() {
         let ast = parse_to_ast(r#""rust go"~4"#);
         let expected = group(vec![(
             &None,
@@ -510,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fuzzy_plus_boost_combined() {
+    fn test_a_tilde_and_a_caret_can_follow_one_term() {
         let ast = parse_to_ast("roam~1^3");
         let expected = group(vec![(
             &None,
@@ -521,42 +522,42 @@ mod tests {
     }
 
     #[test]
-    fn test_must_prefix() {
+    fn test_a_plus_prefix_sets_the_item_to_must() {
         let ast = parse_to_ast("+rust");
         let expected = group(vec![(&Some(Prefix::Must), plain_term("rust"), &None)]);
         assert_eq!(ast, expected);
     }
 
     #[test]
-    fn test_must_not_prefix() {
+    fn test_a_minus_prefix_sets_the_item_to_must_not() {
         let ast = parse_to_ast("-draft");
         let expected = group(vec![(&Some(Prefix::MustNot), plain_term("draft"), &None)]);
         assert_eq!(ast, expected);
     }
 
     #[test]
-    fn test_not_keyword_prefix() {
+    fn test_the_not_keyword_sets_the_item_prefix_to_not() {
         let ast = parse_to_ast("NOT draft");
         let expected = group(vec![(&Some(Prefix::Not), plain_term("draft"), &None)]);
         assert_eq!(ast, expected);
     }
 
     #[test]
-    fn test_not_bang_prefix() {
+    fn test_a_bang_prefix_sets_the_item_prefix_to_not() {
         let ast = parse_to_ast("!draft");
         let expected = group(vec![(&Some(Prefix::Not), plain_term("draft"), &None)]);
         assert_eq!(ast, expected);
     }
 
     #[test]
-    fn test_outer_not_wins_over_inner_prefix() {
+    fn test_the_outer_not_overrides_an_inner_must_prefix() {
         let ast = parse_to_ast("NOT +draft");
         let expected = group(vec![(&Some(Prefix::Not), plain_term("draft"), &None)]);
         assert_eq!(ast, expected);
     }
 
     #[test]
-    fn test_prefixes_on_consecutive_items() {
+    fn test_each_prefix_applies_to_its_own_item() {
         let ast = parse_to_ast("+a -b");
         let expected = group(vec![
             (&Some(Prefix::Must), plain_term("a"), &None),
@@ -566,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn test_and_operator_forms() {
+    fn test_both_and_spellings_set_the_and_operator() {
         for q in ["a AND b", "a && b"] {
             let ast = parse_to_ast(q);
             let expected = group(vec![
@@ -578,7 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn test_or_operator_forms() {
+    fn test_both_or_spellings_set_the_or_operator() {
         for q in ["a OR b", "a || b"] {
             let ast = parse_to_ast(q);
             let expected = group(vec![
@@ -590,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn test_implicit_operator_between_terms() {
+    fn test_terms_without_an_operator_get_no_operator() {
         let ast = parse_to_ast("a b c");
         let expected = group(vec![
             (&None, plain_term("a"), &None),
@@ -601,7 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mixed_operator_chain() {
+    fn test_two_operators_in_one_chain_each_attach_to_their_own_item() {
         let ast = parse_to_ast("a AND b OR c");
         let expected = group(vec![
             (&None, plain_term("a"), &Some(BinaryOp::And)),
@@ -633,7 +634,7 @@ mod tests {
     }
 
     #[test]
-    fn test_field_with_plain_term() {
+    fn test_a_colon_binds_a_term_to_a_field() {
         let ast = parse_to_ast("title:rust");
         let expected = group(vec![(
             &None,
@@ -647,7 +648,7 @@ mod tests {
     }
 
     #[test]
-    fn test_field_with_quoted_phrase() {
+    fn test_a_field_can_hold_a_quoted_phrase() {
         let ast = parse_to_ast(r#"title:"exact phrase""#);
         let expected = group(vec![(
             &None,
@@ -661,7 +662,7 @@ mod tests {
     }
 
     #[test]
-    fn test_field_with_regex() {
+    fn test_a_field_can_hold_a_regex_term() {
         let ast = parse_to_ast("title:/rus.*/");
         let expected = group(vec![(
             &None,
@@ -675,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn test_field_with_inclusive_range() {
+    fn test_square_brackets_make_a_field_range_inclusive() {
         let ast = parse_to_ast("status:[200 TO 299]");
         let expected = group(vec![(
             &None,
@@ -694,7 +695,7 @@ mod tests {
     }
 
     #[test]
-    fn test_field_with_exclusive_range() {
+    fn test_curly_braces_make_a_field_range_exclusive() {
         let ast = parse_to_ast("date:{2020 TO 2021}");
         let expected = group(vec![(
             &None,
@@ -713,7 +714,7 @@ mod tests {
     }
 
     #[test]
-    fn test_field_with_sub_query() {
+    fn test_a_field_can_hold_a_sub_query() {
         let ast = parse_to_ast("tags:(rust OR go)");
         let expected = group(vec![(
             &None,
@@ -761,7 +762,7 @@ mod tests {
     }
 
     #[test]
-    fn test_top_level_inclusive_range() {
+    fn test_top_level_square_brackets_make_an_inclusive_range() {
         let ast = parse_to_ast("[alpha TO omega]");
         let expected = group(vec![(
             &None,
@@ -777,7 +778,7 @@ mod tests {
     }
 
     #[test]
-    fn test_top_level_exclusive_range() {
+    fn test_top_level_curly_braces_make_an_exclusive_range() {
         let ast = parse_to_ast("{alpha TO omega}");
         let expected = group(vec![(
             &None,
@@ -793,7 +794,7 @@ mod tests {
     }
 
     #[test]
-    fn test_boosted_range() {
+    fn test_a_range_can_carry_a_boost_factor() {
         let ast = parse_to_ast("[alpha TO omega]^2.5");
         let expected = group(vec![(
             &None,
@@ -809,7 +810,7 @@ mod tests {
     }
 
     #[test]
-    fn test_field_with_boosted_range() {
+    fn test_a_field_range_can_carry_a_boost_factor() {
         let ast = parse_to_ast("status:[200 TO 299]^0.5");
         let expected = group(vec![(
             &None,
@@ -828,7 +829,7 @@ mod tests {
     }
 
     #[test]
-    fn test_boosted_sub_query() {
+    fn test_a_sub_query_can_carry_a_boost_factor() {
         let ast = parse_to_ast("(rust OR go)^1.5");
         let expected = group(vec![(
             &None,
@@ -845,7 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn test_simple_sub_query() {
+    fn test_a_parenthesized_group_becomes_a_sub_query() {
         let ast = parse_to_ast("(a AND b)");
         let expected = group(vec![(
             &None,
@@ -862,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn test_nested_sub_query() {
+    fn test_a_sub_query_can_contain_another_sub_query() {
         let ast = parse_to_ast("(x OR (y AND z))");
         let expected = group(vec![(
             &None,
@@ -889,7 +890,7 @@ mod tests {
     }
 
     #[test]
-    fn test_complex_combined_query() {
+    fn test_one_query_can_mix_a_prefix_a_field_a_phrase_and_an_operator() {
         let ast = parse_to_ast("+title:rust AND body:\"memory safe\" -archived");
 
         let expected = group(vec![
@@ -934,7 +935,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dangling_and_operator_fails_ast_validation() {
+    fn test_a_trailing_and_operator_is_rejected() {
         let items = vec![QueryItem {
             prefix: None,
             expr: plain_term("a"),
@@ -947,7 +948,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dangling_or_operator_fails_ast_validation() {
+    fn test_a_trailing_or_operator_is_rejected() {
         let items = vec![QueryItem {
             prefix: None,
             expr: plain_term("a"),
@@ -960,7 +961,7 @@ mod tests {
     }
 
     #[test]
-    fn test_well_formed_items_pass_ast_validation() {
+    fn test_an_operator_on_every_item_but_the_last_passes_validation() {
         let items = vec![
             QueryItem {
                 prefix: None,
@@ -978,12 +979,12 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_items_pass_ast_validation() {
+    fn test_an_empty_item_list_passes_validation() {
         assert_eq!(ensure_no_dangling_operator(&[]), Ok(()));
     }
 
     #[test]
-    fn test_parse_errors() {
+    fn test_each_malformed_query_fails_to_parse() {
         parse_err("");
         parse_err("   ");
         parse_err("AND");

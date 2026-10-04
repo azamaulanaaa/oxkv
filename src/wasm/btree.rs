@@ -1,6 +1,6 @@
-//! WASM bindings for [`store::BTreeStore`] -- light in-memory baseline.
+//! WASM bindings for [`store::BTreeStore`], the light in-memory baseline.
 //!
-//! JS names mirror the Rust names (`BTreeStore`, `BTreeTx`).
+//! The JS names match the Rust names (`BTreeStore`, `BTreeTx`).
 
 use wasm_bindgen::prelude::*;
 
@@ -10,10 +10,10 @@ use super::{Direction, json_compatible};
 
 /// Wrapper around the concrete [`store::BTreeStore`] for use in a WASM environment.
 ///
-/// The wrapper holds an `Arc<Mutex<BTreeStore>>` so that multiple concurrent
-/// JavaScript calls share one underlying store without needing to copy it. Each
-/// method acquires the lock, runs the operation (async), and releases before returning,
-/// giving callers a simple promise-based API.
+/// The wrapper holds an `Arc<Mutex<BTreeStore>>`. This lets multiple concurrent
+/// JavaScript calls share one underlying store without a copy. Each method
+/// acquires the lock, runs the operation (async), then releases the lock before
+/// it returns. The result is a simple promise-based API for callers.
 #[wasm_bindgen(js_name = BTreeStore)]
 pub struct JsBTreeStore {
     inner: std::sync::Arc<futures::lock::Mutex<store::BTreeStore>>,
@@ -93,16 +93,18 @@ impl JsBTreeStore {
         }
     }
 
-    /// Set a key to an arbitrary JSON-shaped value. Accepts any `JsValue` from JavaScript —
-    /// objects, arrays, strings, numbers, booleans, or nested structures. The value is serialized
-    /// with `serde_json`, stored as raw bytes, and the previous value (if any) is returned as a
-    /// deserialized `Option<T>`.
+    /// Set a key to an arbitrary JSON-shaped value. Accepts any `JsValue` from
+    /// JavaScript. The value can be an object, an array, a string, a number, a
+    /// boolean, or a nested structure. This method serializes the value with
+    /// `serde_json` and stores it as raw bytes. It returns the previous value, if
+    /// any, as a deserialized `Option<T>`.
     ///
-    /// This is the JSON-level counterpart to [`set_bytes`]; use it when you want to work with
-    /// typed Rust structs instead of raw byte arrays.
+    /// This is the JSON-level counterpart to [`set_bytes`]. Use it when you want
+    /// to work with typed Rust structs instead of raw byte arrays.
     ///
     /// # Errors
-    /// * `StoreError` - if serialization of the value or an I/O error occurs
+    /// * `StoreError` - if serialization of the value fails
+    /// * `StoreError` - if an I/O error occurs
     #[wasm_bindgen(js_name = "set")]
     pub async fn set(
         &self,
@@ -123,13 +125,16 @@ impl JsBTreeStore {
         }
     }
 
-    /// Retrieve a JSON-shaped value from the store. Accepts any `JsValue` shape — objects, arrays,
-    /// strings, numbers, booleans, or nested structures. The stored bytes are deserialized into
-    /// an arbitrary `serde_json::Value`, which can be further cast to a typed struct on the caller
-    /// side with `.as_object()`, `.as_array()`, etc., or via `serde` from JavaScript.
+    /// Retrieve a JSON-shaped value from the store. Accepts any `JsValue`
+    /// shape. The shape can be an object, an array, a string, a number, a
+    /// boolean, or a nested structure. This method deserializes the stored bytes
+    /// into an arbitrary `serde_json::Value`. The caller can then cast that
+    /// value to a typed struct with `.as_object()` or `.as_array()`. JavaScript
+    /// can also read the value through `serde`.
     ///
     /// # Errors
-    /// * `StoreError` - if deserialization of the stored value or an I/O error occurs
+    /// * `StoreError` - if deserialization of the stored value fails
+    /// * `StoreError` - if an I/O error occurs
     #[wasm_bindgen(js_name = "get")]
     pub async fn get(
         &self,
@@ -203,20 +208,22 @@ impl JsBTreeStore {
         }
     }
 
-    /// Retrieve JSON documents with cursor-based pagination, optionally filtered
-    /// by a Lucene-style query string.
+    /// Retrieve JSON documents with cursor-based pagination. A Lucene-style
+    /// query string can filter the result.
     ///
-    /// Mirrors `gets_bytes` (`limit`, `direction`, and cursors carry the same
-    /// semantics). When `query` is omitted this is a pass-through to
-    /// `gets_bytes`. With a query, entries are scanned in the requested order
-    /// and only those whose stored bytes deserialize as JSON satisfying the
-    /// query are returned; non-JSON entries are skipped. When a query is given,
+    /// This method mirrors `gets_bytes`. The parameters `limit`, `direction`,
+    /// and the cursors carry the same meaning as they carry in `gets_bytes`.
+    /// This method passes through to `gets_bytes` when `query` is omitted. With
+    /// a query, this method scans the entries in the requested order. It returns
+    /// only the entries whose stored bytes deserialize as JSON that satisfies the
+    /// query. It skips the entries that are not JSON. When a query is given,
     /// `limit` caps the number of *matching* entries.
     ///
-    /// See the `query` module for query syntax (field paths, ranges, wildcards,
-    /// regex, fuzzy, boolean operators).
+    /// See the `query` module for the query syntax. The syntax covers field
+    /// paths, ranges, wildcards, regex, fuzzy, and boolean operators.
     /// # Errors
-    /// * `StoreError` - if the query is invalid or an I/O error occurs
+    /// * `StoreError` - if the query is invalid
+    /// * `StoreError` - if an I/O error occurs
     #[wasm_bindgen(
         return_description = "An array of key-value objects where `value` is the parsed JSON document"
     )]
@@ -254,8 +261,9 @@ impl JsBTreeStore {
                 .map(|kv| {
                     let obj = js_sys::Object::new();
                     let js_key = js_sys::JsString::from(kv.key);
-                    // With no query, raw (non-JSON) values may be returned; fall
-                    // back to bytes in that case so nothing is silently dropped.
+                    // With no query, this method may return raw (non-JSON)
+                    // values. In that case it falls back to bytes so that it
+                    // drops nothing silently.
                     let js_val =
                         if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&kv.value) {
                             json_compatible(&value)?
@@ -289,7 +297,7 @@ impl JsBTreeStore {
         }
     }
 
-    /// Serializes all key-value pairs into a single contiguous `Uint8Array`.
+    /// Serialize all key-value pairs into a single contiguous `Uint8Array`.
     ///
     /// # Errors
     /// * `StoreError` - if retrieval fails while serializing the store
@@ -308,7 +316,8 @@ impl JsBTreeStore {
     /// Loads key-value pairs from a binary slice into the store.
     ///
     /// # Errors
-    /// * `StoreError` - if the binary payload is invalid or storage fails
+    /// * `StoreError` - if the binary payload is invalid
+    /// * `StoreError` - if the storage fails
     #[wasm_bindgen(return_description = "Number of key-value pairs successfully loaded")]
     pub async fn load(
         &self,
@@ -328,13 +337,14 @@ impl JsBTreeStore {
 
     /// Streams the entire store as a `ReadableStream` of `Uint8Array` chunks.
     ///
-    /// Chunks concatenate to exactly what [`save`](Self::save) returns; chunk
+    /// Chunks concatenate to exactly what [`save`](Self::save) returns. Chunk
     /// boundaries always fall between whole records, so each chunk can be
-    /// decoded independently downstream (e.g. piped straight into a file or
-    /// fetch upload).
+    /// decoded independently downstream. For example, a caller can pipe a chunk
+    /// straight into a file or a fetch upload.
     ///
-    /// The stream reads lazily and clones the store handle out of the mutex, so
-    /// no other method on this handle is blocked for the stream lifetime.
+    /// The stream reads lazily. It clones the store handle out of the mutex, so
+    /// no other method on this handle is blocked for the lifetime of the
+    /// stream.
     ///
     /// # Errors
     /// * `StoreError` - if retrieval fails while streaming
@@ -344,19 +354,20 @@ impl JsBTreeStore {
     pub fn save_stream(&self) -> web_sys::ReadableStream {
         use futures::{SinkExt, StreamExt, TryStreamExt};
 
-        // The core save_stream borrows its source, but JS streams must own
-        // their data ('static). Drive the borrowed stream in a background task
-        // through a bounded channel, which also provides backpressure: the
-        // next page is only fetched once the consumer drains a chunk. When the
-        // consumer cancels, the sink errors out, the task exits, and the lock
-        // is released.
+        // The core `save_stream` borrows its source, but JS streams must own
+        // their data for the `'static` lifetime. A background task drives the
+        // borrowed stream through a bounded channel. The channel also provides
+        // backpressure. The task fetches the next page only after the consumer
+        // drains a chunk. When the consumer cancels, the sink errors out, the
+        // task exits, and the lock is released.
         let (mut sender, receiver) = futures::channel::mpsc::channel::<store::Result<Vec<u8>>>(16);
         let inner = std::sync::Arc::clone(&self.inner);
         wasm_bindgen_futures::spawn_local(async move {
-            // Cloning out of the mutex instead of holding the guard: a consumer
-            // that stalls on a full channel would otherwise park this task
-            // holding the store lock and freeze every other method on the
-            // handle until it resumed or was cancelled.
+            // This task clones out of the mutex instead of holding the guard.
+            // A consumer that stalls on a full channel would otherwise park
+            // this task while it holds the store lock. That stall would freeze
+            // every other method on the handle until the task resumed or the
+            // consumer cancelled.
             let store = inner.lock().await.clone();
             let mut chunks = store.save_stream();
             while let Some(chunk) = chunks.next().await {
@@ -375,14 +386,17 @@ impl JsBTreeStore {
     /// Loads key-value pairs from a `ReadableStream` of byte chunks into the
     /// store inside one transaction.
     ///
-    /// Chunk boundaries are arbitrary — chunks may split mid-record; decoding
-    /// is incremental, so memory stays bounded regardless of payload size.
-    /// Typical sources: `File.stream()`, `fetch()` bodies, or the stream
+    /// Chunk boundaries are arbitrary. A chunk may split a record. Decoding is
+    /// incremental, so memory stays bounded regardless of the payload size.
+    /// Typical sources are `File.stream()`, `fetch()` bodies, and the stream
     /// returned by [`save_stream`](Self::save_stream).
     ///
     /// # Errors
-    /// * `StoreError` - if any chunk fails to decode as bytes, the payload is
-    ///   malformed or truncated, or storage fails. On error nothing is committed.
+    /// * `StoreError` - if a chunk fails to decode as bytes
+    /// * `StoreError` - if the payload is malformed or truncated
+    /// * `StoreError` - if the storage fails
+    ///
+    /// On error nothing is committed.
     #[wasm_bindgen(return_description = "Number of key-value pairs successfully loaded")]
     pub async fn load_stream(
         &self,
@@ -414,7 +428,7 @@ impl JsBTreeStore {
     }
 }
 
-// Generated wrapper; see `js_tx!` in `wasm/mod.rs`.
+// Generated wrapper. See `js_tx!` in `wasm/mod.rs`.
 js_tx!(
     JsBTreeTx,
     "BTreeTx",
@@ -613,8 +627,8 @@ mod tests {
             .expect("name is not a string");
         assert_eq!(name, "Ada");
 
-        // JSON.stringify is what JS consumers and schema validators effectively
-        // see; a Map would serialize to "{}" here.
+        // JS consumers and schema validators see what `JSON.stringify`
+        // returns. A `Map` would serialize to `{}` here.
         let serialized = js_sys::JSON::stringify(&loaded).expect("stringify failed");
         let roundtripped: serde_json::Value =
             serde_json::from_str(&serialized.as_string().expect("serialized is not a string"))
@@ -697,11 +711,11 @@ mod tests {
             ok(js_store.set_bytes(key, key.as_bytes()).await);
         }
 
-        // Mirrors btree.rs::test_gets_prev_without_start_returns_empty
+        // Mirrors btree.rs::test_gets_prev_without_a_start_returns_no_items
         let descending = entries(js_store.gets_bytes(None, Direction::Prev, None, None).await);
         assert!(descending.is_empty());
 
-        // Mirrors btree.rs::test_gets_prev_with_start_less_than_end_returns_empty
+        // Mirrors btree.rs::test_gets_prev_returns_no_items_when_the_start_is_below_the_end
         let inverted = entries(
             js_store
                 .gets_bytes(
@@ -714,7 +728,7 @@ mod tests {
         );
         assert!(inverted.is_empty());
 
-        // Mirrors btree.rs::test_gets_next_invalid_range
+        // Mirrors btree.rs::test_gets_next_returns_no_items_when_the_start_is_above_the_end
         let invalid = entries(
             js_store
                 .gets_bytes(
@@ -727,7 +741,7 @@ mod tests {
         );
         assert!(invalid.is_empty());
 
-        // Mirrors btree.rs::test_gets_range_end_only
+        // Mirrors btree.rs::test_gets_next_to_an_end_without_a_start
         let up_to = entries(
             js_store
                 .gets_bytes(None, Direction::Next, None, Some("b".to_owned()))
@@ -736,7 +750,7 @@ mod tests {
         let keys: Vec<_> = up_to.iter().map(entry_key).collect();
         assert_eq!(keys, vec!["a", "b"]);
 
-        // Mirrors btree.rs::test_gets_prev_with_limit
+        // Mirrors btree.rs::test_gets_prev_stops_at_the_limit_from_a_start
         let limited_descending = entries(
             js_store
                 .gets_bytes(Some(2), Direction::Prev, Some("c".to_owned()), None)
@@ -965,8 +979,8 @@ mod tests {
         assert!(!reassembled.is_empty());
         assert_eq!(total, expected);
 
-        // Feed the same chunks (re-wrapped as a fresh ReadableStream) into a
-        // new store and confirm the round trip restores every entry.
+        // Feed the same chunks into a new store. The chunks are re-wrapped as
+        // a fresh `ReadableStream`. The round trip must restore every entry.
         let restored = JsBTreeStore::new();
         let input = wasm_streams::readable::ReadableStream::from_stream(stream::iter(
             reassembled
@@ -997,7 +1011,8 @@ mod tests {
     #[wasm_bindgen_test]
     async fn save_empty_store_produces_header_only_buffer() {
         let js_store = JsBTreeStore::new();
-        // Even an empty store yields a valid, version-identifiable snapshot.
+        // An empty store also produces a valid snapshot that identifies its
+        // version.
         let mut expected = b"OXKV".to_vec();
         expected.extend_from_slice(&1u32.to_le_bytes());
         assert_eq!(to_bytes(&ok(js_store.save().await)), expected);
@@ -1019,8 +1034,8 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].0, "doc");
 
-        // The bytes on disk must be the actual JSON document, not a
-        // serialized-opaque-handle placeholder like {}.
+        // The bytes on disk must be the actual JSON document. They must not be
+        // an opaque handle placeholder such as `{}`.
         let stored: serde_json::Value =
             serde_json::from_slice(&entries[0].1).expect("stored bytes are valid JSON");
         assert_eq!(stored, doc);

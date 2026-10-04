@@ -1,4 +1,5 @@
-//! Blob overflow for large values — spills to `e{epoch}/blob/{hash}`.
+//! The store uses blob overflow for large values.
+//! A large value spills to `e{epoch}/blob/{hash}`.
 #![allow(unreachable_pub, missing_docs)]
 #![allow(clippy::pedantic, clippy::all)]
 
@@ -12,7 +13,8 @@ use crate::store::{Result, StoreError};
 
 use super::ownership::epoch_prefix;
 
-/// Overflow helper — `klen+vlen > block_size` spills to `blob/`.
+/// Overflow helper for blob spill.
+/// A value with `klen+vlen > block_size` spills to `blob/`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BlobPointer {
     /// Blob object path as stored (e.g. `e000007/blob/<hash>`).
@@ -23,13 +25,15 @@ pub(crate) struct BlobPointer {
     pub crc: u32,
 }
 
-/// Returns `true` if `key+value` exceeds `block_size` and must spill to blob.
+/// Returns `true` if `key+value` exceeds `block_size`.
+/// The value must then spill to blob.
 #[must_use]
 pub(crate) fn is_overflow(key: &str, value: &[u8], block_size: usize) -> bool {
     key.len() + value.len() + 8 > block_size
 }
 
-/// Deterministic hash for blob name — hex `SHA-256`.
+/// Deterministic hash for a blob name.
+/// The hash is a hex `SHA-256`.
 #[must_use]
 pub(crate) fn blob_hash(value: &[u8]) -> String {
     let mut hasher = Sha256::new();
@@ -49,14 +53,17 @@ pub(crate) fn blob_path(prefix: &ObjectPath, epoch: u64, hash: &str) -> ObjectPa
     epoch_prefix(prefix, epoch).child("blob").child(hash)
 }
 
-/// Prefix marking a value as a blob pointer rather than user data.
+/// Prefix that marks a value as a blob pointer rather than user data.
 ///
-/// The pointer is JSON so it stays inspectable with `GET`, but it is *not*
-/// valid JSON on its own: the tag is a non-JSON byte prefix, so no user
-/// value — including a JSON object that happens to have `blob`/`len`/`crc`
-/// fields — can ever be mistaken for a pointer. Without this, any user
-/// document of that shape became permanently unreadable: `resolve_value`
-/// dereferenced it, the blob GET 404'd, and the key errored forever.
+/// The pointer is JSON so that the tagged bytes stay inspectable with `GET`.
+/// The tagged bytes are *not* valid JSON on their own, because the tag is a
+/// non-JSON byte prefix. No user value can ever be mistaken for a pointer.
+/// This includes a JSON object that happens to have `blob`, `len`, and `crc`
+/// fields.
+///
+/// Without this tag, any user document of that shape became permanently
+/// unreadable. `resolve_value` dereferenced it. The blob GET returned 404. The
+/// key errored forever.
 const BLOB_POINTER_TAG: &[u8] = b"\x00oxkv-blob-v1:";
 
 /// Encodes a blob pointer as tagged bytes for inline SST value.
@@ -73,16 +80,19 @@ pub(crate) fn encode_blob_pointer(blob: &ObjectPath, len: usize, crc: u32) -> Ve
     out
 }
 
-/// Tries to decode `value` as a [`BlobPointer`]; `None` if not a pointer.
+/// Tries to decode `value` as a [`BlobPointer`].
+/// Returns `None` if `value` is not a pointer.
 ///
-/// Any value without the exact tag is user data and is returned as-is.
+/// Any value without the exact tag is user data. The function returns that
+/// value unchanged.
 #[must_use]
 pub(crate) fn try_decode_blob_pointer(value: &[u8]) -> Option<BlobPointer> {
     let json = value.strip_prefix(BLOB_POINTER_TAG)?;
     serde_json::from_slice(json).ok()
 }
 
-/// Puts `value` to `e{epoch}/blob/{hash}` via `If-None-Match` and returns the path.
+/// Puts `value` to `e{epoch}/blob/{hash}` via `If-None-Match`.
+/// Returns the path.
 pub(crate) async fn put_blob(
     store: Arc<dyn Storage>,
     prefix: &ObjectPath,
@@ -98,7 +108,7 @@ pub(crate) async fn put_blob(
     }
 }
 
-/// Gets blob value at `blob_path`.
+/// Gets the blob value at `blob_path`.
 pub(crate) async fn get_blob(store: Arc<dyn Storage>, blob_path: &ObjectPath) -> Result<Vec<u8>> {
     let out = store
         .get(blob_path)

@@ -1,12 +1,12 @@
 //! OpenTelemetry instrumentation for stores.
 //!
 //! This module provides [`OtelStore`], a decorator that wraps any backend
-//! implementing [`Store`](super::Store) and emits OpenTelemetry traces and
-//! metrics around every operation. It follows the same decorator idiom as
-//! [`HookStore`](super::HookStore), so it composes transparently with the rest
-//! of the crate — including transactions, the extension traits
-//! ([`GetSetExt`](super::GetSetExt), [`StoreExt`](super::StoreExt)) and other
-//! decorators:
+//! implementing [`Store`](super::Store). The decorator emits OpenTelemetry
+//! traces and metrics around every operation. It follows the same decorator
+//! idiom as [`HookStore`](super::HookStore), so it composes transparently with
+//! the rest of the crate. It also composes with transactions. It composes with
+//! the extension traits [`GetSetExt`](super::GetSetExt) and
+//! [`StoreExt`](super::StoreExt). It composes with other decorators:
 //!
 //! ```text
 //! OtelStore::new(HookStore::new(BTreeStore::new()))
@@ -15,10 +15,11 @@
 //! # Plug-in architecture
 //!
 //! The crate depends only on the [OpenTelemetry API
-//! crate](https://docs.rs/opentelemetry), not on any SDK or exporter. Telemetry
-//! is emitted through the global tracer and meter providers, so applications
-//! choose (or omit) an SDK, protocol exporter and sampling strategy without any
-//! involvement from this crate:
+//! crate](https://docs.rs/opentelemetry). The crate does not depend on an SDK
+//! or an exporter. Telemetry is emitted through the global tracer and meter
+//! providers. Applications choose an SDK, a protocol exporter, and a sampling
+//! strategy without any involvement from this crate. Applications may also
+//! omit an SDK:
 //!
 //! ```no_run
 //! use oxkv::{BTreeStore, OtelStore};
@@ -31,9 +32,10 @@
 //! ```
 //!
 //! When no provider is installed (the default), all telemetry calls resolve to
-//! no-op implementations and the decorator is a thin pass-through. Install
-//! real SDK providers to export — this is a live doctest (this module only
-//! exists with the `otel` feature, and `opentelemetry_sdk` is a dev-dependency):
+//! no-op implementations. In that case the decorator is a thin pass-through.
+//! Install real SDK providers to export. The next example is a live doctest.
+//! This module exists only with the `otel` feature. The `opentelemetry_sdk`
+//! crate is a dev-dependency:
 //!
 //! ```rust
 //! # #[tokio::main(flavor = "current_thread")]
@@ -57,15 +59,17 @@
 //! Every operation produces one *span* named after it (`get`, `has`, `set`,
 //! `delete`, `gets`, `begin_tx`, `commit`, `rollback`):
 //!
-//! - `db.system = "oxkv"` and `db.operation.name` identify the store and
-//!   operation.
+//! - `db.system = "oxkv"` identifies the store. `db.operation.name`
+//!   identifies the operation.
 //! - `oxkv.key` carries the key of single-key operations.
-//! - `oxkv.existed` marks single-key writes/deletes that hit an existing key.
+//! - `oxkv.existed` marks a single-key write or delete that found an existing
+//!   key.
 //! - `oxkv.items` carries how many entries a range read returned.
-//! - Failures record an `exception` event and set the span status to `Error`.
-//! - A transaction's `commit`/`rollback` spans are children of its `begin_tx`
-//!   span; other spans are rooted at the caller's current span, so store
-//!   activity nests inside application traces naturally.
+//! - Failures record an `exception` event. Failures also set the span status to
+//!   `Error`.
+//! - A transaction's `commit` and `rollback` spans are children of its
+//!   `begin_tx` span. Other spans are rooted at the caller's current span, so
+//!   store activity nests inside application traces.
 //!
 //! Metrics are reported under the meter `"oxkv"`:
 //!
@@ -73,7 +77,7 @@
 //!   `oxkv.outcome` (`ok`/`error`) attributes.
 //! - `oxkv.store.operation.duration`: seconds histogram per operation.
 //!
-//! Note that `oxkv.key` is intentionally high-cardinality; drop it with a
+//! Note that `oxkv.key` is intentionally high-cardinality. Drop it with a
 //! processor-side attribute filter if you export to a system that charges per
 //! time series.
 //!
@@ -141,9 +145,9 @@ mod ops {
     pub(super) const ROLLBACK: &str = "rollback";
 }
 
-/// Global tracer resolved once against whichever tracer provider is installed
-/// at first use. Providers installed afterwards are not picked up; install
-/// them before issuing store operations.
+/// Global tracer, resolved once against whichever tracer provider is installed
+/// at first use. The tracer does not pick up a provider installed afterwards.
+/// Install the provider before issuing store operations.
 static TRACER: LazyLock<BoxedTracer> = LazyLock::new(|| global::tracer(env!("CARGO_PKG_NAME")));
 
 /// Global metric instruments, resolved together with the meter provider at
@@ -174,9 +178,10 @@ impl Telemetry {
 
 /** A non-recording span that only carries a parent [`SpanContext`].
  *
- * Used to parent `commit`/`rollback` spans at their transaction's `begin_tx`
- * span after that span has ended. Equivalent to the SDK test utilities'
- * `TestSpan`, implemented locally to avoid a testing-only dependency.
+ * Used to parent the `commit` and `rollback` spans at the `begin_tx` span of
+ * their transaction. The parent span has ended by then. This type is
+ * equivalent to the `TestSpan` type of the SDK test utilities. The crate
+ * implements this type locally to avoid a testing-only dependency.
  */
 struct ParentSpan(SpanContext);
 
@@ -293,11 +298,10 @@ fn no_annotation<T>(_: &mut BoxedSpan, _: &T) {}
 
 /// A [`Store`] decorator emitting OpenTelemetry traces and metrics.
 ///
-/// Wrapping any backend, it intercepts every operation to produce one span per
-/// call plus counter/histogram records (see the crate-level `otel` feature
-/// docs). Because
-/// it implements [`Store`] itself, it composes transparently with the rest of
-/// the crate.
+/// It wraps any backend and intercepts every operation. Each call produces one
+/// span. Each call also produces counter and histogram records (see the
+/// crate-level `otel` feature docs). It implements [`Store`] itself, so it
+/// composes transparently with the rest of the crate.
 ///
 /// # Example
 ///
@@ -317,7 +321,7 @@ pub struct OtelStore<S> {
 impl<S> OtelStore<S> {
     /// Wraps `inner` so every operation emits OpenTelemetry signals.
     ///
-    /// Telemetry flows through the global OpenTelemetry providers; see the
+    /// Telemetry flows through the global OpenTelemetry providers. See the
     /// crate-level feature documentation for wiring guidance.
     #[must_use]
     pub fn new(inner: S) -> Self {
@@ -441,8 +445,8 @@ where
 /// An [`OtelStore`] transaction that instruments staging operations and makes
 /// `commit`/`rollback` child spans of their originating `begin_tx`.
 ///
-/// Produced by [`Store::begin_tx`] on an [`OtelStore`]; otherwise behaves
-/// exactly like the wrapped transaction.
+/// Produced by [`Store::begin_tx`] on an [`OtelStore`]. Otherwise this type
+/// behaves exactly like the wrapped transaction.
 #[derive(Debug)]
 pub struct OtelTx<T> {
     inner: T,
@@ -552,14 +556,15 @@ impl<T: Transaction + Send + Sync> Transaction for OtelTx<T> {
 // ---------------------------------------------------------------------------
 // Tests
 //
-// Gated on native targets only: the SDK-based emission tests install global
-// providers, and the opentelemetry_sdk dev-dependency is native-only (its
-// rand/getrandom chain needs a wasm-specific backend we don't ship).
+// These tests run on native targets only. The SDK-based emission tests install
+// global providers. The opentelemetry_sdk dev-dependency is native-only. Its
+// rand/getrandom chain needs a wasm-specific backend that this crate does not
+// ship.
 //
-// `await_holding_lock` is intentional: `telemetry_lock` serializes each test's
-// whole body because telemetry flows through process-global providers. Each
-// test runs on its own single-threaded tokio runtime, so no other task can be
-// blocked behind the guard while it is held across an await point.
+// `await_holding_lock` is intentional. `telemetry_lock` serializes the whole
+// body of each test because telemetry flows through process-global providers.
+// Each test runs on its own single-threaded tokio runtime. No other task can
+// block behind the guard while the guard is held across an await point.
 // ---------------------------------------------------------------------------
 
 #[cfg(all(test, feature = "otel", not(target_arch = "wasm32")))]
@@ -577,15 +582,16 @@ mod tests {
     use super::*;
     use crate::store::{BTreeStore, StoreError, lock_ignore_poison};
 
-    /// In-memory span sink implementing the SDK exporter trait; spans land in
-    /// it synchronously because we register it behind a simple processor.
+    /// In-memory span sink that implements the SDK exporter trait. Spans land in
+    /// the sink synchronously because a simple processor writes to it.
     #[derive(Clone, Debug, Default)]
     struct SharedSpanExporter(Arc<Mutex<Vec<SpanData>>>);
 
     impl SpanExporter for SharedSpanExporter {
-        // Synchronous body: the batch is appended immediately, so we return an
-        // already-ready future rather than declaring the method `async` (which
-        // clippy::unused_async_trait_impl correctly flags as needless).
+        // Synchronous body: the function appends the batch immediately. It
+        // returns an already-ready future instead of declaring the method
+        // `async`. `clippy::unused_async_trait_impl` flags that declaration
+        // as needless.
         fn export(
             &self,
             batch: Vec<SpanData>,
@@ -603,9 +609,9 @@ mod tests {
 
     /// Installs the global SDK providers exactly once and returns shared sinks.
     ///
-    /// Every test in this module must call this *before* its first store
-    /// operation, so the lazy globals bind to the real providers regardless of
-    /// which test runs first.
+    /// Every test in this module must call this function *before* its first
+    /// store operation. The lazy globals then bind to the real providers,
+    /// whichever test runs first.
     fn fixture() -> &'static Fixture {
         static FIXTURE: OnceLock<Fixture> = OnceLock::new();
         FIXTURE.get_or_init(|| {
@@ -657,11 +663,11 @@ mod tests {
 
     /// Serializes every test in this module.
     ///
-    /// Telemetry flows through process-global providers shared by all tests,
-    /// so concurrent store operations would interleave into each other's
-    /// exporter snapshots. Holding this lock for the entire test body makes
-    /// before/after snapshots exact. The suite is fast enough that losing
-    /// intra-module parallelism is irrelevant.
+    /// Telemetry flows through process-global providers shared by all tests.
+    /// Concurrent store operations would therefore interleave into each
+    /// other's exporter snapshots. Holding this lock for the entire test body
+    /// makes the before and after snapshots exact. The suite is fast enough
+    /// that losing intra-module parallelism is irrelevant.
     fn telemetry_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         lock_ignore_poison(LOCK.get_or_init(|| Mutex::new(())))
@@ -687,7 +693,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_crud_round_trip_matches_inner_semantics() {
+    async fn test_each_operation_returns_what_the_inner_store_returns() {
         let _guard = telemetry_lock();
         fixture();
         let s = store();
@@ -760,7 +766,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_into_inner_exposes_wrapped_store() {
+    async fn test_into_inner_consumes_the_decorator() {
         let _guard = telemetry_lock();
         fixture();
         let s = store();
@@ -812,7 +818,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_successful_operations_emit_spans_and_metrics() {
+    async fn test_successful_operations_emit_spans() {
         const KEY: &str = "otel-emission-success";
         let _guard = telemetry_lock();
         fixture();
@@ -830,9 +836,9 @@ mod tests {
             );
         }
 
-        // Transaction spans carry no key, so isolate them with a snapshot:
-        // everything appended after `before` must contain our begin_tx/commit
-        // pair, linked by parent span id.
+        // Transaction spans carry no key, so the test isolates them with
+        // a snapshot. Everything appended after `before` must contain our
+        // `begin_tx` and `commit` pair. The parent span ID links the pair.
         let before = exported_len();
         let tx = s.begin_tx().unwrap();
         tx.set_bytes(KEY, b"v2").await.unwrap();
@@ -858,7 +864,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_failed_operations_record_error_status_and_outcome() {
+    async fn test_a_failed_operation_sets_the_span_status_to_error() {
         const KEY: &str = "otel-emission-failure";
         let _guard = telemetry_lock();
         fixture();
@@ -880,7 +886,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_operations_emit_counter_and_histogram_series() {
+    async fn test_operations_emit_a_counter_series() {
         const KEY: &str = "otel-metrics-check";
         let _guard = telemetry_lock();
         fixture();
@@ -938,8 +944,9 @@ mod tests {
     async fn test_gets_records_item_count_on_span() {
         let _guard = telemetry_lock();
         fixture();
-        // `gets` spans carry no key, so isolate via a start-of-test snapshot:
-        // under the telemetry lock, everything appended below is ours.
+        // `gets` spans carry no key, so the test isolates them with a
+        // start-of-test snapshot. Under the telemetry lock, everything appended
+        // below belongs to this test.
         let before = exported_len();
         let s = store();
         for i in 0..3 {
