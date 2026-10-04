@@ -403,11 +403,13 @@ let kv = OxKvStore::builder()
 
 Enable it:
 
-```toml
-[dependencies]
-oxkv = { version = "0.9", features = ["oxkv"] }           # portable LSM core
-# oxkv = { version = "0.9", features = ["oxkv", "oxkv-s3"] } # + S3/GCS/Azure via object_store (native)
+```console
+cargo add oxkv --features oxkv                  # portable LSM core
+cargo add oxkv --features oxkv,oxkv-s3         # + S3/GCS/Azure via object_store (native)
 ```
+
+The snippets use `cargo add`, so no README change is needed for a release.
+Only `Cargo.toml` carries a version.
 
 `cargo test --features oxkv` and `cargo bench --features oxkv` exercise it against `MemStorage` (bench uses `skip_probe(true)` so the numbers are comparable to `btree_mem`/`oxkv_mem`).
 
