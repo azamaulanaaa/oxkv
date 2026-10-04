@@ -2295,4 +2295,98 @@ mod tests {
         assert!(!super::store::is_orphan_wal_key("manifest.json"));
         assert!(!super::store::is_orphan_wal_key(""));
     }
+
+    /// Fails every `manifest.json` put with `CasConflict` while an atomic
+    /// flag is set. The struct delegates every other call. A test can arm the
+    /// flag, break a drain, then disarm it.
+    struct ArmedManifestConflict {
+        inner: MemStorage,
+        armed: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl Storage for ArmedManifestConflict {
+        async fn get(&self, path: &ObjectPath) -> Result<GetOutput> {
+            self.inner.get(path).await
+        }
+
+        async fn get_opts(&self, path: &ObjectPath, options: GetOptions) -> Result<GetOutput> {
+            self.inner.get_opts(path, options).await
+        }
+
+        async fn put_opts(
+            &self,
+            path: &ObjectPath,
+            payload: Vec<u8>,
+            mode: PutMode,
+        ) -> Result<PutOutcome> {
+            if path.as_str().ends_with("manifest.json")
+                && self.armed.load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(StoreError::CasConflict("armed".to_string()));
+            }
+            self.inner.put_opts(path, payload, mode).await
+        }
+
+        async fn delete(&self, path: &ObjectPath) -> Result<()> {
+            self.inner.delete(path).await
+        }
+
+        async fn list(&self, prefix: &ObjectPath) -> Result<Vec<ObjectPath>> {
+            self.inner.list(prefix).await
+        }
+    }
+
+    /// A failed drain must return the staged ops to the buffer.
+    ///
+    /// `stage_set` puts an op in the `MemTable` and in the `WAL` buffer at
+    /// the same time. The op is not durable until a flush. A drain that fails
+    /// after taking the op would drop it from the buffer, so a later `flush`
+    /// would write nothing and a restart would lose the key. The op also sits
+    /// in an unlisted `WAL` object that `gc_orphans` reclaims.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn failed_drain_returns_staged_ops_to_the_buffer() {
+        let armed = Arc::new(ArmedManifestConflict {
+            inner: MemStorage::new(),
+            armed: std::sync::atomic::AtomicBool::new(true),
+        });
+        let backend: Arc<dyn Storage> = armed.clone();
+        let s3 = OxKvStore::builder()
+            .with_store(Arc::clone(&backend))
+            .with_prefix(ObjectPath::from("drain-restore"))
+            .with_session("sess-drain")
+            .skip_probe(true)
+            .build()
+            .await
+            .expect("build");
+
+        s3.stage_set("staged", b"value").await;
+        let err = s3.flush().await.expect_err("the manifest CAS must fail");
+        assert!(
+            matches!(err, StoreError::CasConflict(_)),
+            "expected CasConflict, got {err:?}"
+        );
+
+        // Disarm, then flush again. The op must still be owed.
+        armed
+            .armed
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        s3.flush().await.expect("the second flush must succeed");
+
+        // The op is now durable. A fresh store over the same backend must
+        // replay it, which only happens if the op reached the WAL.
+        let reopened = OxKvStore::builder()
+            .with_store(Arc::clone(&backend))
+            .with_prefix(ObjectPath::from("drain-restore"))
+            .skip_probe(true)
+            .build()
+            .await
+            .expect("reopen");
+        assert_eq!(
+            reopened.get_bytes("staged").await.expect("get"),
+            Some(b"value".to_vec()),
+            "the staged op was lost by the failed drain"
+        );
+    }
 }

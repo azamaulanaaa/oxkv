@@ -493,9 +493,21 @@ where
     ///
     /// The caller must hold [`Self::write_gate`].
     ///
+    /// A failed append returns the ops to the front of the buffer. The ops
+    /// stay in the `MemTable` from the moment `stage_set` or `stage_delete`
+    /// ran, so dropping them would leave the `MemTable` ahead of the `WAL`
+    /// with no record that a flush is still owed. A later `flush` would then
+    /// write nothing, and a restart would lose them.
+    ///
+    /// The ops return to the front because they happened before every op
+    /// staged while the append ran. `stage_set` does not take the gate, so
+    /// the buffer can grow during the append. Appending at the back would
+    /// give those later ops the lower `WAL` sequence, and replay would
+    /// invert them.
+    ///
     /// # Errors
     ///
-    /// Returns `StoreError` on `PUT`/ownership/manifest failure.
+    /// Returns `StoreError` on encode, `PUT`, ownership, or manifest failure.
     pub(crate) async fn drain_staged_locked(&self) -> Result<()> {
         let ops: Vec<(String, Option<Vec<u8>>)> = {
             let mut buf = self.wal_buffer.lock().await;
@@ -504,8 +516,29 @@ where
         if ops.is_empty() {
             return Ok(());
         }
+        let payload = match Self::encode_ops(&ops) {
+            Ok(payload) => payload,
+            Err(e) => {
+                self.restore_staged_locked(ops).await;
+                return Err(e);
+            }
+        };
         // Staged ops are already in the `MemTable`. The call needs no mem updates.
-        self.append_wal_locked(Self::encode_ops(&ops)?, &[]).await
+        if let Err(e) = self.append_wal_locked(payload, &[]).await {
+            self.restore_staged_locked(ops).await;
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Puts drained ops back at the front of the `WAL` buffer.
+    ///
+    /// The caller must hold [`Self::write_gate`].
+    async fn restore_staged_locked(&self, ops: Vec<(String, Option<Vec<u8>>)>) {
+        let mut buf = self.wal_buffer.lock().await;
+        let mut restored = ops;
+        restored.append(&mut buf);
+        *buf = restored;
     }
 
     /// Flushes buffered WAL ops to `e{epoch}/wal/{seq:08}.log` through
