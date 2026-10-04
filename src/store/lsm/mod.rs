@@ -28,6 +28,7 @@ pub(crate) use ownership::read_ownership;
 pub(crate) use read::{
     ReadCtx, filter_rows, is_not_found, point_lookup, range_lookup, retry_once_not_found,
 };
+
 pub use reader::{OxKvReader, OxKvRoTx};
 /// Parsed SST file. Name it to weigh a custom [`crate::store::Cache`].
 /// See [`SstFile::size`].
@@ -2231,5 +2232,67 @@ mod tests {
             Some(b"v".to_vec()),
             "maintenance must not lose an acknowledged write"
         );
+    }
+
+    /// A fenced instance must not delete objects. The current owner can hold
+    /// a `WAL` object in flight, before it lists it. A stale instance and a
+    /// stale manifest would together delete that live write.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn fenced_instance_reclaims_nothing() {
+        let (backend, s3) = orphan_fixture("orphan-fenced").await;
+        // A `WAL` object in the owner's hand, not yet listed.
+        let in_flight = ObjectPath::from("orphan-fenced/e000001/wal/00004200.log");
+        backend
+            .put_opts(&in_flight, b"in flight".to_vec(), PutMode::Create)
+            .await
+            .expect("owner put");
+
+        // A second instance takes the epoch. The first instance is now fenced.
+        let _new_owner = OxKvStore::builder()
+            .with_store(Arc::clone(&backend))
+            .with_prefix(ObjectPath::from("orphan-fenced"))
+            .with_session("sess-takeover")
+            .skip_probe(true)
+            .build()
+            .await
+            .expect("takeover build");
+
+        let deleted = s3.gc_orphans().await.expect("fenced reconcile");
+        assert_eq!(deleted, 0, "a fenced instance deleted objects");
+        assert!(
+            backend.get(&in_flight).await.is_ok(),
+            "a fenced instance deleted the owner's in-flight WAL"
+        );
+    }
+
+    /// `format_epoch` pads to six digits and grows past that. The shape check
+    /// must accept an epoch of 1,000,000, which renders as `e1000000`.
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn orphan_wal_key_accepts_long_epochs_only() {
+        assert!(super::store::is_orphan_wal_key("e000001/wal/00000042.log"));
+        // Seven digits. `format_epoch` produces this at epoch 1,000,000.
+        assert!(
+            super::store::is_orphan_wal_key("e1000000/wal/00000042.log"),
+            "the sweep must survive the 1,000,000 epoch boundary"
+        );
+        // Wrong epoch shape.
+        assert!(!super::store::is_orphan_wal_key("e00001/wal/00000042.log"));
+        assert!(!super::store::is_orphan_wal_key("x000001/wal/00000042.log"));
+        // Wrong sequence shape.
+        assert!(!super::store::is_orphan_wal_key("e000001/wal/0000042.log"));
+        assert!(!super::store::is_orphan_wal_key(
+            "e000001/wal/00000042.log.bak"
+        ));
+        // Wrong object kind, wrong depth, wrong directory.
+        assert!(!super::store::is_orphan_wal_key(
+            "e000001/sst/L0/000000042.sst"
+        ));
+        assert!(!super::store::is_orphan_wal_key(
+            "e000001/wal/nested/00000042.log"
+        ));
+        assert!(!super::store::is_orphan_wal_key("manifest.json"));
+        assert!(!super::store::is_orphan_wal_key(""));
     }
 }

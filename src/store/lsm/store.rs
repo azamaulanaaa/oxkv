@@ -61,7 +61,7 @@ static PENDING_CTR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 /// A strict shape check keeps the orphan sweep away from every other object.
 /// The check accepts nothing else. An `e*/sst/` path, a blob path, an
 /// `ownership.json`, a `manifest.json` and any probe canary all fail it.
-fn is_orphan_wal_key(relative: &str) -> bool {
+pub(crate) fn is_orphan_wal_key(relative: &str) -> bool {
     let mut segments = relative.split('/');
     let Some(epoch) = segments.next() else {
         return false;
@@ -81,7 +81,10 @@ fn is_orphan_wal_key(relative: &str) -> bool {
     let Some(seq) = file.strip_suffix(".log") else {
         return false;
     };
-    digits.len() == 6
+    // `format_epoch` pads to six digits and grows past that. An epoch of
+    // 1,000,000 renders as `e1000000`. Accept six digits or more, so the
+    // sweep keeps working at that boundary.
+    digits.len() >= 6
         && digits.bytes().all(|b| b.is_ascii_digit())
         && seq.len() == 8
         && seq.bytes().all(|b| b.is_ascii_digit())
@@ -913,12 +916,25 @@ where
     /// Returns `StoreError` when the manifest cannot be loaded. A `LIST` or
     /// `DELETE` failure is not an error here. It only shortens the pass.
     pub(crate) async fn gc_orphans_inner(&self) -> Result<usize> {
+        // A fenced instance must not delete anything. The current owner can
+        // hold a `WAL` object in flight: it puts the object, then it lists the
+        // object. The object is unlisted during that window. A stale manifest
+        // and a stale instance would together delete a live write. Every other
+        // mutating path checks ownership first. This path deletes objects, so
+        // it checks too.
+        let cur = read_ownership(Arc::clone(&self.inner), &self.prefix).await?;
+        match cur {
+            Some(rec) if rec.epoch == self.epoch && rec.owner_session == self.session => {}
+            _ => return Ok(0),
+        }
+        // A zero TTL forces a revalidation. This manifest decides what to
+        // delete, so a stale copy is the wrong direction for staleness.
         let (manifest, _) = load_manifest(
             Arc::clone(&self.inner),
             &self.prefix,
             self.epoch,
             &self.manifest_cache,
-            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(0),
         )
         .await?;
         // A backend without a listing cannot reconcile. Leave every object in
