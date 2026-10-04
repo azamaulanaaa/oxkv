@@ -269,14 +269,14 @@ mod tests {
     use crate::store::MemStorage;
     use crate::store::sleep;
 
-    fn test_store() -> Arc<dyn Storage> {
+    fn mem_storage() -> Arc<dyn Storage> {
         Arc::new(MemStorage::new())
     }
 
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn manifest_empty_and_cas() {
-        let store = test_store();
+        let store = mem_storage();
         let prefix = ObjectPath::from("oxkv");
         let manifest = Manifest {
             version: 0,
@@ -311,7 +311,7 @@ mod tests {
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn manifest_cache_etag_poll() {
-        let store = test_store();
+        let store = mem_storage();
         let prefix = ObjectPath::default();
         let epoch = 7;
         let cache = Arc::new(async_lock::Mutex::new(ManifestCache::new()));
@@ -361,7 +361,7 @@ mod tests {
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn manifest_cache_ttl_expiry() {
-        let store = test_store();
+        let store = mem_storage();
         let prefix = ObjectPath::default();
         let cache = Arc::new(async_lock::Mutex::new(ManifestCache::new()));
         let ttl = Duration::from_millis(10);

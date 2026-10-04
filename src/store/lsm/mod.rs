@@ -1296,8 +1296,10 @@ mod tests {
         assert!(try_decode_blob_pointer(br#"{"blob":"x","len":1,"crc":2}"#).is_none());
     }
 
-    /// A staged write that happens-before a durable write must win after a
+    /// A durable write that happens-after a staged write must win after a
     /// restart.
+    ///
+    /// An acknowledged write must not be reverted by WAL replay.
     ///
     /// Regression detail: the WAL sequence was allocated at flush time. A later
     /// `put_bytes` could take the *lower* sequence and win the replay.

@@ -183,9 +183,6 @@ fn parse_bound(raw: &str) -> Bound {
         .map_or_else(|_| Bound::Str(raw.to_string()), Bound::Num)
 }
 
-/// Compiles terms appearing outside any field scope. These power the
-/// "search that just works" layer: bare terms become token-level fuzzy
-/// matches with default slop 2, and quoted phrases become case-insensitive
 /// Splits text into lowercase alphanumeric word tokens for unscoped matching.
 fn tokens_ci(text: &str) -> impl Iterator<Item = &str> {
     text.split(|c: char| !c.is_alphanumeric())

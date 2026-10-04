@@ -768,8 +768,8 @@ mod tests {
         assert!(!store.has("key1").await.unwrap());
     }
 
-    /// Checks that the `BTreeStore::new()` constructor creates a valid
-    /// in-memory database.
+    /// Checks that `BTreeStore::default()` creates a valid empty in-memory
+    /// database.
     #[tokio::test]
     async fn test_a_default_store_holds_no_keys() {
         let store = BTreeStore::default();

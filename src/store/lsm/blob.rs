@@ -14,7 +14,8 @@ use crate::store::{Result, StoreError};
 use super::ownership::epoch_prefix;
 
 /// Overflow helper for blob spill.
-/// A value with `klen+vlen > block_size` spills to `blob/`.
+/// A value with `key.len() + value.len() + 8 > block_size` spills to `blob/`.
+/// The 8 bytes are the two record length prefixes. See [`is_overflow`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BlobPointer {
     /// Blob object path as stored (e.g. `e000007/blob/<hash>`).
@@ -25,8 +26,12 @@ pub(crate) struct BlobPointer {
     pub crc: u32,
 }
 
-/// Returns `true` if `key+value` exceeds `block_size`.
-/// The value must then spill to blob.
+/// Returns `true` when the record does not fit in one block.
+/// The caller then stores the value in a blob and stores a pointer instead.
+///
+/// A block record is `klen`, `key`, `vlen`, `value`. Each length is a
+/// 4-byte little-endian `u32`, so the record needs `key.len() + value.len()
+/// + 8` bytes. The test is `key.len() + value.len() + 8 > block_size`.
 #[must_use]
 pub(crate) fn is_overflow(key: &str, value: &[u8], block_size: usize) -> bool {
     key.len() + value.len() + 8 > block_size

@@ -9,7 +9,7 @@
 //! [`StoreExt`](super::StoreExt). It composes with other decorators:
 //!
 //! ```text
-//! OtelStore::new(HookStore::new(BTreeStore::new()))
+//! OtelStore::new(HookStore::new(BTreeStore::default()))
 //! ```
 //!
 //! # Plug-in architecture
