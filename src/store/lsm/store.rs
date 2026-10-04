@@ -63,9 +63,6 @@ pub struct OxKvStore<C = LruCache<String, Arc<SstFile>>> {
     pub(crate) wal_buffer: WalBuffer,
     pub(crate) sst_seq: Arc<std::sync::atomic::AtomicU64>,
     pub(crate) manifest_cache: Arc<async_lock::Mutex<ManifestCache>>,
-    /// Pinned reader versions for WAL GC watermark.
-    /// `BTreeMap<version, count>` — `min_key` is the watermark.
-    pub(crate) readers: Arc<async_lock::Mutex<std::collections::BTreeMap<u64, usize>>>,
     /// Fair gate serializing every durable write path (`flush`,
     /// `flush_mem_to_sst*`, `gc_wal`, `compact`, `put_bytes`, `delete` and
     /// tx `commit`): concurrent writers queue here instead of CAS-retry-storming
@@ -207,7 +204,6 @@ pub(crate) trait WriterStateRef<C> {
     fn wal_buffer(&self) -> &WalBuffer;
     fn sst_seq(&self) -> &Arc<std::sync::atomic::AtomicU64>;
     fn manifest_cache(&self) -> &Arc<async_lock::Mutex<ManifestCache>>;
-    fn readers(&self) -> &Arc<async_lock::Mutex<std::collections::BTreeMap<u64, usize>>>;
     fn write_gate(&self) -> &Arc<async_lock::Mutex<()>>;
     fn pending(&self) -> &Arc<std::sync::Mutex<Vec<PendingWrite>>>;
     fn sst_cache(&self) -> &C;
@@ -242,9 +238,6 @@ macro_rules! impl_writer_state_ref {
             }
             fn manifest_cache(&self) -> &Arc<async_lock::Mutex<ManifestCache>> {
                 &self.manifest_cache
-            }
-            fn readers(&self) -> &Arc<async_lock::Mutex<std::collections::BTreeMap<u64, usize>>> {
-                &self.readers
             }
             fn write_gate(&self) -> &Arc<async_lock::Mutex<()>> {
                 &self.write_gate
@@ -281,7 +274,6 @@ where
             wal_buffer: Arc::clone(src.wal_buffer()),
             sst_seq: Arc::clone(src.sst_seq()),
             manifest_cache: Arc::clone(src.manifest_cache()),
-            readers: Arc::clone(src.readers()),
             write_gate: Arc::clone(src.write_gate()),
             pending: Arc::clone(src.pending()),
             sst_cache: src.sst_cache().clone(),
@@ -587,7 +579,25 @@ where
             .put_opts(&sst_path, sst_bytes.clone(), PutMode::Create)
             .await;
         match put_res {
-            Ok(_) | Err(StoreError::CasConflict(_)) => {}
+            Ok(_) => {}
+            // `Create` lost: an idempotent retry of our own SST, or a burned
+            // sequence whose object already holds different bytes. Verify
+            // rather than assume, exactly as `append_wal_locked` does for the
+            // WAL: accepting blindly would publish an `SstMeta` describing
+            // bytes that were never written, then drop the live `MemTable`
+            // entries on the strength of them.
+            Err(StoreError::CasConflict(_)) => {
+                let existing = self
+                    .inner
+                    .get(&sst_path)
+                    .await
+                    .map_err(|e| StoreError::Storage(format!("read back sst failed: {e}")))?;
+                if existing.bytes != sst_bytes {
+                    return Err(StoreError::Storage(format!(
+                        "sst sequence {seq} already holds different bytes; refusing to overwrite"
+                    )));
+                }
+            }
             Err(e) => return Err(StoreError::Storage(format!("put sst failed: {e}"))),
         }
 
@@ -732,31 +742,6 @@ where
         .await
     }
 
-    /// Registers a pinned reader at `version` for watermark.
-    ///
-    /// While pinned, `gc_wal` will retain `WAL` needed for that snapshot.
-    pub async fn register_reader(&self, version: u64) {
-        let mut readers = self.readers.lock().await;
-        *readers.entry(version).or_insert(0) += 1;
-    }
-
-    /// Unregisters a pinned reader.
-    pub async fn unregister_reader(&self, version: u64) {
-        let mut readers = self.readers.lock().await;
-        if let Some(count) = readers.get_mut(&version) {
-            *count -= 1;
-            if *count == 0 {
-                readers.remove(&version);
-            }
-        }
-    }
-
-    /// Returns the minimum pinned version, if any (watermark).
-    pub async fn min_reader_version(&self) -> Option<u64> {
-        let readers = self.readers.lock().await;
-        readers.keys().next().copied()
-    }
-
     /// Returns the current manifest version (for tests).
     ///
     /// # Errors
@@ -774,11 +759,16 @@ where
         Ok(manifest.version)
     }
 
-    /// GCs `WAL` entries that are covered by an `SST` and not pinned.
+    /// GCs `WAL` entries once a covering `SST` is manifest-visible.
     ///
-    /// An entry is eligible only when an `SST` is manifest-visible and
-    /// its version is `< min_reader_version`. With no pinned readers, all
-    /// `WAL` covered by `L0` is eligible. Returns number of files deleted.
+    /// Every record in a listed `WAL` is also in the `MemTable` until a flush
+    /// publishes it into an `SST`, and `maintain_wal` only calls this after a
+    /// *successful* force-flush — so a non-empty `manifest.sst` means the listed
+    /// `WAL` is covered. A concurrent [`OxKvReader`](super::reader::OxKvReader)
+    /// that still has a collected `WAL` id finds it absent and treats its
+    /// records as `SST`-covered, which is what they are.
+    ///
+    /// Returns the number of files deleted.
     ///
     /// # Errors
     ///
@@ -789,7 +779,6 @@ where
     }
 
     pub(crate) async fn gc_wal_inner(&self) -> Result<usize> {
-        let min_version = self.min_reader_version().await;
         for _ in 0..4 {
             let (manifest, etag) = load_manifest(
                 Arc::clone(&self.inner),
@@ -802,12 +791,6 @@ where
             // Owned copy for mutation; readers share the cached `Arc`.
             let mut manifest = (*manifest).clone();
             if manifest.wal.is_empty() || manifest.sst.is_empty() {
-                return Ok(0);
-            }
-            // If a reader pins an old version, retain WAL.
-            if let Some(min) = min_version
-                && min < manifest.version
-            {
                 return Ok(0);
             }
             let to_delete = manifest.wal.clone();
@@ -932,6 +915,12 @@ where
                     }
                 }
             }
+            // The fold appends by `min_key` adjacency, not by sequence, which
+            // leaves this vec out of recency order. The merge below consumes it
+            // with `.rev()` and `merge_sources` is newest-wins via `or_insert`,
+            // so an out-of-order entry would let an older file's value win and
+            // then be deleted.
+            l1_overlapping.sort_by_key(|m| m.seq);
         }
         if l0_metas.is_empty() && l1_overlapping.is_empty() {
             return Ok(None);
@@ -1038,7 +1027,21 @@ where
             .put_opts(&l1_path, sst_bytes.clone(), PutMode::Create)
             .await;
         match put_res {
-            Ok(_) | Err(StoreError::CasConflict(_)) => {}
+            Ok(_) => {}
+            // Same verification as the WAL append and the L0 flush: a `Create`
+            // conflict means the object exists, not that it is ours.
+            Err(StoreError::CasConflict(_)) => {
+                let existing =
+                    self.inner.get(&l1_path).await.map_err(|e| {
+                        StoreError::Storage(format!("read back L1 sst failed: {e}"))
+                    })?;
+                if existing.bytes != sst_bytes {
+                    return Err(StoreError::Storage(format!(
+                        "L1 sst sequence {seq} already holds different bytes; \
+                         refusing to overwrite"
+                    )));
+                }
+            }
             Err(e) => return Err(StoreError::Storage(format!("put L1 sst failed: {e}"))),
         }
         // Verify still owner.
@@ -1165,14 +1168,19 @@ where
     }
 
     async fn delete(&self, key: &str) -> Result<bool> {
-        let prev = OxKvStore::get_bytes(self, key).await?;
-        let existed = prev.is_some();
-        if !existed {
-            return Ok(false);
-        }
+        // The existence read and the tombstone must be atomic with respect to
+        // the gate, and the drain must happen either way. Reading before the
+        // gate meant a `put_bytes` still queued in `pending` was invisible to
+        // it, so `delete` could answer `false` for a key that a moment later
+        // existed.
         let _gate = self.write_gate.lock().await;
         // Anything staged earlier belongs ahead of this tombstone in the WAL.
         self.drain_staged_locked().await?;
+        // Read under the gate, after the drain, so it also sees staged ops.
+        let existed = OxKvStore::get_bytes(self, key).await?.is_some();
+        if !existed {
+            return Ok(false);
+        }
         // Atomic: encode tombstone and flush WAL before mutating MemTable
         let payload_buf = OxKvStore::<C>::encode_ops(&[(key.to_string(), None)])?;
         self.append_wal_locked(payload_buf, &[(key.to_string(), None)])
@@ -1286,7 +1294,6 @@ where
             wal_buffer: shared.wal_buffer,
             sst_seq: shared.sst_seq,
             manifest_cache: shared.manifest_cache,
-            readers: shared.readers,
             write_gate: shared.write_gate,
             pending: shared.pending,
             sst_cache: shared.sst_cache,
@@ -1536,7 +1543,6 @@ impl OxKvStoreBuilder {
             wal_buffer: Arc::new(async_lock::Mutex::new(Vec::new())),
             sst_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             manifest_cache,
-            readers: Arc::new(async_lock::Mutex::new(std::collections::BTreeMap::new())),
             write_gate: Arc::new(async_lock::Mutex::new(())),
             pending: Arc::new(std::sync::Mutex::new(Vec::new())),
             sst_cache: cache,

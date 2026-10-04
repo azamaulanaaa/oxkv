@@ -276,6 +276,15 @@ impl SstFile {
         let footer_bytes = &data[footer_start..footer_len_offset];
         let footer: SstFooter = serde_json::from_slice(footer_bytes)
             .map_err(|e| StoreError::Storage(format!("parse footer: {e}")))?;
+        // `bloom_k` drives a loop on the point-lookup hot path. `build_sst`
+        // always writes 3, so anything wild is corruption or a hostile object,
+        // and accepting it would turn every read into a CPU denial of service.
+        if footer.bloom_k == 0 || footer.bloom_k > 32 {
+            return Err(StoreError::Storage(format!(
+                "sst implausible bloom_k {}",
+                footer.bloom_k
+            )));
+        }
         Ok(Self {
             data,
             footer,

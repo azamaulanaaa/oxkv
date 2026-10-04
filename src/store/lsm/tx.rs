@@ -37,7 +37,6 @@ pub struct OxKvTx<C = LruCache<String, Arc<SstFile>>> {
     pub(crate) wal_buffer: WalBuffer,
     pub(crate) sst_seq: Arc<std::sync::atomic::AtomicU64>,
     pub(crate) manifest_cache: Arc<async_lock::Mutex<ManifestCache>>,
-    pub(crate) readers: Arc<async_lock::Mutex<std::collections::BTreeMap<u64, usize>>>,
     /// Fair gate serializing the durable write paths (`put_bytes` and tx
     /// `commit`): concurrent writers queue here instead of CAS-retry-storming
     /// the manifest. Always acquired outermost, never while holding

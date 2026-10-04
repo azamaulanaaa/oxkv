@@ -1010,9 +1010,11 @@ mod tests {
         assert_eq!(scanned[0].key, "b");
     }
 
+    /// registered (it has no handle to the writer's registry), so the watermark
+    /// was dead code advertising a guarantee nothing enforced.
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-    async fn wal_gc_pinned_reader_holds_log() {
+    async fn wal_gc_reclaims_wal_once_an_sst_covers_it() {
         let store = new_in_memory();
         let s3 = OxKvStore::builder()
             .with_store(Arc::clone(&store))
@@ -1022,20 +1024,12 @@ mod tests {
             .await
             .unwrap();
 
-        // Create WAL + SST so WAL is eligible for GC (covered by SST).
         s3.stage_set("k1", b"v1").await;
         s3.flush().await.unwrap();
-        let v1 = s3.manifest_version().await.unwrap();
         s3.stage_set("k2", b"v2").await;
         s3.flush_mem_to_sst_force().await.unwrap().expect("sst");
-        let v2 = s3.manifest_version().await.unwrap();
-        assert!(v2 > v1);
 
-        // Pin reader at old version v1 — GC must hold WAL.
-        s3.register_reader(v1).await;
-        let held = s3.gc_wal().await.unwrap();
-        assert_eq!(held, 0, "pinned reader must hold WAL");
-        let (manifest_held, _) = load_manifest(
+        let (before, _) = load_manifest(
             Arc::clone(&store),
             &ObjectPath::from("gc-test"),
             s3.epoch(),
@@ -1044,22 +1038,25 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(!manifest_held.wal.is_empty(), "WAL retained while pinned");
-        // WAL objects still exist.
-        for wal in &manifest_held.wal {
-            let p = ObjectPath::from(wal.clone());
-            assert!(
-                store.get(&p).await.is_ok(),
-                "WAL {wal} must exist while pinned"
-            );
-        }
+        assert!(!before.wal.is_empty(), "WAL listed before GC");
 
-        // Unpin — GC must now delete WAL and clear manifest.wal.
-        s3.unregister_reader(v1).await;
         let deleted = s3.gc_wal().await.unwrap();
-        assert!(deleted > 0, "WAL should be GC'd after unpin");
-        // Verify WAL objects deleted and manifest cleared.
-        for wal in &manifest_held.wal {
+        assert!(deleted > 0, "covered WAL should be collected");
+
+        let (after, _) = load_manifest(
+            Arc::clone(&store),
+            &ObjectPath::from("gc-test"),
+            s3.epoch(),
+            &s3.manifest_cache,
+            std::time::Duration::from_secs(0),
+        )
+        .await
+        .unwrap();
+        assert!(
+            after.wal.is_empty(),
+            "manifest.wal must be cleared after GC"
+        );
+        for wal in &before.wal {
             let p = ObjectPath::from(wal.clone());
             let err = store
                 .get(&p)
@@ -1070,19 +1067,6 @@ mod tests {
                 "WAL {wal} must be deleted after GC: {err}"
             );
         }
-        let (manifest_gc, _) = load_manifest(
-            Arc::clone(&store),
-            &ObjectPath::from("gc-test"),
-            s3.epoch(),
-            &s3.manifest_cache,
-            std::time::Duration::from_secs(0),
-        )
-        .await
-        .unwrap();
-        assert!(
-            manifest_gc.wal.is_empty(),
-            "manifest.wal must be empty after GC"
-        );
         // Data still readable via SST after WAL GC.
         assert_eq!(
             s3.get_bytes("k1").await.unwrap().as_deref(),
@@ -1093,7 +1077,6 @@ mod tests {
             Some(b"v2".as_slice())
         );
     }
-
     #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     async fn compaction_l0_to_l1_idempotent() {
