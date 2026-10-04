@@ -711,7 +711,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_gets_bytes_paginates_like_inner_store() {
+    async fn test_gets_bytes_respects_the_limit_and_the_cursor_direction() {
         let _guard = telemetry_lock();
         fixture();
         let s = store();
@@ -735,7 +735,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_transaction_commit_makes_writes_visible() {
+    async fn test_a_staged_write_becomes_visible_after_the_transaction_commits() {
         let _guard = telemetry_lock();
         fixture();
         let s = store();
@@ -753,7 +753,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_transaction_rollback_discards_writes() {
+    async fn test_a_staged_write_is_absent_after_the_transaction_rolls_back() {
         let _guard = telemetry_lock();
         fixture();
         let s = store();
@@ -941,7 +941,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_gets_records_item_count_on_span() {
+    async fn test_the_gets_span_records_the_number_of_returned_items() {
         let _guard = telemetry_lock();
         fixture();
         // `gets` spans carry no key, so the test isolates them with a

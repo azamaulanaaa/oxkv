@@ -701,7 +701,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_json_validator_accepts_only_json_values() {
+    async fn test_a_json_validator_accepts_a_json_document_and_rejects_invalid_bytes() {
         let s = store().with_validator(RequireJson(Scope::All));
 
         assert!(s.set_bytes("doc", br#"{"ok":true}"#).await.is_ok());
@@ -724,7 +724,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_events_carry_old_and_new_values() {
+    async fn test_a_set_event_carries_the_previous_value_and_a_delete_event_has_no_new_value() {
         let s = store();
         let mut rx = s.watch_all();
 
@@ -779,7 +779,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_delete_missing_key_notifies_nothing() {
+    async fn test_deleting_a_missing_key_returns_false_and_sends_no_event() {
         let s = store();
         let mut rx = s.watch_all();
 
@@ -788,7 +788,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_watch_prefix_ignores_unrelated_keys() {
+    async fn test_a_prefix_watcher_receives_events_only_for_keys_with_the_prefix() {
         let s = store();
         let mut rx = s.watch_prefix("user:");
 
@@ -800,7 +800,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_dropped_receiver_does_not_break_writes() {
+    async fn test_a_write_succeeds_after_the_watcher_receiver_is_dropped() {
         let s = store();
         drop(s.watch_all());
 
@@ -838,7 +838,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_transaction_commit_notifies_once_per_key() {
+    async fn test_a_commit_notifies_each_changed_key_exactly_once() {
         let s = store();
         let mut rx = s.watch_all();
 
@@ -862,7 +862,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_transaction_rollback_notifies_nothing() {
+    async fn test_a_rollback_sends_no_event_and_leaves_the_key_absent() {
         let s = store();
         let mut rx = s.watch_all();
 
@@ -875,7 +875,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_transaction_validates_at_stage_time() {
+    async fn test_a_validator_rejects_a_transactional_write_at_staging_time() {
         let s = store().with_validator(Rejecting(Scope::Exact(String::from("bad"))));
         let tx = s.begin_tx().unwrap();
 

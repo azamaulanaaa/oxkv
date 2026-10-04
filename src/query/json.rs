@@ -808,14 +808,14 @@ mod tests {
     }
 
     #[test]
-    fn test_boosts_do_not_change_matching() {
+    fn test_a_matching_term_still_matches_when_it_carries_a_boost() {
         let doc = sample_doc();
         assert!(eval_q("lang:rust^3", &doc));
         assert!(eval_q("(lang:rust)^3.5", &doc));
     }
 
     #[test]
-    fn test_number_terms_compare_numerically() {
+    fn test_a_number_term_compares_the_numeric_value_not_the_text() {
         let doc = sample_doc();
         assert!(eval_q("age:15", &doc));
         assert!(eval_q("age:15.0", &doc));
@@ -833,13 +833,13 @@ mod tests {
     }
 
     #[test]
-    fn test_null_values_never_match_terms() {
+    fn test_a_null_value_matches_no_term() {
         let doc = json!({ "missing": null });
         assert!(!eval_q("null", &doc));
     }
 
     #[test]
-    fn test_empty_group_matches_everything() {
+    fn test_a_group_with_no_items_matches_every_document() {
         let doc = sample_doc();
         assert!(eval(&Query::Group(Vec::new()), &doc));
     }
@@ -866,7 +866,7 @@ mod tests {
     }
 
     #[test]
-    fn test_numeric_range_accepts_string_leaves_that_parse() {
+    fn test_a_numeric_range_matches_a_string_leaf_that_parses_as_a_number() {
         let doc = sample_doc();
         assert!(eval_q("address.zip:[10000 TO 10200]", &doc));
         assert!(!eval_q("address.zip:[10200 TO 10500]", &doc));
@@ -908,28 +908,28 @@ mod tests {
     }
 
     #[test]
-    fn test_naive_datetimes_read_as_utc() {
+    fn test_a_datetime_without_an_offset_is_read_as_utc() {
         let doc = json!({ "at": "2025-03-08 22:30" });
         assert!(eval_q("at:2025-03-08", &doc));
         assert!(!eval_q("at:2025-03-09", &doc));
     }
 
     #[test]
-    fn test_non_date_strings_keep_lexicographic_ranges() {
+    fn test_a_range_on_a_non_date_string_compares_lexicographically() {
         let doc = sample_doc();
         assert!(eval_q("address.city:[A TO Zurich]", &doc));
         assert!(!eval_q("name:[A TO B]", &doc));
     }
 
     #[test]
-    fn test_malformed_dates_fall_back_to_text_comparison() {
+    fn test_a_malformed_date_falls_back_to_text_comparison() {
         let doc = json!({ "v": "2025-3-8" });
         assert!(eval_q("v:\"2025-3-8\"", &doc));
         assert!(!eval_q("v:[2025-01-01 TO 2025-12-31]", &doc));
     }
 
     #[test]
-    fn test_year_only_terms_keep_text_matching() {
+    fn test_a_year_only_term_matches_a_string_leaf_and_a_number_leaf() {
         let doc = json!({ "v": "2025", "w": 2025 });
         assert!(eval_q("v:2025", &doc));
         assert!(eval_q("w:2025", &doc));
@@ -958,7 +958,7 @@ mod tests {
     }
 
     #[test]
-    fn test_escaped_dot_addresses_literal_dotted_key() {
+    fn test_an_escaped_dot_addresses_a_key_that_contains_a_dot() {
         let dotted = json!({ "a.b": 1 });
         assert!(eval_q("a\\.b:1", &dotted));
         assert!(!eval_q("a.b:1", &dotted));
@@ -990,7 +990,7 @@ mod tests {
     // --- Boolean operators and precedence ---
 
     #[test]
-    fn test_and_binds_tighter_than_or() {
+    fn test_an_and_clause_groups_before_an_or_clause() {
         // Distinct long words keep fuzzy-token matching from blurring values.
         let doc = json!({ "x": "alpha", "y": "beta", "z": "gamma" });
         assert!(eval_q("x:alpha OR y:beta AND z:omega", &doc));
@@ -999,7 +999,7 @@ mod tests {
     }
 
     #[test]
-    fn test_missing_operator_defaults_to_or() {
+    fn test_two_clauses_without_an_operator_are_joined_by_or() {
         let doc = json!({ "x": "alpha", "y": "beta" });
         assert!(eval_q("x:alpha y:beta", &doc));
         assert!(eval_q("x:alpha y:omega", &doc)); // one matching clause suffices
@@ -1007,7 +1007,7 @@ mod tests {
     }
 
     #[test]
-    fn test_operator_symbol_forms_match_keyword_forms() {
+    fn test_the_symbol_forms_evaluate_the_same_as_the_keyword_forms() {
         let doc = json!({ "x": "1", "y": "2" });
         for query in ["x:1 AND y:2", "x:1 && y:2"] {
             assert!(eval_q(query, &doc), "{query}");
@@ -1018,7 +1018,7 @@ mod tests {
     }
 
     #[test]
-    fn test_prefixes_negate_inside_explicit_boolean_groups() {
+    fn test_a_minus_prefix_excludes_a_value_inside_an_and_chain() {
         let doc = json!({ "x": "1" });
         assert!(eval_q("-z:1 AND x:1", &doc));
         assert!(!eval_q("-x:1 AND z:1", &doc));
@@ -1034,7 +1034,7 @@ mod tests {
     // --- Occurrence mode (no explicit operators) ---
 
     #[test]
-    fn test_required_prohibited_and_optional_clauses() {
+    fn test_required_prohibited_and_optional_clauses_each_decide_a_match() {
         let doc = sample_doc();
 
         // The required item matches. The prohibited item is absent. The
@@ -1064,7 +1064,7 @@ mod tests {
     }
 
     #[test]
-    fn test_field_scoped_sub_queries() {
+    fn test_a_field_scoped_sub_query_requires_its_required_clauses_and_joins_the_rest_with_or() {
         let doc = sample_doc();
         assert!(eval_q("tags:(+kv +systems)", &doc));
         assert!(!eval_q("tags:(+kv +nosql)", &doc));

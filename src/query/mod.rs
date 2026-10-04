@@ -405,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_ast_without_query_pair_returns_empty_group() {
+    fn test_build_ast_without_a_query_pair_returns_an_empty_group() {
         let pairs = LuceneParser::parse(Rule::single_query, "rust").expect("parse single query");
         assert_eq!(build_ast(pairs), Ok(Query::Group(Vec::new())));
     }
@@ -418,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn test_escaped_colon_is_not_a_field() {
+    fn test_an_escaped_colon_produces_one_plain_term() {
         let ast = parse_to_ast(r"a\:b");
         let expected = group(vec![(&None, plain_term("a:b"), &None)]);
         assert_eq!(ast, expected);
@@ -613,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lowercase_keywords_are_plain_terms() {
+    fn test_lowercase_and_or_not_parse_as_three_plain_terms() {
         let ast = parse_to_ast("and or not");
         let expected = group(vec![
             (&None, plain_term("and"), &None),
@@ -624,7 +624,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ideographic_space_separates_items() {
+    fn test_an_ideographic_space_separates_two_plain_terms() {
         let ast = parse_to_ast("foo\u{3000}bar");
         let expected = group(vec![
             (&None, plain_term("foo"), &None),
@@ -734,7 +734,7 @@ mod tests {
     }
 
     #[test]
-    fn test_escaped_dot_in_field_name_is_preserved() {
+    fn test_a_field_name_keeps_its_escaped_dot() {
         let ast = parse_to_ast(r"a\.b:value");
         let expected = group(vec![(
             &None,
@@ -748,7 +748,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dotted_field_paths_parse_as_single_field() {
+    fn test_a_dotted_field_path_stays_one_field_name() {
         let ast = parse_to_ast("address.city:Berlin");
         let expected = group(vec![(
             &None,
@@ -916,7 +916,7 @@ mod tests {
     }
 
     #[test]
-    fn test_range_bounds_are_unescaped() {
+    fn test_escapes_in_range_bounds_are_removed() {
         let ast = parse_to_ast(r"field:[\(alpha\) TO \[omega\]]");
         let expected = group(vec![(
             &None,
