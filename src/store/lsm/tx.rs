@@ -87,9 +87,17 @@ where
     }
 
     async fn delete(&self, key: &str) -> Result<bool> {
-        let existed = self.get_bytes(key).await?.is_some();
+        let old_value = self.get_bytes(key).await?;
+        let existed = old_value.is_some();
         if existed {
             lock_ignore_poison(&self.overlay).insert(key.to_string(), None);
+            self.stage(ChangeEvent {
+                key: key.to_string(),
+                kind: ChangeKind::Delete,
+                old_value,
+                new_value: None,
+                seq: 0,
+            });
         }
         Ok(existed)
     }
@@ -191,6 +199,7 @@ where
         self.maintenance_view()
             .append_wal_locked(payload_buf, &updates)
             .await?;
+        drop(_gate);
         let subscribers = self.hooks.subscribers();
         let view = self.maintenance_view();
         for event in staged_events {

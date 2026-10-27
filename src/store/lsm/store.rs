@@ -138,7 +138,7 @@ impl<C> std::fmt::Debug for OxKvStore<C> {
 /// Clones share the writer state. The `MemTable`, the sequencers, the
 /// manifest cache, the write gate, and the SST cache are reference-counted.
 /// Therefore clones coordinate as one owner. Decorator composition
-/// (`HookStore`, `OtelStore`) requires this sharing.
+/// (`Hooks`, `OtelStore`) requires this sharing.
 impl<C> Clone for OxKvStore<C>
 where
     C: Cache<String, Arc<SstFile>>,
@@ -1401,7 +1401,8 @@ where
         // Anything staged earlier belongs ahead of this tombstone in the WAL.
         self.drain_staged_locked().await?;
         // Read under the gate, after the drain, so it also sees staged ops.
-        let existed = OxKvStore::get_bytes(self, key).await?.is_some();
+        let old_value = OxKvStore::get_bytes(self, key).await?;
+        let existed = old_value.is_some();
         if !existed {
             return Ok(false);
         }
@@ -1410,6 +1411,19 @@ where
         let payload_buf = OxKvStore::<C>::encode_ops(&[(key.to_string(), None)])?;
         self.append_wal_locked(payload_buf, &[(key.to_string(), None)])
             .await?;
+        drop(_gate);
+        crate::store::hooks::notify(
+            &self.hooks.subscribers(),
+            self,
+            ChangeEvent {
+                key: key.to_string(),
+                kind: ChangeKind::Delete,
+                old_value,
+                new_value: None,
+                seq: 0,
+            },
+        )
+        .await;
         Ok(true)
     }
 
