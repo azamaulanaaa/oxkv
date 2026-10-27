@@ -24,9 +24,9 @@
 //!   [`watch`](HookStore::watch) API for fire-and-forget reactivity.
 //! - The [`HookStore`] snapshots the validators when a transaction begins.
 //!   Validators that are added afterwards do not affect open transactions.
-//! - Cloning a [`HookStore`] shares the subscribers between the clones. An
-//!   event from either clone reaches every watcher. Each clone keeps its own
-//!   validator list.
+//! - Cloning a store shares the validators and the subscribers between the
+//!   clones. An event from either clone reaches every watcher. A validator
+//!   added to one clone applies to every clone.
 //! - A delete reads the current value before it removes the value, so that
 //!   [`ChangeEvent`]s can carry `old_value`. The reported old value may be
 //!   stale if another writer bypasses this decorator and mutates the key
