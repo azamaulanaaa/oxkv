@@ -30,7 +30,7 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 | [`store::StoreExt`] | Save/Load the entire store contents as binary; `save_stream`/`load_stream` stream it as byte chunks |
 | [`store::Validator`] | Validates writes before they are stored (attach per key, prefix, or globally) |
 | [`store::Observer`] | Receives change notifications after they become durable |
-| [`store::HookStore`] | Decorator adding validators and change watching to any store |
+| [`store::Hooks`] | Trait adding validators and change watching to any store |
 | [`store::OtelStore`] | Feature-gated decorator adding OpenTelemetry traces and metrics to any store |
 | [`store::OxKvStore`] / [`store::OxKvStoreBuilder`] / [`store::OxKvTx`] | Feature-gated (`oxkv`, native + wasm) LSM generic over `Storage` + `Cache` (in-memory `MemStorage`; S3 via `oxkv-s3`); single-writer epoch fencing, WAL + SST + blob overflow |
 | [`store::OxKvReader`] / [`store::OxKvRoTx`] | Feature-gated (`oxkv`, native + wasm) read-only follower sharing the `Store` trait — opens without epoch CAS, follows writer WALs, writes rejected, empty-tx commit is a no-op |
@@ -180,13 +180,13 @@ calls without a query).
 
 ## Hooks and Reactivity
 
-Wrap any backend in a `HookStore` to validate values before they are stored
+Any store can validate values and watch for changes:
 and to listen for changes:
 
 ```rust
 # #[tokio::main(flavor = "current_thread")]
 # async fn main() {
-use oxkv::{BTreeStore, ChangeEvent, ChangeKind, GetSet, HookStore, Scope, Validator};
+use oxkv::{BTreeStore, ChangeEvent, ChangeKind, GetSet, Hooks, Scope, Validator};
 
 struct RequireJson(Scope);
 
@@ -208,7 +208,7 @@ impl Validator for RequireJson {
     }
 }
 
-let mut store = HookStore::new(BTreeStore::default());
+let mut store = BTreeStore::default();
 
 // Only values under "doc:" must be JSON
 store.add_validator(RequireJson(Scope::Prefix("doc:".into())));
@@ -334,7 +334,7 @@ What you get per operation (`get`, `has`, `set`, `delete`, `gets`, `begin_tx`,
   (`db.operation.name`, `oxkv.outcome` = `ok`/`error`) and
   `oxkv.store.operation.duration` histogram in seconds.
 
-Decorators compose: `OtelStore::new(HookStore::new(OxKvStore::builder().with_store(store).build().await?))` measures
+Decorators compose: `OtelStore::new(OxKvStore::builder().with_store(store).build().await?)` measures
 the full validation pipeline.
 
 ## LSM Backend (feature `oxkv`, native + wasm)
@@ -518,7 +518,7 @@ incrementally, a new ownership epoch or a missed flush window rebuilds),
 and `ownership.json` is read only on suspected takeover. A write rejected
 with `Fenced` poisons the mirror — reads fail until `refresh` adopts the
 new owner. Both store types are `Clone`, so the mirror composes with
-`HookStore` and `OtelStore`.
+`Hooks` and `OtelStore`.
 
 How the mirror fills is a `WarmMode` chosen at open (`Eager` by default):
 `Background` returns immediately and converges through explicitly driven
@@ -815,7 +815,7 @@ wasm-pack build --target web   # or nodejs, bundler, etc.
 - `src/store/lsm/probe.rs` — conditional-write probe (`If-None-Match` / `If-Match`)
 - `src/store/storage.rs` — `Storage` trait + `MemStorage` (in-memory, every target) + `object_store` impl (S3/memory/local, native `oxkv-s3`) + `OpfsStorage` (browser origin-private storage, wasm)
 - `src/store/cache.rs` — `Cache` trait + `LruCache` (scan-resistant `S3-FIFO`, `moka` optional)
-- `src/store/hooks.rs` — `HookStore` decorator providing validation hooks and change notifications
+- `src/store/hooks.rs` — `Hooks` trait providing validation hooks and change notifications
 - `src/store/otel.rs` — `OtelStore` decorator emitting OpenTelemetry spans and metrics (feature `otel`)
 - `src/query/mod.rs` — query AST types and the pest-based parser (`query/query.pest` grammar)
 - `src/query/json.rs` — compiled-query matcher evaluating queries against `serde_json::Value` documents

@@ -34,8 +34,10 @@ use super::{
 use crate::store::cache::{Cache, CacheStats, LruCache};
 use crate::store::storage::{ObjectPath, PutMode, Storage};
 use crate::store::{
-    Direction, GetSet, KeyValue, Result, Store, StoreError, lock_ignore_poison, sleep,
+    ChangeEvent, ChangeKind, Direction, GetSet, HookState, Hooks, KeyValue, Observer, Result,
+    Scope, Store, StoreError, Validator, lock_ignore_poison, sleep,
 };
+use futures::channel::mpsc;
 
 /// One staged blind write. It waits for a group commit or rides one.
 ///
@@ -120,6 +122,7 @@ pub struct OxKvStore<C = LruCache<String, Arc<SstFile>>> {
     /// SST file cache. It uses a scan-resistant `S3-FIFO` (~256 MB with 32KB
     /// blocks).
     pub(crate) sst_cache: C,
+    pub(crate) hooks: HookState,
 }
 
 impl<C> std::fmt::Debug for OxKvStore<C> {
@@ -253,6 +256,7 @@ pub(crate) trait WriterStateRef<C> {
     fn write_gate(&self) -> &Arc<async_lock::Mutex<()>>;
     fn pending(&self) -> &Arc<std::sync::Mutex<Vec<PendingWrite>>>;
     fn sst_cache(&self) -> &C;
+    fn hooks(&self) -> &HookState;
 }
 
 macro_rules! impl_writer_state_ref {
@@ -294,6 +298,9 @@ macro_rules! impl_writer_state_ref {
             fn sst_cache(&self) -> &C {
                 &self.sst_cache
             }
+            fn hooks(&self) -> &HookState {
+                &self.hooks
+            }
         }
     };
 }
@@ -323,6 +330,7 @@ where
             write_gate: Arc::clone(src.write_gate()),
             pending: Arc::clone(src.pending()),
             sst_cache: src.sst_cache().clone(),
+            hooks: src.hooks().clone(),
         }
     }
 
@@ -1406,8 +1414,21 @@ where
     }
 
     async fn set_bytes(&self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
+        let validators = self.hooks.validators();
+        crate::store::hooks::validate_key(&validators, self, key, value).await?;
         let prev = OxKvStore::get_bytes(self, key).await?;
         self.put_bytes(key, value).await?;
+        crate::store::hooks::notify(
+            &self.hooks.subscribers(),
+            self,
+            ChangeEvent {
+                key: key.to_string(),
+                kind: ChangeKind::Set,
+                old_value: prev.clone(),
+                new_value: Some(value.to_vec()),
+            },
+        )
+        .await;
         Ok(prev)
     }
 
@@ -1518,8 +1539,34 @@ where
             write_gate: shared.write_gate,
             pending: shared.pending,
             sst_cache: shared.sst_cache,
+            hooks: self.hooks.clone(),
+            validators: self.hooks.validators(),
+            staged: std::sync::Mutex::new(Vec::new()),
             overlay: std::sync::Mutex::new(std::collections::BTreeMap::new()),
         })
+    }
+}
+
+impl<C> Hooks for OxKvStore<C>
+where
+    C: Cache<String, Arc<SstFile>>,
+{
+    fn add_validator<V>(&self, validator: V)
+    where
+        V: Validator + 'static,
+    {
+        self.hooks.add_validator(validator);
+    }
+
+    fn add_observer<O>(&self, observer: O)
+    where
+        O: Observer + 'static,
+    {
+        self.hooks.add_observer(observer);
+    }
+
+    fn watch_scope(&self, scope: Scope) -> mpsc::Receiver<ChangeEvent> {
+        self.hooks.watch_scope(scope)
     }
 }
 
@@ -1769,6 +1816,7 @@ impl OxKvStoreBuilder {
             write_gate: Arc::new(async_lock::Mutex::new(())),
             pending: Arc::new(std::sync::Mutex::new(Vec::new())),
             sst_cache: cache,
+            hooks: HookState::default(),
         };
         // WAL replay for restart and fencing. It makes the not-yet-SSTed WAL
         // visible.

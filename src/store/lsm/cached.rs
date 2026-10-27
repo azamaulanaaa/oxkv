@@ -33,9 +33,10 @@ use super::{Manifest, ManifestCache, OxKvStore, OxKvTx, decode_wal_records, load
 use crate::store::cache::{Cache, LruCache};
 use crate::store::storage::ObjectPath;
 use crate::store::{
-    BTreeStore, Direction, GetSet, KeyValue, Result, SstFile, Store, StoreError, Transaction,
-    lock_ignore_poison, now_millis,
+    BTreeStore, ChangeEvent, Direction, GetSet, Hooks, KeyValue, Observer, Result, Scope,
+    SstFile, Store, StoreError, Transaction, Validator, lock_ignore_poison, now_millis,
 };
+use futures::channel::mpsc;
 
 /// Batch size for the paged scans behind [`CachedOxKvStore::rebuild`].
 const SCAN_BATCH: u32 = 256;
@@ -191,6 +192,29 @@ where
             scan_gate: Arc::clone(&self.scan_gate),
             mode: self.mode,
         }
+    }
+}
+
+impl<C> Hooks for CachedOxKvStore<C>
+where
+    C: Cache<String, Arc<SstFile>>,
+{
+    fn add_validator<V>(&self, validator: V)
+    where
+        V: Validator + 'static,
+    {
+        self.inner.add_validator(validator);
+    }
+
+    fn add_observer<O>(&self, observer: O)
+    where
+        O: Observer + 'static,
+    {
+        self.inner.add_observer(observer);
+    }
+
+    fn watch_scope(&self, scope: Scope) -> mpsc::Receiver<ChangeEvent> {
+        self.inner.watch_scope(scope)
     }
 }
 
@@ -722,7 +746,7 @@ where
     async fn set_bytes(&self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
         self.reject_if_poisoned().await?;
         let prev = self.mirror.get_bytes(key).await?;
-        if let Err(e) = self.inner.put_bytes(key, value).await {
+        if let Err(e) = self.inner.set_bytes(key, value).await {
             self.note_fenced(&e).await;
             return Err(e);
         }
@@ -955,7 +979,7 @@ mod tests {
     use super::*;
     use crate::store::MemStorage;
     use crate::store::storage::Storage;
-    use crate::store::{HookStore, Validator};
+    use crate::store::Validator;
 
     async fn writer(prefix: &str) -> (OxKvStore, Arc<dyn Storage>) {
         let backend: Arc<dyn Storage> = Arc::new(MemStorage::new());
@@ -1179,7 +1203,7 @@ mod tests {
 
         let (writer, _) = writer("cached-hooks").await;
         let cached = CachedOxKvStore::open(writer).await.expect("open");
-        let hooked = HookStore::new(cached.clone()).with_validator(RequireJson);
+        let hooked = cached.clone().with_validator(RequireJson);
         assert!(hooked.set_bytes("raw", b"nope").await.is_err());
         hooked
             .set_bytes("doc", br#"{"ok":true}"#)
@@ -1189,7 +1213,7 @@ mod tests {
             cached.get_bytes("doc").await.expect("get"),
             Some(br#"{"ok":true}"#.to_vec())
         );
-        let scoped = HookStore::new(cached).with_validator(RequireJson);
+        let scoped = cached.with_validator(RequireJson);
         let _ = scoped.watch_all();
     }
 

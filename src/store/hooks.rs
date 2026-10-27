@@ -53,7 +53,7 @@
 //! # Example
 //!
 //! ```rust
-//! use oxkv::{BTreeStore, GetSet, HookStore, Scope, StoreView, Validator};
+//! use oxkv::{BTreeStore, GetSet, Hooks, Scope, StoreView, Validator};
 //!
 //! struct RequireJson(Scope);
 //!
@@ -74,7 +74,7 @@
 //!
 //! #[tokio::main(flavor = "current_thread")]
 //! async fn main() {
-//!     let store = HookStore::new(BTreeStore::default())
+//!     let store = BTreeStore::default()
 //!         .with_validator(RequireJson(Scope::Prefix("user:".into())));
 //!
 //!     let mut rx = store.watch("user:42");
@@ -99,12 +99,12 @@
 //! time and again at commit-time re-validation. Therefore validators must be
 //! idempotent.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::channel::mpsc;
 
-use super::{Direction, GetSet, KeyValue, Result, Store, Transaction, lock_ignore_poison};
+use super::{GetSet, Result, lock_ignore_poison};
 
 /// Selects which keys a validator or observer applies to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,7 +243,7 @@ pub trait Observer: Send + Sync {
 }
 
 #[derive(Default)]
-struct Subscribers {
+pub(crate) struct Subscribers {
     observers: Vec<(Scope, Arc<dyn Observer>)>,
     senders: Vec<(Scope, mpsc::Sender<ChangeEvent>)>,
 }
@@ -266,9 +266,9 @@ impl Subscribers {
 /// releases before the observer calls start. The observer calls then run
 /// concurrently, so observers may take arbitrarily long relative to each
 /// other.
-async fn notify(subscribers: &Mutex<Subscribers>, view: &dyn StoreView, event: ChangeEvent) {
+pub(crate) async fn notify(subscribers: &std::sync::Arc<std::sync::Mutex<Subscribers>>, view: &dyn StoreView, event: ChangeEvent) {
     let observers = {
-        let mut subs = lock_ignore_poison(subscribers);
+        let mut subs = lock_ignore_poison(subscribers.as_ref());
 
         let mut i = 0;
         while i < subs.senders.len() {
@@ -306,10 +306,10 @@ async fn notify(subscribers: &Mutex<Subscribers>, view: &dyn StoreView, event: C
 /// instead. Without this exception, an absence-based rule (e.g. "must not
 /// overwrite") sees the staged write itself. Such a rule falsely rejects
 /// legitimate inserts.
-struct RevalidateView<'a> {
-    inner: &'a dyn StoreView,
-    key: &'a str,
-    old_value: Option<&'a [u8]>,
+pub(crate) struct RevalidateView<'a> {
+    pub(crate) inner: &'a dyn StoreView,
+    pub(crate) key: &'a str,
+    pub(crate) old_value: Option<&'a [u8]>,
 }
 
 #[async_trait]
@@ -331,7 +331,7 @@ impl StoreView for RevalidateView<'_> {
     }
 }
 
-fn validate_key<'a>(
+pub(crate) fn validate_key<'a>(
     validators: &'a [Arc<dyn Validator>],
     view: &'a dyn StoreView,
     key: &'a str,
@@ -347,287 +347,102 @@ fn validate_key<'a>(
     })
 }
 
-/// A store decorator adding validation hooks and change notifications.
+/// Shared hook state for a store.
 ///
-/// The decorator intercepts writes. It runs the registered [`Validator`]s
-/// first. It then broadcasts [`ChangeEvent`]s after the change is durable. It
-/// implements [`Store`] itself. Therefore it composes transparently with the
-/// rest of the crate, including transactions and the extension traits
-/// ([`GetSetExt`](super::GetSetExt), [`StoreExt`](super::StoreExt)).
-#[derive(Clone)]
-pub struct HookStore<S> {
-    inner: S,
-    validators: Vec<Arc<dyn Validator>>,
-    subscribers: Arc<Mutex<Subscribers>>,
+/// The state holds the validators and the subscribers. Clones of a store
+/// share this state.
+#[derive(Clone, Default)]
+pub struct HookState {
+    validators: std::sync::Arc<std::sync::Mutex<Vec<std::sync::Arc<dyn Validator>>>>,
+    subscribers: std::sync::Arc<std::sync::Mutex<Subscribers>>,
 }
 
-impl<S> HookStore<S> {
-    /// Wraps `inner` with no validators and no subscribers.
-    pub fn new(inner: S) -> Self {
-        Self {
-            inner,
-            validators: Vec::new(),
-            subscribers: Arc::new(Mutex::new(Subscribers::default())),
-        }
-    }
-
-    /// Registers an additional validator, consuming and returning `self`.
+impl HookState {
+    /// Creates empty hook state.
     #[must_use]
-    pub fn with_validator<V>(mut self, validator: V) -> Self
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers a validator.
+    pub fn add_validator<V>(&self, validator: V)
     where
         V: Validator + 'static,
     {
-        self.add_validator(validator);
-        self
+        lock_ignore_poison(&self.validators).push(std::sync::Arc::new(validator));
     }
 
-    /// Registers an additional validator in place.
-    pub fn add_validator<V>(&mut self, validator: V)
-    where
-        V: Validator + 'static,
-    {
-        self.validators.push(Arc::new(validator));
+    /// Returns a snapshot of the validators.
+    #[must_use]
+    pub fn validators(&self) -> Vec<std::sync::Arc<dyn Validator>> {
+        lock_ignore_poison(&self.validators).clone()
     }
 
-    /// Registers an observer that receives matching change events.
-    ///
-    /// Dropping the returned receiver unsubscribes a channel-based
-    /// subscriber automatically. Observers stay registered until the store is
-    /// dropped.
-    pub fn add_observer<O>(&mut self, observer: O)
+    /// Registers an observer.
+    pub fn add_observer<O>(&self, observer: O)
     where
         O: Observer + 'static,
     {
         let scope = observer.scope();
         lock_ignore_poison(&self.subscribers)
             .observers
-            .push((scope, Arc::new(observer)));
+            .push((scope, std::sync::Arc::new(observer)));
     }
 
-    /// Subscribes to changes of the exact key `key`.
-    ///
-    /// Returns the receiving half of an unbounded channel. The channel receives
-    /// one [`ChangeEvent`] per committed change to `key`. The function
-    /// unsubscribes when the receiver is dropped.
-    pub fn watch(&self, key: &str) -> mpsc::Receiver<ChangeEvent> {
-        self.watch_scope(Scope::Exact(key.to_string()))
+    /// Returns the subscribers.
+    #[must_use]
+    pub(crate) fn subscribers(&self) -> std::sync::Arc<std::sync::Mutex<Subscribers>> {
+        std::sync::Arc::clone(&self.subscribers)
     }
 
-    /// Subscribes to changes of every key under `prefix`.
-    ///
-    /// The semantics match [`watch`](HookStore::watch). The function
-    /// unsubscribes when the receiver is dropped.
-    pub fn watch_prefix(&self, prefix: &str) -> mpsc::Receiver<ChangeEvent> {
-        self.watch_scope(Scope::Prefix(prefix.to_string()))
-    }
-
-    /// Subscribes to changes of every key in the store.
-    ///
-    /// The semantics match [`watch`](HookStore::watch). The function
-    /// unsubscribes when the receiver is dropped.
-    pub fn watch_all(&self) -> mpsc::Receiver<ChangeEvent> {
-        self.watch_scope(Scope::All)
-    }
-
-    fn watch_scope(&self, scope: Scope) -> mpsc::Receiver<ChangeEvent> {
+    /// Subscribes with the given scope.
+    pub fn watch_scope(&self, scope: Scope) -> mpsc::Receiver<ChangeEvent> {
         lock_ignore_poison(&self.subscribers).push_sender(scope)
     }
 }
 
+/// Hook capabilities for a store.
 #[async_trait]
-impl<S: GetSet + Send + Sync> GetSet for HookStore<S> {
-    async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        self.inner.get_bytes(key).await
+pub trait Hooks: Send + Sync {
+    /// Registers a validator.
+    fn add_validator<V>(&self, validator: V)
+    where
+        V: Validator + 'static;
+
+    /// Registers an observer.
+    fn add_observer<O>(&self, observer: O)
+    where
+        O: Observer + 'static;
+
+    /// Subscribes to an exact key.
+    fn watch(&self, key: &str) -> mpsc::Receiver<ChangeEvent> {
+        self.watch_scope(Scope::Exact(key.to_string()))
     }
 
-    async fn has(&self, key: &str) -> Result<bool> {
-        self.inner.has(key).await
+    /// Subscribes to a prefix.
+    fn watch_prefix(&self, prefix: &str) -> mpsc::Receiver<ChangeEvent> {
+        self.watch_scope(Scope::Prefix(prefix.to_string()))
     }
 
-    async fn delete(&self, key: &str) -> Result<bool> {
-        let old_value = self.inner.get_bytes(key).await?;
-        if self.inner.delete(key).await? {
-            notify(
-                &self.subscribers,
-                &self.inner,
-                ChangeEvent {
-                    key: key.to_string(),
-                    kind: ChangeKind::Delete,
-                    old_value,
-                    new_value: None,
-                },
-            )
-            .await;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+    /// Subscribes to all keys.
+    fn watch_all(&self) -> mpsc::Receiver<ChangeEvent> {
+        self.watch_scope(Scope::All)
     }
 
-    async fn set_bytes(&self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
-        validate_key(&self.validators, &self.inner, key, value).await?;
-        let prev = self.inner.set_bytes(key, value).await?;
-        notify(
-            &self.subscribers,
-            &self.inner,
-            ChangeEvent {
-                key: key.to_string(),
-                kind: ChangeKind::Set,
-                old_value: prev.clone(),
-                new_value: Some(value.to_vec()),
-            },
-        )
-        .await;
-        Ok(prev)
-    }
+    /// Subscribes with a scope.
+    fn watch_scope(&self, scope: Scope) -> mpsc::Receiver<ChangeEvent>;
 
-    async fn gets_bytes(
-        &self,
-        limit: Option<u32>,
-        direction: Direction,
-        cursor: (Option<String>, Option<String>),
-    ) -> Result<Vec<KeyValue>> {
-        self.inner.gets_bytes(limit, direction, cursor).await
+    /// Registers a validator and returns self.
+    fn with_validator<V>(self, validator: V) -> Self
+    where
+        Self: Sized,
+        V: Validator + 'static,
+    {
+        self.add_validator(validator);
+        self
     }
 }
 
-#[async_trait]
-impl<S> Store for HookStore<S>
-where
-    S: Store + Clone + Send + Sync,
-    S::Transaction: Sync,
-{
-    type Transaction = HookTx<S::Transaction, S>;
-
-    fn begin_tx(&self) -> Result<Self::Transaction> {
-        Ok(HookTx {
-            inner: self.inner.begin_tx()?,
-            validators: self.validators.clone(),
-            staged: Mutex::new(Vec::new()),
-            subscribers: Arc::clone(&self.subscribers),
-            post_commit_view: self.inner.clone(),
-        })
-    }
-}
-
-/// A [`HookStore`] transaction that validates staged writes and defers
-/// change notifications until commit.
-///
-/// Writes are validated as they are staged, so a rejected operation fails
-/// early. A staged event replaces any earlier event for the same key. Nothing
-/// is broadcast unless [`commit`](Transaction::commit) succeeds. A
-/// rolled-back transaction produces no notifications.
-pub struct HookTx<T, V> {
-    inner: T,
-    validators: Vec<Arc<dyn Validator>>,
-    staged: Mutex<Vec<ChangeEvent>>,
-    subscribers: Arc<Mutex<Subscribers>>,
-    /// Committed-state view handed to observers after a successful commit.
-    post_commit_view: V,
-}
-
-impl<T, V> HookTx<T, V> {
-    /// The function records a change event. The function replaces any
-    /// earlier event for the same key, so that each key appears at most once
-    /// per commit. The original pre-transaction value survives each
-    /// replacement, so observers always see the net effect.
-    fn stage(&self, mut event: ChangeEvent) {
-        // One guard covers the whole check-and-insert. Re-locking `staged`
-        // inside the match would deadlock against the scrutinee's guard.
-        let mut staged = lock_ignore_poison(&self.staged);
-        match staged.iter_mut().find(|e| e.key == event.key) {
-            Some(existing) => {
-                event.old_value = existing.old_value.take();
-                *existing = event;
-            }
-            None => staged.push(event),
-        }
-    }
-}
-
-#[async_trait]
-impl<T: GetSet + Send + Sync, V: Send + Sync> GetSet for HookTx<T, V> {
-    async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        self.inner.get_bytes(key).await
-    }
-
-    async fn has(&self, key: &str) -> Result<bool> {
-        self.inner.has(key).await
-    }
-
-    async fn delete(&self, key: &str) -> Result<bool> {
-        let old_value = self.inner.get_bytes(key).await?;
-        if self.inner.delete(key).await? {
-            self.stage(ChangeEvent {
-                key: key.to_string(),
-                kind: ChangeKind::Delete,
-                old_value,
-                new_value: None,
-            });
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
-    async fn set_bytes(&self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
-        validate_key(&self.validators, &self.inner, key, value).await?;
-        let prev = self.inner.set_bytes(key, value).await?;
-        self.stage(ChangeEvent {
-            key: key.to_string(),
-            kind: ChangeKind::Set,
-            old_value: prev.clone(),
-            new_value: Some(value.to_vec()),
-        });
-        Ok(prev)
-    }
-
-    async fn gets_bytes(
-        &self,
-        limit: Option<u32>,
-        direction: Direction,
-        cursor: (Option<String>, Option<String>),
-    ) -> Result<Vec<KeyValue>> {
-        self.inner.gets_bytes(limit, direction, cursor).await
-    }
-}
-
-#[async_trait]
-impl<T: Transaction + Send + Sync, V: StoreView> Transaction for HookTx<T, V> {
-    async fn commit(self) -> Result<()> {
-        // This pass is authoritative. It re-validates every staged write
-        // against the transaction's final state while the transaction is
-        // still the exclusive writer. Later writes within the same
-        // transaction cannot invalidate a decision made at staging time.
-        // Concurrent writes that race for the same write path cannot
-        // invalidate that decision either.
-        //
-        // Take the snapshot under the lock. Do not hold the guard across the
-        // awaits below. `std` guards are not `Send`.
-        let staged = lock_ignore_poison(&self.staged).clone();
-        for event in &staged {
-            if let (ChangeKind::Set, Some(value)) = (event.kind, event.new_value.as_deref()) {
-                let view = RevalidateView {
-                    inner: &self.inner,
-                    key: &event.key,
-                    old_value: event.old_value.as_deref(),
-                };
-                validate_key(&self.validators, &view, &event.key, value).await?;
-            }
-        }
-
-        self.inner.commit().await?;
-
-        for event in staged {
-            notify(&self.subscribers, &self.post_commit_view, event).await;
-        }
-        Ok(())
-    }
-
-    async fn rollback(self) -> Result<()> {
-        self.inner.rollback().await
-    }
-}
 
 #[cfg(all(test, feature = "btree"))]
 mod tests {
@@ -635,6 +450,8 @@ mod tests {
 
     use super::*;
     use crate::store::BTreeStore;
+    use crate::store::Store;
+    use crate::store::Transaction;
     use crate::store::StoreError;
 
     struct Rejecting(Scope);
@@ -678,10 +495,10 @@ mod tests {
         }
     }
 
-    type StoreUnderTest = HookStore<BTreeStore>;
+    type StoreUnderTest = BTreeStore;
 
     fn store() -> StoreUnderTest {
-        HookStore::new(BTreeStore::default())
+        BTreeStore::default()
     }
 
     #[tokio::test]

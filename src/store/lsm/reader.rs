@@ -11,7 +11,8 @@ use async_trait::async_trait;
 
 use crate::store::cache::{Cache, CacheStats, LruCache};
 use crate::store::storage::{ObjectPath, Storage};
-use crate::store::{Direction, GetSet, KeyValue, Result, Store, StoreError, Transaction};
+use crate::store::{ChangeEvent, Direction, GetSet, Hooks, KeyValue, Observer, Result, Scope, Store, StoreError, Transaction, Validator};
+use futures::channel::mpsc;
 
 use super::{
     ManifestCache, MemTable, ReadCtx, SstFile, decode_wal_records, filter_rows, is_not_found,
@@ -398,6 +399,28 @@ where
         Ok(OxKvRoTx {
             reader: self.clone(),
         })
+    }
+}
+
+impl<C> Hooks for OxKvReader<C>
+where
+    C: Cache<String, Arc<SstFile>>,
+{
+    fn add_validator<V>(&self, _validator: V)
+    where
+        V: Validator + 'static,
+    {
+    }
+
+    fn add_observer<O>(&self, _observer: O)
+    where
+        O: Observer + 'static,
+    {
+    }
+
+    fn watch_scope(&self, _scope: Scope) -> mpsc::Receiver<ChangeEvent> {
+        let (_tx, rx) = mpsc::channel(1);
+        rx
     }
 }
 

@@ -29,7 +29,7 @@ pub use btree::{BTreeStore, BTreeTx};
 #[cfg(feature = "btree")]
 mod btree;
 pub use hooks::{
-    ChangeEvent, ChangeKind, HookStore, HookTx, Observer, Scope, StoreView, Validator,
+    ChangeEvent, ChangeKind, HookState, Hooks, Observer, Scope, StoreView, Validator,
 };
 mod hooks;
 #[cfg(all(feature = "otel", not(target_arch = "wasm32")))]
@@ -357,7 +357,7 @@ pub trait Transaction: GetSet {
 /// This trait extends [`GetSet`] with the ability to create a new transaction.
 /// All standalone (non-transactional) operations are immediately committed.
 #[async_trait]
-pub trait Store: GetSet {
+pub trait Store: GetSet + hooks::Hooks {
     /// The transaction type produced by [`begin_tx`][Self::begin_tx].
     ///
     /// Each concrete backend declares its own `Transaction` type here with the

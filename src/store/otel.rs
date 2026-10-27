@@ -110,7 +110,9 @@ use opentelemetry::metrics::{Counter, Histogram};
 use opentelemetry::trace::{Span as _, SpanBuilder, SpanContext, Status, TraceContextExt, Tracer};
 use opentelemetry::{Context, KeyValue as OtelKv, global};
 
-use super::{Direction, GetSet, KeyValue, Result, Store, Transaction};
+use super::{Direction, GetSet, Hooks, KeyValue, Result, Store, Transaction};
+use crate::store::{ChangeEvent, Observer, Scope, Validator};
+use futures::channel::mpsc;
 
 /// The value recorded for the `db.system` span attribute.
 const DB_SYSTEM: &str = "oxkv";
@@ -316,6 +318,29 @@ fn no_annotation<T>(_: &mut BoxedSpan, _: &T) {}
 #[derive(Debug, Clone)]
 pub struct OtelStore<S> {
     inner: S,
+}
+
+impl<S> Hooks for OtelStore<S>
+where
+    S: Hooks,
+{
+    fn add_validator<V>(&self, validator: V)
+    where
+        V: Validator + 'static,
+    {
+        self.inner.add_validator(validator);
+    }
+
+    fn add_observer<O>(&self, observer: O)
+    where
+        O: Observer + 'static,
+    {
+        self.inner.add_observer(observer);
+    }
+
+    fn watch_scope(&self, scope: Scope) -> mpsc::Receiver<ChangeEvent> {
+        self.inner.watch_scope(scope)
+    }
 }
 
 impl<S> OtelStore<S> {

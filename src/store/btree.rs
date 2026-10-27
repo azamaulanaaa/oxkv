@@ -4,14 +4,17 @@ use std::ops::RangeBounds;
 use std::sync::{Arc, RwLock};
 
 use super::{
-    Direction, GetSet, KeyValue, Result, Store, Transaction, lock_ignore_poison,
+    ChangeEvent, ChangeKind, Direction, GetSet, HookState, Hooks, KeyValue, Observer,
+    Result, Scope, Store, Transaction, Validator, lock_ignore_poison,
     rwlock_ignore_poison,
 };
+use futures::channel::mpsc;
 
 /// A key-value store backed by a B-tree.
 #[derive(Default, Clone)]
 pub struct BTreeStore {
     map: Arc<RwLock<BTreeMap<String, Vec<u8>>>>,
+    hooks: HookState,
 }
 
 #[async_trait]
@@ -27,14 +30,49 @@ impl GetSet for BTreeStore {
     }
 
     async fn delete(&self, key: &str) -> Result<bool> {
-        let mut guard = self.map.write().unwrap();
-        let removed = guard.remove(key).is_some();
+        let old_value = {
+            let guard = self.map.read().unwrap();
+            guard.get(key).cloned()
+        };
+        let removed = {
+            let mut guard = self.map.write().unwrap();
+            let r = guard.remove(key).is_some();
+            r
+        };
+        if removed {
+            crate::store::hooks::notify(
+                &self.hooks.subscribers(),
+                self,
+                ChangeEvent {
+                    key: key.to_string(),
+                    kind: ChangeKind::Delete,
+                    old_value,
+                    new_value: None,
+                },
+            )
+            .await;
+        }
         Ok(removed)
     }
 
     async fn set_bytes(&self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
-        let mut guard = self.map.write().unwrap();
-        let prev = guard.insert(key.to_string(), value.to_vec());
+        let validators = self.hooks.validators();
+        crate::store::hooks::validate_key(&validators, self, key, value).await?;
+        let prev = {
+            let mut guard = self.map.write().unwrap();
+            guard.insert(key.to_string(), value.to_vec())
+        };
+        crate::store::hooks::notify(
+            &self.hooks.subscribers(),
+            self,
+            ChangeEvent {
+                key: key.to_string(),
+                kind: ChangeKind::Set,
+                old_value: prev.clone(),
+                new_value: Some(value.to_vec()),
+            },
+        )
+        .await;
         Ok(prev)
     }
 
@@ -60,7 +98,34 @@ impl Store for BTreeStore {
         Ok(BTreeTx {
             store: Arc::clone(&self.map),
             overlay: std::sync::Mutex::new(BTreeMap::new()),
+            hooks: self.hooks.clone(),
+            validators: self.hooks.validators(),
+            staged: std::sync::Mutex::new(Vec::new()),
+            post_commit_view: BTreeStore {
+                map: Arc::clone(&self.map),
+                hooks: HookState::default(),
+            },
         })
+    }
+}
+
+impl Hooks for BTreeStore {
+    fn add_validator<V>(&self, validator: V)
+    where
+        V: Validator + 'static,
+    {
+        self.hooks.add_validator(validator);
+    }
+
+    fn add_observer<O>(&self, observer: O)
+    where
+        O: Observer + 'static,
+    {
+        self.hooks.add_observer(observer);
+    }
+
+    fn watch_scope(&self, scope: Scope) -> mpsc::Receiver<ChangeEvent> {
+        self.hooks.watch_scope(scope)
     }
 }
 
@@ -68,6 +133,10 @@ impl Store for BTreeStore {
 pub struct BTreeTx {
     store: Arc<RwLock<BTreeMap<String, Vec<u8>>>>,
     overlay: std::sync::Mutex<BTreeMap<String, Option<Vec<u8>>>>,
+    hooks: HookState,
+    validators: Vec<Arc<dyn Validator>>,
+    staged: std::sync::Mutex<Vec<ChangeEvent>>,
+    post_commit_view: BTreeStore,
 }
 
 #[async_trait]
@@ -89,24 +158,33 @@ impl GetSet for BTreeTx {
     }
 
     async fn delete(&self, key: &str) -> Result<bool> {
-        // Look up the key once. Check the staged overlay first. Check the store
-        // if the overlay has no entry.
-        let existed = match self.overlay.lock().unwrap().get(key) {
-            Some(staged) => staged.is_some(),
-            None => self.store.read().unwrap().contains_key(key),
-        };
+        let old_value = self.get_bytes(key).await?;
+        let existed = old_value.is_some();
         if existed {
             self.overlay.lock().unwrap().insert(key.to_string(), None);
+            self.stage(ChangeEvent {
+                key: key.to_string(),
+                kind: ChangeKind::Delete,
+                old_value,
+                new_value: None,
+            });
         }
         Ok(existed)
     }
 
     async fn set_bytes(&self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
+        crate::store::hooks::validate_key(&self.validators, self, key, value).await?;
         let prev = self.get_bytes(key).await?;
         self.overlay
             .lock()
             .unwrap()
             .insert(key.to_string(), Some(value.to_vec()));
+        self.stage(ChangeEvent {
+            key: key.to_string(),
+            kind: ChangeKind::Set,
+            old_value: prev.clone(),
+            new_value: Some(value.to_vec()),
+        });
         Ok(prev)
     }
 
@@ -124,24 +202,52 @@ impl GetSet for BTreeTx {
         }
     }
 }
+impl BTreeTx {
+    fn stage(&self, mut event: ChangeEvent) {
+        let mut staged = lock_ignore_poison(&self.staged);
+        match staged.iter_mut().find(|e| e.key == event.key) {
+            Some(existing) => {
+                event.old_value = existing.old_value.take();
+                *existing = event;
+            }
+            None => staged.push(event),
+        }
+    }
+}
+
 
 #[async_trait]
 impl Transaction for BTreeTx {
     async fn commit(self) -> Result<()> {
-        // Recover the guards in the same way as the rest of the crate. A panic
-        // in one guard owner should degrade this commit. The panic should not
-        // fail a later commit.
+        let staged = lock_ignore_poison(&self.staged).clone();
+        for event in &staged {
+            if let (ChangeKind::Set, Some(value)) = (event.kind, event.new_value.as_deref()) {
+                let view = crate::store::hooks::RevalidateView {
+                    inner: &self,
+                    key: &event.key,
+                    old_value: event.old_value.as_deref(),
+                };
+                 crate::store::hooks::validate_key(&self.validators, &view, &event.key, value).await?;
+            }
+        }
+
         let overlay = std::mem::take(&mut *lock_ignore_poison(&self.overlay));
-        let mut guard = rwlock_ignore_poison(&self.store);
-        for (k, v) in overlay {
-            match v {
-                Some(val) => {
-                    guard.insert(k, val);
-                }
-                None => {
-                    guard.remove(&k);
+        {
+            let mut guard = rwlock_ignore_poison(&self.store);
+            for (k, v) in overlay {
+                match v {
+                    Some(val) => {
+                        guard.insert(k, val);
+                    }
+                    None => {
+                        guard.remove(&k);
+                    }
                 }
             }
+        }
+
+        for event in staged {
+            crate::store::hooks::notify(&self.hooks.subscribers(), &self.post_commit_view, event).await;
         }
         Ok(())
     }
