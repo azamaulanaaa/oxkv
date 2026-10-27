@@ -1768,7 +1768,7 @@ impl OxKvStoreBuilder {
     /// // wholesale (stripping `main` breaks the build), so the `moka`
     /// // setup hides inside a feature gate and this compiles to an empty
     /// // `main` without it.
-    /// # #[cfg(all(feature = "oxkv", feature = "moka"))]
+    /// # #[cfg(all(feature = "oxkv", feature = "moka", not(target_arch = "wasm32")))]
     /// # {
     /// # use std::sync::Arc;
     /// # use oxkv::{MemStorage, OxKvStore, SstFile};

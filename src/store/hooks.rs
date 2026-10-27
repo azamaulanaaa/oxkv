@@ -843,7 +843,7 @@ mod tests {
     #[tokio::test]
     async fn test_an_observer_receives_only_events_inside_its_scope() {
         let log = Arc::new(Mutex::new(Vec::new()));
-        let mut s = store();
+        let s = store();
         s.add_observer(Collector(Arc::clone(&log)));
 
         s.set_bytes("user:1", b"v").await.unwrap();
