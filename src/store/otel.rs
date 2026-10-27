@@ -3,7 +3,7 @@
 //! This module provides [`OtelStore`], a decorator that wraps any backend
 //! implementing [`Store`](super::Store). The decorator emits OpenTelemetry
 //! traces and metrics around every operation. It follows the same decorator
-//! idiom as [`HookStore`](super::HookStore), so it composes transparently with
+//! idiom as [`Hooks`](super::Hooks), so it composes transparently with
 //! the rest of the crate. It also composes with transactions. It composes with
 //! the extension traits [`GetSetExt`](super::GetSetExt) and
 //! [`StoreExt`](super::StoreExt). It composes with other decorators:

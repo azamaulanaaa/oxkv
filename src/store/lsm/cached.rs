@@ -33,8 +33,8 @@ use super::{Manifest, ManifestCache, OxKvStore, OxKvTx, decode_wal_records, load
 use crate::store::cache::{Cache, LruCache};
 use crate::store::storage::ObjectPath;
 use crate::store::{
-    BTreeStore, ChangeEvent, Direction, GetSet, Hooks, KeyValue, Observer, Result, Scope,
-    SstFile, Store, StoreError, Transaction, Validator, lock_ignore_poison, now_millis,
+    BTreeStore, ChangeEvent, Direction, GetSet, Hooks, KeyValue, Observer, Result, Scope, SstFile,
+    Store, StoreError, Transaction, Validator, lock_ignore_poison, now_millis,
 };
 use futures::channel::mpsc;
 
@@ -986,8 +986,8 @@ where
 mod tests {
     use super::*;
     use crate::store::MemStorage;
-    use crate::store::storage::Storage;
     use crate::store::Validator;
+    use crate::store::storage::Storage;
 
     async fn writer(prefix: &str) -> (OxKvStore, Arc<dyn Storage>) {
         let backend: Arc<dyn Storage> = Arc::new(MemStorage::new());

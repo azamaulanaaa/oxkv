@@ -28,9 +28,7 @@ use crate::query::{eval as eval_json_query, parse as parse_query};
 pub use btree::{BTreeStore, BTreeTx};
 #[cfg(feature = "btree")]
 mod btree;
-pub use hooks::{
-    ChangeEvent, ChangeKind, HookState, Hooks, Observer, Scope, StoreView, Validator,
-};
+pub use hooks::{ChangeEvent, ChangeKind, HookState, Hooks, Observer, Scope, StoreView, Validator};
 mod hooks;
 #[cfg(all(feature = "otel", not(target_arch = "wasm32")))]
 pub use otel::{OtelStore, OtelTx};
@@ -165,9 +163,16 @@ impl PartialEq for StoreError {
             (StoreError::Utf8(a), StoreError::Utf8(b)) => a == b,
             (StoreError::Utf8Slice(a), StoreError::Utf8Slice(b)) => a == b,
             (StoreError::Json(a), StoreError::Json(b)) => a.to_string() == b.to_string(),
-            (StoreError::Rejected { key: ka, reason: ra }, StoreError::Rejected { key: kb, reason: rb }) => {
-                ka == kb && ra == rb
-            }
+            (
+                StoreError::Rejected {
+                    key: ka,
+                    reason: ra,
+                },
+                StoreError::Rejected {
+                    key: kb,
+                    reason: rb,
+                },
+            ) => ka == kb && ra == rb,
             (StoreError::NotModified, StoreError::NotModified) => true,
             _ => false,
         }

@@ -1,13 +1,13 @@
 //! Validation and reactivity hooks for stores.
 //!
-//! This module provides [`HookStore`]. This decorator wraps any backend that
+//! This module provides [`Hooks`]. This decorator wraps any backend that
 //! implements [`Store`]. It adds two capabilities.
 //!
 //! - **Validation**. [`Validator`] implementations run before a value is
 //!   written. A validator rejects the write when `validate` returns an error.
 //! - **Reactivity**. Each change is broadcast after it becomes durable. The
 //!   broadcast reaches registered [`Observer`] implementations or the channel
-//!   receivers from [`watch`](HookStore::watch).
+//!   receivers from [`watch`](Hooks::watch).
 //!
 //! Both hooks support key scoping through [`Scope`]. A validator or an
 //! observer attaches to a single key, to all keys that share a prefix, or to
@@ -21,8 +21,8 @@
 //!   stalls writers.
 //! - Observers run concurrently with each other. The write method awaits
 //!   their completion before the write returns. Use the channel-based
-//!   [`watch`](HookStore::watch) API for fire-and-forget reactivity.
-//! - The [`HookStore`] snapshots the validators when a transaction begins.
+//!   [`watch`](Hooks::watch) API for fire-and-forget reactivity.
+//! - The [`Hooks`] snapshots the validators when a transaction begins.
 //!   Validators that are added afterwards do not affect open transactions.
 //! - Cloning a store shares the validators and the subscribers between the
 //!   clones. An event from either clone reaches every watcher. A validator
@@ -43,7 +43,7 @@
 //!   post-transaction value of every key. The key that the validator
 //!   currently validates is an exception. That key shows its pre-transaction
 //!   value instead. This exception keeps absence-based rules from observing
-//!   the staged write itself. Backends used with [`HookStore`] must implement
+//!   the staged write itself. Backends used with [`Hooks`] must implement
 //!   `Clone`. Both shipped backends do.
 //! - Cross-transaction ordering depends on the backend. `redb` serializes
 //!   writers natively, so notifications always match the durability order
@@ -93,15 +93,15 @@
 //! ```
 //!
 //! Hooks may read freely through the [`StoreView`] that they are given. They
-//! must never call the owning [`HookStore`] directly. Hook calls happen while
+//! must never call the owning [`Hooks`] directly. Hook calls happen while
 //! writes are in progress. Reentrant store calls can deadlock or
 //! double-notify. Treat hooks as side-effect-free beyond reads through the
 //! view. Validators run more than once per transactional write, at staging
 //! time and again at commit-time re-validation. Therefore validators must be
 //! idempotent.
 
-use std::sync::Arc;
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::channel::mpsc;
@@ -211,7 +211,7 @@ pub trait StoreView: Send + Sync {
     /// Retrieves JSON documents with cursor-based pagination. A query string
     /// can filter the documents.
     ///
-    /// This method mirrors [`GetSetExt::gets`]. It runs the query engine
+    /// This method mirrors [`super::GetSetExt::gets`]. It runs the query engine
     /// against the committed-or-staged state visible through this view.
     ///
     /// # Errors
@@ -281,13 +281,15 @@ pub trait StoreView: Send + Sync {
 
     /// Streams the store's serialized form as byte chunks.
     ///
-    /// This method mirrors [`StoreExt::save_stream`]. It lets a hook export a
+    /// This method mirrors [`super::StoreExt::save_stream`]. It lets a hook export a
     /// prefix-less snapshot without calling back into the owning store.
     ///
     /// # Errors
     ///
     /// Storage failures surface while the stream is polled.
-    fn save_stream(&self) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<Vec<u8>>> + Send + '_>>;
+    fn save_stream(
+        &self,
+    ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<Vec<u8>>> + Send + '_>>;
 }
 
 #[async_trait]
@@ -309,7 +311,9 @@ impl<S: GetSet + Send + Sync> StoreView for S {
         GetSet::gets_bytes(self, limit, direction, cursor).await
     }
 
-    fn save_stream(&self) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<Vec<u8>>> + Send + '_>> {
+    fn save_stream(
+        &self,
+    ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<Vec<u8>>> + Send + '_>> {
         Box::pin(crate::store::SaveStream::new(self))
     }
 }
@@ -318,8 +322,8 @@ impl<S: GetSet + Send + Sync> StoreView for S {
 ///
 /// A validator runs before every write whose key matches its
 /// [`scope`](Validator::scope). The write is standalone or transactional.
-/// Register the validator on a [`HookStore`] with
-/// [`with_validator`](HookStore::with_validator). An error aborts the write without
+/// Register the validator on a [`Hooks`] with
+/// [`with_validator`](Hooks::with_validator). An error aborts the write without
 /// touching the underlying store. Transactional writes are re-validated at
 /// commit time against the transaction's final state. A decision made at
 /// staging time cannot be invalidated by later writes within the same
@@ -347,10 +351,10 @@ pub trait Validator: Send + Sync {
 
 /// Receives notifications about durable changes to the store.
 ///
-/// Register an observer on a [`HookStore`] with
-/// [`add_observer`](HookStore::add_observer). The hook store invokes the
+/// Register an observer on a [`Hooks`] with
+/// [`add_observer`](Hooks::add_observer). The hook store invokes the
 /// observer once per committed change whose key matches its
-/// [`scope`](Observer::scope). Use [`watch`](HookStore::watch) for
+/// [`scope`](Observer::scope). Use [`watch`](Hooks::watch) for
 /// channel-based consumption. That API needs no trait implementation.
 #[async_trait]
 pub trait Observer: Send + Sync {
@@ -399,7 +403,11 @@ impl Subscribers {
 /// releases before the observer calls start. The observer calls then run
 /// concurrently, so observers may take arbitrarily long relative to each
 /// other.
-pub(crate) async fn notify(subscribers: &std::sync::Arc<std::sync::Mutex<Subscribers>>, view: &dyn StoreView, event: ChangeEvent) {
+pub(crate) async fn notify(
+    subscribers: &std::sync::Arc<std::sync::Mutex<Subscribers>>,
+    view: &dyn StoreView,
+    event: ChangeEvent,
+) {
     let mut event = event;
     let seq = {
         let subs = lock_ignore_poison(subscribers.as_ref());
@@ -487,7 +495,9 @@ impl StoreView for RevalidateView<'_> {
         self.inner.gets_bytes(limit, direction, cursor).await
     }
 
-    fn save_stream(&self) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<Vec<u8>>> + Send + '_>> {
+    fn save_stream(
+        &self,
+    ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<Vec<u8>>> + Send + '_>> {
         self.inner.save_stream()
     }
 }
@@ -557,6 +567,7 @@ impl HookState {
     }
 
     /// Subscribes with the given scope.
+    #[must_use]
     pub fn watch_scope(&self, scope: Scope) -> mpsc::Receiver<ChangeEvent> {
         lock_ignore_poison(&self.subscribers).push_sender(scope)
     }
@@ -565,15 +576,16 @@ impl HookState {
     ///
     /// Returns `None` when the requested range fell out of the retained
     /// history. The caller must then re-read the store to recover.
+    #[must_use]
     pub fn events_since(&self, seq: u64) -> Option<Vec<ChangeEvent>> {
         let subs = lock_ignore_poison(&self.subscribers);
         let current = subs.seq.load(std::sync::atomic::Ordering::SeqCst);
         if seq >= current {
             return Some(Vec::new());
         }
-        let first_available = match subs.history.front() {
-            Some(event) => event.seq,
-            None => return None,
+        let first_available = {
+            let event = subs.history.front()?;
+            event.seq
         };
         if seq + 1 < first_available {
             return None;
@@ -593,8 +605,11 @@ impl HookState {
     /// compare its position with this value. The comparison shows how far
     /// behind the watcher is. The watcher can then re-read the affected keys
     /// to recover.
+    #[must_use]
     pub fn current_seq(&self) -> u64 {
-        lock_ignore_poison(&self.subscribers).seq.load(std::sync::atomic::Ordering::SeqCst)
+        lock_ignore_poison(&self.subscribers)
+            .seq
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -643,6 +658,7 @@ pub trait Hooks: Send + Sync {
     fn events_since(&self, seq: u64) -> Option<Vec<ChangeEvent>>;
 
     /// Registers a validator and returns self.
+    #[must_use]
     fn with_validator<V>(self, validator: V) -> Self
     where
         Self: Sized,
@@ -653,7 +669,6 @@ pub trait Hooks: Send + Sync {
     }
 }
 
-
 #[cfg(all(test, feature = "btree"))]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -661,8 +676,8 @@ mod tests {
     use super::*;
     use crate::store::BTreeStore;
     use crate::store::Store;
-    use crate::store::Transaction;
     use crate::store::StoreError;
+    use crate::store::Transaction;
 
     struct Rejecting(Scope);
 

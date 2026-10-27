@@ -11,7 +11,10 @@ use async_trait::async_trait;
 
 use crate::store::cache::{Cache, CacheStats, LruCache};
 use crate::store::storage::{ObjectPath, Storage};
-use crate::store::{ChangeEvent, Direction, GetSet, Hooks, KeyValue, Observer, Result, Scope, Store, StoreError, Transaction, Validator};
+use crate::store::{
+    ChangeEvent, Direction, GetSet, Hooks, KeyValue, Observer, Result, Scope, Store, StoreError,
+    Transaction, Validator,
+};
 use futures::channel::mpsc;
 
 use super::{

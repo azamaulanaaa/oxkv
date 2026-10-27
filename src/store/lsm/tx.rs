@@ -17,7 +17,10 @@ use super::store::PendingWrite;
 use super::{MemTable, WalBuffer};
 use crate::store::cache::{Cache, LruCache};
 use crate::store::storage::{ObjectPath, Storage};
-use crate::store::{ChangeEvent, ChangeKind, Direction, GetSet, HookState, KeyValue, Result, SstFile, Transaction, Validator, lock_ignore_poison};
+use crate::store::{
+    ChangeEvent, ChangeKind, Direction, GetSet, HookState, KeyValue, Result, SstFile, Transaction,
+    Validator, lock_ignore_poison,
+};
 
 /// Transaction for `OxKvStore`. It stages an overlay. It is durable only
 /// on `commit`.
@@ -164,7 +167,8 @@ where
                     key: &event.key,
                     old_value: event.old_value.as_deref(),
                 };
-                crate::store::hooks::validate_key(&self.validators, &view, &event.key, value).await?;
+                crate::store::hooks::validate_key(&self.validators, &view, &event.key, value)
+                    .await?;
             }
         }
 

@@ -4,9 +4,8 @@ use std::ops::RangeBounds;
 use std::sync::{Arc, RwLock};
 
 use super::{
-    ChangeEvent, ChangeKind, Direction, GetSet, HookState, Hooks, KeyValue, Observer,
-    Result, Scope, Store, Transaction, Validator, lock_ignore_poison,
-    rwlock_ignore_poison,
+    ChangeEvent, ChangeKind, Direction, GetSet, HookState, Hooks, KeyValue, Observer, Result,
+    Scope, Store, Transaction, Validator, lock_ignore_poison, rwlock_ignore_poison,
 };
 use futures::channel::mpsc;
 
@@ -36,8 +35,7 @@ impl GetSet for BTreeStore {
         };
         let removed = {
             let mut guard = self.map.write().unwrap();
-            let r = guard.remove(key).is_some();
-            r
+            guard.remove(key).is_some()
         };
         if removed {
             crate::store::hooks::notify(
@@ -48,7 +46,8 @@ impl GetSet for BTreeStore {
                     kind: ChangeKind::Delete,
                     old_value,
                     new_value: None,
-                    seq: 0,                },
+                    seq: 0,
+                },
             )
             .await;
         }
@@ -176,7 +175,8 @@ impl GetSet for BTreeTx {
                 kind: ChangeKind::Delete,
                 old_value,
                 new_value: None,
-                seq: 0,            });
+                seq: 0,
+            });
         }
         Ok(existed)
     }
@@ -225,7 +225,6 @@ impl BTreeTx {
     }
 }
 
-
 #[async_trait]
 impl Transaction for BTreeTx {
     async fn commit(self) -> Result<()> {
@@ -237,7 +236,8 @@ impl Transaction for BTreeTx {
                     key: &event.key,
                     old_value: event.old_value.as_deref(),
                 };
-                 crate::store::hooks::validate_key(&self.validators, &view, &event.key, value).await?;
+                crate::store::hooks::validate_key(&self.validators, &view, &event.key, value)
+                    .await?;
             }
         }
 
@@ -257,7 +257,8 @@ impl Transaction for BTreeTx {
         }
 
         for event in staged {
-            crate::store::hooks::notify(&self.hooks.subscribers(), &self.post_commit_view, event).await;
+            crate::store::hooks::notify(&self.hooks.subscribers(), &self.post_commit_view, event)
+                .await;
         }
         Ok(())
     }
