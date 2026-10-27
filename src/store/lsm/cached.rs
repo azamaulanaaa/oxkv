@@ -177,7 +177,7 @@ impl<C> std::fmt::Debug for CachedOxKvStore<C> {
 
 /// Clones share the mirror and the sync state. The code reference-counts the
 /// `BTreeStore` handle and the generation tracker. Therefore the clones
-/// observe the same keys. Decorator composition (`HookStore`, `OtelStore`)
+/// observe the same keys. Decorator composition (`Hooks`, `OtelStore`)
 /// requires this behavior.
 impl<C> Clone for CachedOxKvStore<C>
 where

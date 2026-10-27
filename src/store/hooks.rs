@@ -599,7 +599,8 @@ impl HookState {
         )
     }
 
-    /// Returns the sequence number of the most recently published event.
+    /// Returns one more than the sequence number of the most recently
+    /// published event.
     ///
     /// A watcher that detects a gap in the `seq` numbers it receives can
     /// compare its position with this value. The comparison shows how far
@@ -644,7 +645,8 @@ pub trait Hooks: Send + Sync {
     /// Subscribes with a scope.
     fn watch_scope(&self, scope: Scope) -> mpsc::Receiver<ChangeEvent>;
 
-    /// Returns the sequence number of the most recently published event.
+    /// Returns one more than the sequence number of the most recently
+    /// published event.
     ///
     /// A watcher that detects a gap in the `seq` numbers it receives can use
     /// this value to measure how far behind it is. The watcher can then
