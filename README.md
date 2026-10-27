@@ -239,7 +239,8 @@ assert_eq!(event.new_value, Some(b"hello".to_vec()));
 - Watchers (`watch`, `watch_prefix`, `watch_all`) receive one event per
   committed change over a bounded channel (256 events); a consumer that
   falls behind misses events rather than stalling writers, and dropping the
-  receiver unsubscribes.
+  receiver unsubscribes. Each event carries a monotonic `seq` number, so a
+  gap in the numbers a watcher receives shows the lag.
 - Transactions broadcast once per commit and never on rollback; staged
   events for the same key collapse into the final one while preserving the
   original pre-transaction value.

@@ -1426,6 +1426,7 @@ where
                 kind: ChangeKind::Set,
                 old_value: prev.clone(),
                 new_value: Some(value.to_vec()),
+                seq: 0,
             },
         )
         .await;
@@ -1567,6 +1568,14 @@ where
 
     fn watch_scope(&self, scope: Scope) -> mpsc::Receiver<ChangeEvent> {
         self.hooks.watch_scope(scope)
+    }
+
+    fn current_seq(&self) -> u64 {
+        self.hooks.current_seq()
+    }
+
+    fn events_since(&self, seq: u64) -> Option<Vec<ChangeEvent>> {
+        self.hooks.events_since(seq)
     }
 }
 

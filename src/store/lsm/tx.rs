@@ -100,6 +100,7 @@ where
             kind: ChangeKind::Set,
             old_value: prev.clone(),
             new_value: Some(value.to_vec()),
+            seq: 0,
         });
         Ok(prev)
     }
@@ -113,6 +114,7 @@ where
             kind: ChangeKind::Set,
             old_value: prev,
             new_value: Some(value.to_vec()),
+            seq: 0,
         });
         Ok(())
     }

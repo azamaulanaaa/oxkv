@@ -341,6 +341,14 @@ where
     fn watch_scope(&self, scope: Scope) -> mpsc::Receiver<ChangeEvent> {
         self.inner.watch_scope(scope)
     }
+
+    fn current_seq(&self) -> u64 {
+        self.inner.current_seq()
+    }
+
+    fn events_since(&self, seq: u64) -> Option<Vec<ChangeEvent>> {
+        self.inner.events_since(seq)
+    }
 }
 
 impl<S> OtelStore<S> {

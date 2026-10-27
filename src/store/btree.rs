@@ -48,7 +48,7 @@ impl GetSet for BTreeStore {
                     kind: ChangeKind::Delete,
                     old_value,
                     new_value: None,
-                },
+                    seq: 0,                },
             )
             .await;
         }
@@ -70,6 +70,7 @@ impl GetSet for BTreeStore {
                 kind: ChangeKind::Set,
                 old_value: prev.clone(),
                 new_value: Some(value.to_vec()),
+                seq: 0,
             },
         )
         .await;
@@ -127,6 +128,14 @@ impl Hooks for BTreeStore {
     fn watch_scope(&self, scope: Scope) -> mpsc::Receiver<ChangeEvent> {
         self.hooks.watch_scope(scope)
     }
+
+    fn current_seq(&self) -> u64 {
+        self.hooks.current_seq()
+    }
+
+    fn events_since(&self, seq: u64) -> Option<Vec<ChangeEvent>> {
+        self.hooks.events_since(seq)
+    }
 }
 
 /// A transaction for the B-tree store.
@@ -167,7 +176,7 @@ impl GetSet for BTreeTx {
                 kind: ChangeKind::Delete,
                 old_value,
                 new_value: None,
-            });
+                seq: 0,            });
         }
         Ok(existed)
     }
@@ -184,6 +193,7 @@ impl GetSet for BTreeTx {
             kind: ChangeKind::Set,
             old_value: prev.clone(),
             new_value: Some(value.to_vec()),
+            seq: 0,
         });
         Ok(prev)
     }

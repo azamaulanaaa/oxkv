@@ -15,9 +15,10 @@
 //!
 //! # Delivery guarantees
 //!
-//! - Watch channels are bounded. A consumer that falls behind misses events,
-//!   because the oldest event is dropped on each delivery attempt. Such a
-//!   consumer never stalls writers.
+//! - Watch channels are bounded. A consumer that falls behind misses events.
+//!   Each event carries a monotonic `seq` number. A gap in the `seq`
+//!   numbers that a watcher receives shows the lag. Such a consumer never
+//!   stalls writers.
 //! - Observers run concurrently with each other. The write method awaits
 //!   their completion before the write returns. Use the channel-based
 //!   [`watch`](HookStore::watch) API for fire-and-forget reactivity.
@@ -100,6 +101,7 @@
 //! idempotent.
 
 use std::sync::Arc;
+use std::collections::VecDeque;
 
 use async_trait::async_trait;
 use futures::channel::mpsc;
@@ -149,6 +151,11 @@ pub struct ChangeEvent {
     pub old_value: Option<Vec<u8>>,
     /// The value after the change. The value is `None` for a delete.
     pub new_value: Option<Vec<u8>>,
+    /// Monotonic sequence number assigned when the event is published.
+    ///
+    /// A gap in the sequence numbers that a watcher receives shows that
+    /// the watcher lagged and missed events.
+    pub seq: u64,
 }
 
 /// A read-only view of the store, handed to hooks so they can inspect state.
@@ -246,10 +253,15 @@ pub trait Observer: Send + Sync {
 pub(crate) struct Subscribers {
     observers: Vec<(Scope, Arc<dyn Observer>)>,
     senders: Vec<(Scope, mpsc::Sender<ChangeEvent>)>,
+    seq: std::sync::atomic::AtomicU64,
+    history: VecDeque<ChangeEvent>,
 }
 
 /// How many events may queue for a watcher before it starts missing them.
 const WATCH_CAPACITY: usize = 256;
+
+/// How many recently published events the store keeps for lag recovery.
+const EVENT_HISTORY_CAPACITY: usize = 1024;
 
 impl Subscribers {
     fn push_sender(&mut self, scope: Scope) -> mpsc::Receiver<ChangeEvent> {
@@ -267,6 +279,21 @@ impl Subscribers {
 /// concurrently, so observers may take arbitrarily long relative to each
 /// other.
 pub(crate) async fn notify(subscribers: &std::sync::Arc<std::sync::Mutex<Subscribers>>, view: &dyn StoreView, event: ChangeEvent) {
+    let mut event = event;
+    let seq = {
+        let subs = lock_ignore_poison(subscribers.as_ref());
+        subs.seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    };
+    event.seq = seq;
+
+    {
+        let mut subs = lock_ignore_poison(subscribers.as_ref());
+        subs.history.push_back(event.clone());
+        while subs.history.len() > EVENT_HISTORY_CAPACITY {
+            subs.history.pop_front();
+        }
+    }
+
     let observers = {
         let mut subs = lock_ignore_poison(subscribers.as_ref());
 
@@ -399,6 +426,42 @@ impl HookState {
     pub fn watch_scope(&self, scope: Scope) -> mpsc::Receiver<ChangeEvent> {
         lock_ignore_poison(&self.subscribers).push_sender(scope)
     }
+
+    /// Returns the events published after `seq`, when they are still retained.
+    ///
+    /// Returns `None` when the requested range fell out of the retained
+    /// history. The caller must then re-read the store to recover.
+    pub fn events_since(&self, seq: u64) -> Option<Vec<ChangeEvent>> {
+        let subs = lock_ignore_poison(&self.subscribers);
+        let current = subs.seq.load(std::sync::atomic::Ordering::SeqCst);
+        if seq >= current {
+            return Some(Vec::new());
+        }
+        let first_available = match subs.history.front() {
+            Some(event) => event.seq,
+            None => return None,
+        };
+        if seq + 1 < first_available {
+            return None;
+        }
+        Some(
+            subs.history
+                .iter()
+                .filter(|event| event.seq > seq)
+                .cloned()
+                .collect(),
+        )
+    }
+
+    /// Returns the sequence number of the most recently published event.
+    ///
+    /// A watcher that detects a gap in the `seq` numbers it receives can
+    /// compare its position with this value. The comparison shows how far
+    /// behind the watcher is. The watcher can then re-read the affected keys
+    /// to recover.
+    pub fn current_seq(&self) -> u64 {
+        lock_ignore_poison(&self.subscribers).seq.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 /// Hook capabilities for a store.
@@ -431,6 +494,19 @@ pub trait Hooks: Send + Sync {
 
     /// Subscribes with a scope.
     fn watch_scope(&self, scope: Scope) -> mpsc::Receiver<ChangeEvent>;
+
+    /// Returns the sequence number of the most recently published event.
+    ///
+    /// A watcher that detects a gap in the `seq` numbers it receives can use
+    /// this value to measure how far behind it is. The watcher can then
+    /// re-read the affected keys to recover.
+    fn current_seq(&self) -> u64;
+
+    /// Returns the events published after `seq`, when they are still retained.
+    ///
+    /// Returns `None` when the requested range fell out of the retained
+    /// history. The caller must then re-read the store to recover.
+    fn events_since(&self, seq: u64) -> Option<Vec<ChangeEvent>>;
 
     /// Registers a validator and returns self.
     fn with_validator<V>(self, validator: V) -> Self
@@ -643,12 +719,14 @@ mod tests {
                     kind: ChangeKind::Set,
                     old_value: None,
                     new_value: Some(b"v".to_vec()),
+                    seq: 0,
                 },
                 ChangeEvent {
                     key: "user:1".into(),
                     kind: ChangeKind::Delete,
                     old_value: Some(b"v".to_vec()),
                     new_value: None,
+                    seq: 1,
                 },
             ]
         );

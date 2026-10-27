@@ -422,6 +422,14 @@ where
         let (_tx, rx) = mpsc::channel(1);
         rx
     }
+
+    fn current_seq(&self) -> u64 {
+        0
+    }
+
+    fn events_since(&self, _seq: u64) -> Option<Vec<ChangeEvent>> {
+        Some(Vec::new())
+    }
 }
 
 #[cfg(test)]
