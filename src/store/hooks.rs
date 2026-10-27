@@ -672,8 +672,11 @@ mod tests {
             self.0.clone()
         }
 
-        async fn validate(&self, _ctx: &dyn StoreView, _key: &str, _value: &[u8]) -> Result<()> {
-            Err(StoreError::Other("rejected".into()))
+        async fn validate(&self, _ctx: &dyn StoreView, key: &str, _value: &[u8]) -> Result<()> {
+            Err(StoreError::Rejected {
+                key: key.to_string(),
+                reason: "rejected".to_string(),
+            })
         }
     }
 
@@ -688,7 +691,10 @@ mod tests {
         async fn validate(&self, _ctx: &dyn StoreView, key: &str, value: &[u8]) -> Result<()> {
             serde_json::from_slice::<serde_json::Value>(value)
                 .map(|_| ())
-                .map_err(|_| StoreError::Other(format!("key `{key}` requires JSON")))
+                .map_err(|_| StoreError::Rejected {
+                    key: key.to_string(),
+                    reason: format!("key `{key}` requires JSON"),
+                })
         }
     }
 
@@ -925,9 +931,10 @@ mod tests {
 
         async fn validate(&self, ctx: &dyn StoreView, key: &str, _value: &[u8]) -> Result<()> {
             if ctx.has(key).await? {
-                return Err(StoreError::Other(format!(
-                    "key `{key}` must not be overwritten"
-                )));
+                return Err(StoreError::Rejected {
+                    key: key.to_string(),
+                    reason: format!("key `{key}` must not be overwritten"),
+                });
             }
             Ok(())
         }
@@ -958,10 +965,10 @@ mod tests {
 
         async fn validate(&self, ctx: &dyn StoreView, key: &str, _value: &[u8]) -> Result<()> {
             if ctx.has(&self.0).await? {
-                return Err(StoreError::Other(format!(
-                    "`{key}` may only be written while `{}` is absent",
-                    self.0
-                )));
+                return Err(StoreError::Rejected {
+                    key: key.to_string(),
+                    reason: format!("`{key}` may only be written while `{}` is absent", self.0),
+                });
             }
             Ok(())
         }

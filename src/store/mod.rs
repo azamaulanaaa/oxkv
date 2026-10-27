@@ -130,6 +130,18 @@ pub enum StoreError {
     #[error("{0}")]
     Other(String),
 
+    /// A validator rejected a write.
+    ///
+    /// The `key` names the key that the validator rejected. The `reason`
+    /// explains why. API layers map this variant to a client error (400).
+    #[error("rejected `{key}`: {reason}")]
+    Rejected {
+        /// The key that the validator rejected.
+        key: String,
+        /// The reason the validator rejected the write.
+        reason: String,
+    },
+
     /// The store has been fenced. Another owner acquired the epoch.
     ///
     /// This state is terminal. The current process must stop writing. It must
@@ -153,6 +165,9 @@ impl PartialEq for StoreError {
             (StoreError::Utf8(a), StoreError::Utf8(b)) => a == b,
             (StoreError::Utf8Slice(a), StoreError::Utf8Slice(b)) => a == b,
             (StoreError::Json(a), StoreError::Json(b)) => a.to_string() == b.to_string(),
+            (StoreError::Rejected { key: ka, reason: ra }, StoreError::Rejected { key: kb, reason: rb }) => {
+                ka == kb && ra == rb
+            }
             (StoreError::NotModified, StoreError::NotModified) => true,
             _ => false,
         }

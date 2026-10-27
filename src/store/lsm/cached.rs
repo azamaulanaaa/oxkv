@@ -1200,12 +1200,15 @@ mod tests {
             async fn validate(
                 &self,
                 _ctx: &dyn crate::store::StoreView,
-                _key: &str,
+                key: &str,
                 value: &[u8],
             ) -> Result<()> {
                 serde_json::from_slice::<serde_json::Value>(value)
                     .map(|_| ())
-                    .map_err(|e| StoreError::Other(e.to_string()))
+                    .map_err(|e| StoreError::Rejected {
+                        key: key.to_string(),
+                        reason: e.to_string(),
+                    })
             }
         }
 
