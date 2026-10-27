@@ -106,7 +106,7 @@ use std::collections::VecDeque;
 use async_trait::async_trait;
 use futures::channel::mpsc;
 
-use super::{GetSet, Result, lock_ignore_poison};
+use super::{Direction, GetSet, KeyValue, Result, lock_ignore_poison};
 
 /// Selects which keys a validator or observer applies to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,6 +180,114 @@ pub trait StoreView: Send + Sync {
     ///
     /// Returns a [`StoreError`](super::StoreError) if the underlying storage fails.
     async fn has(&self, key: &str) -> Result<bool>;
+
+    /// Retrieves the committed-or-staged value as raw bytes.
+    ///
+    /// This method mirrors [`GetSet::get_bytes`]. It exists so a view reads
+    /// like a store.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`](super::StoreError) if the underlying storage fails.
+    async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        self.get(key).await
+    }
+
+    /// Retrieves multiple key-value pairs with cursor-based pagination.
+    ///
+    /// This method mirrors [`GetSet::gets_bytes`]. It lets a hook scan a
+    /// prefix or a range without calling back into the owning store.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`](super::StoreError) if the underlying storage fails.
+    async fn gets_bytes(
+        &self,
+        limit: Option<u32>,
+        direction: Direction,
+        cursor: (Option<String>, Option<String>),
+    ) -> Result<Vec<KeyValue>>;
+
+    /// Retrieves JSON documents with cursor-based pagination. A query string
+    /// can filter the documents.
+    ///
+    /// This method mirrors [`GetSetExt::gets`]. It runs the query engine
+    /// against the committed-or-staged state visible through this view.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`](super::StoreError) if the query is invalid or
+    /// retrieval fails.
+    async fn gets(
+        &self,
+        limit: Option<u32>,
+        direction: Direction,
+        cursor: (Option<String>, Option<String>),
+        query: Option<&str>,
+    ) -> Result<Vec<KeyValue>> {
+        const BATCH_SIZE: u32 = 256;
+
+        let Some(query) = query else {
+            return self.gets_bytes(limit, direction, cursor).await;
+        };
+
+        let max_results = limit.map_or(usize::MAX, |l| usize::try_from(l).unwrap_or(usize::MAX));
+        if max_results == 0 {
+            return Ok(Vec::new());
+        }
+        let ast = crate::query::parse(query).map_err(super::StoreError::Other)?;
+        let mut results = Vec::new();
+        let mut page_cursor: Option<String> = cursor.0.clone();
+
+        loop {
+            let batch = self
+                .gets_bytes(
+                    Some(BATCH_SIZE),
+                    direction,
+                    (page_cursor.clone(), cursor.1.clone()),
+                )
+                .await?;
+
+            if batch.is_empty() {
+                break;
+            }
+
+            let last_key = batch.last().map(|kv| kv.key.clone());
+            let is_last_batch = batch.len() < BATCH_SIZE as usize;
+
+            for kv in batch {
+                if page_cursor.as_deref() == Some(kv.key.as_str()) {
+                    continue;
+                }
+
+                let matches = serde_json::from_slice::<serde_json::Value>(&kv.value)
+                    .is_ok_and(|value| crate::query::eval(&ast, &value));
+                if matches {
+                    results.push(kv);
+                    if results.len() >= max_results {
+                        break;
+                    }
+                }
+            }
+
+            if is_last_batch || results.len() >= max_results {
+                break;
+            }
+            page_cursor = last_key;
+        }
+
+        Ok(results)
+    }
+
+    /// Streams the store's serialized form as byte chunks.
+    ///
+    /// This method mirrors [`StoreExt::save_stream`]. It lets a hook export a
+    /// prefix-less snapshot without calling back into the owning store.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface while the stream is polled.
+    fn save_stream(&self) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<Vec<u8>>> + Send + '_>>;
 }
 
 #[async_trait]
@@ -190,6 +298,19 @@ impl<S: GetSet + Send + Sync> StoreView for S {
 
     async fn has(&self, key: &str) -> Result<bool> {
         GetSet::has(self, key).await
+    }
+
+    async fn gets_bytes(
+        &self,
+        limit: Option<u32>,
+        direction: Direction,
+        cursor: (Option<String>, Option<String>),
+    ) -> Result<Vec<KeyValue>> {
+        GetSet::gets_bytes(self, limit, direction, cursor).await
+    }
+
+    fn save_stream(&self) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<Vec<u8>>> + Send + '_>> {
+        Box::pin(crate::store::SaveStream::new(self))
     }
 }
 
@@ -355,6 +476,19 @@ impl StoreView for RevalidateView<'_> {
         } else {
             self.inner.has(key).await
         }
+    }
+
+    async fn gets_bytes(
+        &self,
+        limit: Option<u32>,
+        direction: Direction,
+        cursor: (Option<String>, Option<String>),
+    ) -> Result<Vec<KeyValue>> {
+        self.inner.gets_bytes(limit, direction, cursor).await
+    }
+
+    fn save_stream(&self) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<Vec<u8>>> + Send + '_>> {
+        self.inner.save_stream()
     }
 }
 
@@ -582,7 +716,7 @@ mod tests {
         let s = store().with_validator(Rejecting(Scope::All));
 
         assert!(s.set_bytes("k", b"v").await.is_err());
-        assert_eq!(s.get_bytes("k").await.unwrap(), None);
+        assert_eq!(s.get("k").await.unwrap(), None);
     }
 
     #[tokio::test]
@@ -766,7 +900,7 @@ mod tests {
         tx.rollback().await.unwrap();
 
         assert!(rx.try_recv().unwrap_err().is_empty());
-        assert_eq!(s.get_bytes("a").await.unwrap(), None);
+        assert_eq!(s.get("a").await.unwrap(), None);
     }
 
     #[tokio::test]
@@ -778,7 +912,7 @@ mod tests {
 
         tx.set_bytes("good", b"v").await.unwrap();
         tx.commit().await.unwrap();
-        assert_eq!(s.get_bytes("good").await.unwrap(), Some(b"v".to_vec()));
+        assert_eq!(s.get("good").await.unwrap(), Some(b"v".to_vec()));
     }
 
     struct NoOverwrite(Scope);
@@ -846,8 +980,8 @@ mod tests {
         assert!(tx.commit().await.is_err());
         // Re-validation failed before the inner transaction committed.
         // Nothing landed in the store.
-        assert_eq!(s.get_bytes("target").await.unwrap(), None);
-        assert_eq!(s.get_bytes("flag").await.unwrap(), None);
+        assert_eq!(s.get("target").await.unwrap(), None);
+        assert_eq!(s.get("flag").await.unwrap(), None);
     }
 
     #[tokio::test]
@@ -861,7 +995,7 @@ mod tests {
         tx.set_bytes("fresh", b"v").await.unwrap();
         tx.commit().await.unwrap();
 
-        assert_eq!(s.get_bytes("fresh").await.unwrap(), Some(b"v".to_vec()));
+        assert_eq!(s.get("fresh").await.unwrap(), Some(b"v".to_vec()));
     }
 
     #[tokio::test]
@@ -891,15 +1025,15 @@ mod tests {
             .unwrap();
         assert!(s.set_bytes("doc:b", b"not json").await.is_err());
 
-        let matches = s
-            .gets(
-                None,
-                Direction::Next,
-                (None, None),
-                Some("lang:rust AND stars:[5 TO 50]"),
-            )
-            .await
-            .unwrap();
+        let matches = GetSetExt::gets(
+            &s,
+            None,
+            Direction::Next,
+            (None, None),
+            Some("lang:rust AND stars:[5 TO 50]"),
+        )
+        .await
+        .unwrap();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].key, "doc:a");
     }
