@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Check formatting before a commit.
+set -uo pipefail
+
+if [[ "${CI_LOCAL_SKIP:-0}" == "1" ]]; then
+  echo "pre-commit: CI_LOCAL_SKIP=1, skipping checks."
+  exit 0
+fi
+
+if ! root="$(git rev-parse --show-toplevel 2>/dev/null)" || [[ -z "$root" ]]; then
+  echo "pre-commit: not inside a git repository." >&2
+  exit 1
+fi
+cd "$root" || exit 1
+
+staged_files="$(git diff --cached --name-only --diff-filter=ACMR)" || exit 1
+if ! grep -qE '\.rs$' <<<"$staged_files"; then
+  echo "pre-commit: no staged Rust files, skipping format check."
+  exit 0
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "pre-commit: cargo not found. Install Rust with: mise install" >&2
+  exit 1
+fi
+
+cargo fmt --check

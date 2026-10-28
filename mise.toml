@@ -10,3 +10,10 @@ node = "latest"
 cov = { run = "cargo-zigbuild llvm-cov" }
 test = { run = "cargo-zigbuild test" }
 bench = { run = "cargo-zigbuild bench" }
+
+[tasks.hooks]
+run = [
+  "git config core.hooksPath .githooks",
+  "chmod +x .githooks/pre-commit .githooks/pre-push .githooks/ci-local.sh",
+]
+description = "Install the git hooks in this repository"
