@@ -1,0 +1,97 @@
+# cargo-deny configuration: https://embarkstudios.github.io/cargo-deny/
+#
+# `mise run licenses`, `mise run advisories` and `mise run bans` each run one
+# check. GitHub CI runs the same three checks as separate jobs, so a failure
+# names the check that failed.
+#
+# `cargo deny check bans` is the graph-level half of dependency hygiene.
+# Clippy's `cargo` lint group is the source-level half. It catches a wildcard
+# requirement or missing crate metadata before the resolver sees it.
+
+[graph]
+# Check the full graph, not only the default features.
+all-features = true
+
+[licenses]
+version = 2
+# These are the licences in the resolved graph. An unknown or copyleft licence
+# fails the check. Add a new licence only after a review, never through a
+# wildcard.
+#
+# An SPDX expression with `OR` passes when one alternative is in this list. For
+# example, `r-efi` offers `LGPL-2.1-or-later` as one alternative, and the
+# `MIT` alternative satisfies it. No copyleft licence is allowed here.
+allow = [
+    # The licence of this crate. The check also evaluates it.
+    "MIT",
+    "Apache-2.0",
+    # unicode-ident, reached through proc-macro2, syn and wasm-bindgen-shared.
+    # The ICU crates (icu_*, zerovec, yoke) reach it through `url` and `idna`.
+    "Unicode-3.0",
+    # wasi, wasip2 and wit-bindgen, reached through the wasm32 target support.
+    "Apache-2.0 WITH LLVM-exception",
+    # memchr and aho-corasick, reached through `regex` and `pest`.
+    # walkdir, same-file and winapi-util, reached through `criterion`,
+    # `minicov` and `object_store`.
+    "Unlicense",
+    # tinyvec, reached through quinn-proto. lru-slab, reached through
+    # quinn-proto as well. quinn arrives through `reqwest` and `object_store`.
+    "Zlib",
+    # ring, rustls-webpki and untrusted, reached through rustls. object_store
+    # enables rustls for S3, GCS and Azure.
+    "ISC",
+    # zerocopy and zerocopy-derive, reached through `half` and `ppv-lite86`.
+    "BSD-2-Clause",
+    # subtle, reached through rustls.
+    "BSD-3-Clause",
+    # ryu, reached through serde_urlencoded and `reqwest`. ryu offers
+    # Apache-2.0 as another alternative, so the entry is not required. It
+    # stays here to show that the licence was reviewed.
+    "BSL-1.0",
+]
+# A crate can ship licence text without an SPDX expression. A low confidence
+# value would accept a guess. 0.9 asks for a second look at a file this tool
+# writes.
+confidence-threshold = 0.9
+
+[bans]
+# Warn on duplicate versions. Several transitive dependencies ship more than
+# one version of a shared crate. The count is still reported, so a regression
+# is visible.
+multiple-versions = "warn"
+# A wildcard requirement resolves to whatever is newest at install time. That
+# is not a reviewable decision, and it can change without a commit.
+wildcards = "deny"
+allow-wildcard-paths = false
+
+[advisories]
+version = 2
+# Deny a yanked release. A yanked release is one that its author asked users
+# not to use.
+yanked = "deny"
+# These three ignores are scoped to `object_store 0.12.5`. Delete an entry when
+# `object_store` moves to a fixed `quick-xml` or drops `rustls-pemfile`.
+#
+# RUSTSEC-2026-0194 and RUSTSEC-2026-0195: quick-xml 0.38.4.
+# `object_store 0.12.5` pins `quick-xml ^0.38.0`, and 0.12.5 is the latest
+# release. The code is reached only through the optional `oxkv-s3` feature and
+# the GCS XML parser. The input comes from the configured object-store endpoint
+# over TLS. Both fixes need `quick-xml >= 0.41.0`.
+#
+# RUSTSEC-2025-0134: rustls-pemfile 2.2.0.
+# The crate is unmaintained. It has no known vulnerability. `object_store
+# 0.12.5` pins `rustls-pemfile ^2.0`. The crate is a thin wrapper over
+# `rustls-pki-types`. Delete this ignore when `object_store` drops the crate.
+ignore = [
+    { id = "RUSTSEC-2026-0194", reason = "object_store 0.12.5 pins quick-xml ^0.38.0. Reached only through the optional oxkv-s3 GCS parser." },
+    { id = "RUSTSEC-2026-0195", reason = "object_store 0.12.5 pins quick-xml ^0.38.0. Reached only through the optional oxkv-s3 GCS parser." },
+    { id = "RUSTSEC-2025-0134", reason = "object_store 0.12.5 pins rustls-pemfile ^2.0. The crate is unmaintained, not a vulnerability." },
+]
+
+[sources]
+# Deny an unexpected source. The lockfile makes a build reproducible, so a
+# registry or git source that is not the expected one needs a recorded
+# decision.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

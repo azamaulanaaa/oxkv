@@ -2,8 +2,8 @@
 # Run the GitHub Actions CI jobs on this machine.
 set -uo pipefail
 
-readonly DEFAULT_JOBS=(native wasm release-config)
-readonly ALL_JOBS=(native wasm wasm-browser release-config)
+readonly DEFAULT_JOBS=(native wasm deps release-config)
+readonly ALL_JOBS=(native wasm wasm-browser deps release-config)
 readonly SKIP_STATUS=77
 
 usage() {
@@ -17,6 +17,7 @@ Jobs:
   native          Format check, clippy, tests, and docs
   wasm            wasm32 tests, check, and clippy
   wasm-browser    wasm32 tests in headless Chrome
+  deps            cargo-deny licence, advisory, and ban checks
   release-config  Verify that the release workflow gates on CI
 
 Options:
@@ -27,7 +28,7 @@ Options:
 Environment:
   CI_LOCAL_STRICT=1  Turn every skipped job into a failure
 
-With no job names, the script runs: native wasm release-config
+With no job names, the script runs: native wasm deps release-config
 EOF
 }
 
@@ -87,6 +88,13 @@ job_wasm() {
   wasm-pack test --node
   cargo check --target wasm32-unknown-unknown --all-features
   cargo clippy --target wasm32-unknown-unknown --all-features -- -D warnings
+}
+
+job_deps() {
+  require_tool deps cargo "mise install"
+  require_tool deps cargo-deny "cargo install --locked cargo-deny --version 0.20.2"
+
+  cargo deny check
 }
 
 job_wasm_browser() {
@@ -193,6 +201,7 @@ run_job() {
       native) job_native ;;
       wasm) job_wasm ;;
       wasm-browser) job_wasm_browser ;;
+      deps) job_deps ;;
       release-config) job_release_config ;;
     esac
   )
@@ -214,7 +223,7 @@ main() {
         usage >&2
         return 2
         ;;
-      native | wasm | wasm-browser | release-config) selected+=("$arg") ;;
+      native | wasm | wasm-browser | deps | release-config) selected+=("$arg") ;;
       *)
         echo "error: unknown job: $arg" >&2
         usage >&2

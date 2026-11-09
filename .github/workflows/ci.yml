@@ -1,114 +1,98 @@
 name: CI
 
+# These jobs only read the checkout and publish artifacts. A called workflow
+# inherits the token of its caller, so this line keeps the token read-only when
+# release.yml calls this workflow.
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
   workflow_call:
   push:
     branches: [main]
   pull_request:
+  # Re-check advisories against new advisory data every week.
+  schedule:
+    - cron: '0 4 * * 1'
 
 env:
   CARGO_TERM_COLOR: always
+
+# A newer run on the same ref replaces an older run. A tag run must finish, so
+# it gets its own group that nothing cancels.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   native:
     name: Test & Lint (native)
     runs-on: ubuntu-latest
-    container:
-      image: rust:1
-    env:
-      CARGO_HOME: /usr/local/cargo
     steps:
-      - uses: actions/checkout@v7
-      - name: Add components
-        run: rustup component add clippy rustfmt
-      - name: Cache cargo
-        uses: actions/cache@v6
-        with:
-          path: |
-            ${{ env.CARGO_HOME }}/bin/
-            ${{ env.CARGO_HOME }}/registry/index/
-            ${{ env.CARGO_HOME }}/registry/cache/
-            ${{ env.CARGO_HOME }}/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-rust
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
       - name: Clippy (--all-features)
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
       - name: Test (--all-features)
-        run: cargo test --all-features
+        run: cargo test --all-features --locked
+      - name: Doctests
+        # `--all-targets` does not run doctests. This step runs them.
+        run: cargo test --doc --all-features --locked
       - name: Check docs
         # README ships as crate docs: intra-doc links (e.g. feature-gated
         # items) resolve only when every feature exists — docs.rs does the same.
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --locked
 
   wasm:
     name: Test (wasm32)
     runs-on: ubuntu-latest
-    container:
-      image: rust:1
-    env:
-      CARGO_HOME: /usr/local/cargo
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-rust
       - name: Add wasm32 target
         run: rustup target add wasm32-unknown-unknown
-      - name: Add components
-        run: rustup component add clippy rustfmt
-      - name: Cache cargo
-        uses: actions/cache@v6
-        with:
-          path: |
-            ${{ env.CARGO_HOME }}/bin/
-            ${{ env.CARGO_HOME }}/registry/index/
-            ${{ env.CARGO_HOME }}/registry/cache/
-            ${{ env.CARGO_HOME }}/git/db/
-            target/
-          key: ${{ runner.os }}-wasm-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-wasm-cargo-
       - name: Install wasm-pack if missing
         run: command -v wasm-pack >/dev/null 2>&1 || cargo install wasm-pack --locked
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22
       - run: wasm-pack test --node
       - name: Check wasm32 build with all features
         # Feature-gated code (e.g. otel) must stay compilable on wasm even
         # though its tests only run in the native job.
-        run: cargo check --target wasm32-unknown-unknown --all-features
+        run: cargo check --target wasm32-unknown-unknown --all-features --locked
       - name: Clippy (wasm32)
         # Lints inside wasm-only code (timer bridges, OPFS backend) are
         # invisible to the native job.
-        run: cargo clippy --target wasm32-unknown-unknown --all-features -- -D warnings
+        run: cargo clippy --target wasm32-unknown-unknown --all-features --locked -- -D warnings
 
   wasm-browser:
     name: Test (wasm32 headless Chrome)
     runs-on: ubuntu-latest
+    # Skip the weekly scheduled run. A browser test does not check advisories.
+    if: github.event_name != 'schedule'
+    # This job is the one exception. It needs Debian's chromium package. It
+    # runs in the rust:1 container. It does not set CARGO_HOME, so the image's
+    # default applies.
     container:
       image: rust:1
-    env:
-      CARGO_HOME: /usr/local/cargo
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Add wasm32 target
         run: rustup target add wasm32-unknown-unknown
-      - name: Cache cargo
-        uses: actions/cache@v6
+      - name: Cache target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
-          path: |
-            ${{ env.CARGO_HOME }}/bin/
-            ${{ env.CARGO_HOME }}/registry/index/
-            ${{ env.CARGO_HOME }}/registry/cache/
-            ${{ env.CARGO_HOME }}/git/db/
-            target/
+          path: target/
           key: ${{ runner.os }}-wasm-browser-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-wasm-browser-cargo-
       - name: Install wasm-pack if missing
         run: command -v wasm-pack >/dev/null 2>&1 || cargo install wasm-pack --locked
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22
       - name: Install Chromium
@@ -118,3 +102,72 @@ jobs:
           apt-get update -qq
           apt-get install -y -qq chromium
       - run: wasm-pack test --headless --chrome
+
+  # One job per cargo-deny check. A failure names the check that failed:
+  # a licence problem and a vulnerability are different conversations.
+  licenses:
+    name: Licences (cargo deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: ''
+          install: cargo-deny@0.20.2
+      - name: Check dependency licences
+        run: cargo deny check licenses
+
+  advisories:
+    name: Advisories (cargo deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: ''
+          install: cargo-deny@0.20.2
+      - name: Check advisories (vulnerabilities and yanked releases)
+        run: cargo deny check advisories
+
+  bans:
+    name: Bans (cargo deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: ''
+          install: cargo-deny@0.20.2
+      - name: Check wildcards and duplicate versions
+        run: cargo deny check bans
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: llvm-tools-preview
+          install: cargo-llvm-cov@0.9.1
+          cache-suffix: coverage
+      - name: Measure coverage
+        run: cargo llvm-cov --all-features --locked --html --output-dir target/llvm-cov
+      - name: Upload report
+        # A failed upload does not fail the job. The measurement is the gate.
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: coverage-html
+          path: target/llvm-cov/html
+          retention-days: 7
+
+  release-config:
+    name: Release config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Check the release workflow gate
+        # This check makes GitHub enforce that release.yml still calls ci.yml
+        # and that the publish jobs still need `checks`.
+        run: .githooks/ci-local.sh release-config

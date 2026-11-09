@@ -43,7 +43,9 @@ Run every job:
 .githooks/ci-local.sh --all
 ```
 
-The default jobs are `native`, `wasm`, and `release-config`. The `wasm-browser` job runs only with `--all` or when you name it.
+The default jobs are `native`, `wasm`, `deps`, and `release-config`. The `wasm-browser` job runs only with `--all` or when you name it.
+
+The `deps` job runs `cargo deny check`. It checks dependency licences, known advisories, wildcard requirements, and duplicate versions. Run `mise install` to install `cargo-deny`. Or run `cargo install --locked cargo-deny --version 0.20.2`.
 
 List the job names:
 
@@ -88,4 +90,19 @@ Use these options only for a temporary or local-only change.
 
 ## GitHub CI
 
-The local hooks do not replace GitHub CI. GitHub CI uses a clean container and runs all jobs. A local run can skip a job when a tool is missing. Push your branch and confirm that GitHub CI passes.
+The local hooks do not replace GitHub CI. GitHub CI uses a clean runner and runs all jobs. A local run can skip a job when a tool is missing. Push your branch and confirm that GitHub CI passes.
+
+The GitHub CI runs these jobs:
+
+- `native` runs the format check, clippy, tests, doctests, and docs.
+- `wasm` runs the wasm32 tests, check, and clippy.
+- `wasm-browser` runs the wasm32 tests in headless Chrome. This job does not run on the weekly schedule.
+- `licenses` runs `cargo deny check licenses`.
+- `advisories` runs `cargo deny check advisories`.
+- `bans` runs `cargo deny check bans`.
+- `coverage` measures the test coverage with `cargo-llvm-cov` and uploads the HTML report.
+- `release-config` verifies that the release workflow still gates publishing on CI.
+
+The workflow runs on push to `main`, on a pull request, and when `release.yml` calls it. It also runs each Monday at 04:00 UTC. The weekly run re-checks advisories against new data.
+
+The licence, advisory, and ban jobs are separate. A failure names the check that failed.

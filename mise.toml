@@ -3,6 +3,7 @@ rust = { version = "stable", components = "rust-analyzer" }
 zig = "latest"
 "cargo:cargo-zigbuild" = "latest"
 "cargo:cargo-llvm-cov" = "latest"
+"cargo:cargo-deny" = "0.20.2"
 "cargo:wasm-pack" = "latest"
 node = "latest"
 
@@ -17,3 +18,23 @@ run = [
   "chmod +x .githooks/pre-commit .githooks/pre-push .githooks/ci-local.sh",
 ]
 description = "Install the git hooks in this repository"
+
+[tasks.licenses]
+run = "cargo deny check licenses"
+description = "Check the licence of every locked dependency"
+
+[tasks.advisories]
+run = "cargo deny check advisories"
+description = "Check for known vulnerabilities and yanked releases"
+
+[tasks.bans]
+run = "cargo deny check bans"
+description = "Check for wildcard dependencies and duplicate versions"
+
+[tasks.deps]
+depends = ["licenses", "advisories", "bans"]
+description = "Run every cargo-deny check"
+
+[tasks.check]
+depends = ["test", "deps"]
+description = "Run the local checks that CI also runs"
