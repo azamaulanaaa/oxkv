@@ -30,6 +30,8 @@ pub use batch::{BatchExt, BatchOp};
 pub use btree::{BTreeStore, BTreeTx};
 #[cfg(feature = "btree")]
 mod btree;
+mod cas;
+pub use cas::{Cas, CasResult};
 pub use hooks::{ChangeEvent, ChangeKind, HookState, Hooks, Observer, Scope, StoreView, Validator};
 mod hooks;
 pub mod testkit;

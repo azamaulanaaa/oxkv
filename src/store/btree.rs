@@ -12,8 +12,8 @@ use futures::channel::mpsc;
 /// A key-value store backed by a B-tree.
 #[derive(Default, Clone)]
 pub struct BTreeStore {
-    map: Arc<RwLock<BTreeMap<String, Vec<u8>>>>,
-    hooks: HookState,
+    pub(crate) map: Arc<RwLock<BTreeMap<String, Vec<u8>>>>,
+    pub(crate) hooks: HookState,
 }
 
 #[async_trait]
