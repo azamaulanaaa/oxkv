@@ -71,11 +71,6 @@ name = "cache_bench"
 harness = false
 required-features = ["oxkv"]
 
-[[bench]]
-name = "query_bench"
-harness = false
-required-features = []
-
 [dev-dependencies]
 mockall = "0.15"
 # Kept wasm-safe on purpose: `wasm-pack test --node` builds `--tests`, and

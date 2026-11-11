@@ -1,11 +1,12 @@
 #![allow(missing_docs)]
 
 //! Benchmarks for the Lucene-style query engine in isolation. The engine has
-//! two parts: the pest-based parser ([`oxkv::parse`]) and the JSON matcher
-//! ([`oxkv::eval`]). No backend store takes part. The documents live in a plain
-//! `Vec<Value>`.
+//! two parts: the pest-based parser ([`oxkv_query::parse`]) and the JSON
+//! matcher ([`oxkv_query::eval`]). No backend store takes part. The documents
+//! live in a plain `Vec<Value>`.
 //!
-//! Run every benchmark with `cargo bench --bench query_bench`. Filter by stage,
+//! Run every benchmark with `cargo bench -p oxkv-query --bench query_bench`.
+//! Filter by stage,
 //! for example `cargo bench --bench query_bench query_match` or
 //! `cargo bench --bench query_bench query_parse/fuzzy`.
 //!
@@ -22,7 +23,7 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use oxkv::{eval, parse};
+use oxkv_query::{eval, parse};
 use serde_json::{Value, json};
 
 const SMALL: usize = 1_000;

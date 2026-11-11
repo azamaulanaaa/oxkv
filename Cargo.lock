@@ -1179,6 +1179,7 @@ name = "oxkv-query"
 version = "0.10.0"
 dependencies = [
  "async-trait",
+ "criterion",
  "oxkv",
  "pest",
  "pest_derive",
