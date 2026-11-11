@@ -1,3 +1,21 @@
+[workspace]
+members = [
+  "crates/oxkv-wasm",
+  "crates/oxkv-otel",
+  "crates/oxkv-s3",
+]
+resolver = "3"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+unreachable_pub = "deny"
+
+[workspace.lints.clippy]
+all = "deny"
+cargo = "deny"
+pedantic = "deny"
+
 [package]
 name = "oxkv"
 version = "0.10.0"
@@ -105,15 +123,8 @@ web-sys = { version = "0.3", features = ["ReadableStream", "Window", "Navigator"
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
 
-[lints.rust]
-unsafe_code = "forbid"
-missing_docs = "deny"
-unreachable_pub = "deny"
-
-[lints.clippy]
-all = "deny"
-cargo = "deny"
-pedantic = "deny"
+[lints]
+workspace = true
 
 # Criterion must measure optimized code: the default bench profile is
 # unoptimized, which once hid a real O(n^2) behind debug-mode serde costs

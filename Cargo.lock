@@ -1168,6 +1168,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxkv-otel"
+version = "0.10.0"
+
+[[package]]
+name = "oxkv-s3"
+version = "0.10.0"
+
+[[package]]
+name = "oxkv-wasm"
+version = "0.10.0"
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

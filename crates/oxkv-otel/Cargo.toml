@@ -1,0 +1,13 @@
+[package]
+name = "oxkv-otel"
+version = "0.10.0"
+edition = "2024"
+description = "OpenTelemetry decorator for the oxkv key-value store."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/azamaulanaaa/oxkv"
+readme = "../../README.md"
+keywords = ["opentelemetry", "keyvalue", "kv-store", "database"]
+categories = ["database"]
+
+[lints]
+workspace = true

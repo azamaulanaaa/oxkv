@@ -1,0 +1,13 @@
+[package]
+name = "oxkv-s3"
+version = "0.10.0"
+edition = "2024"
+description = "object_store adapter for the oxkv key-value store."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/azamaulanaaa/oxkv"
+readme = "../../README.md"
+keywords = ["s3", "gcs", "azure", "keyvalue"]
+categories = ["database"]
+
+[lints]
+workspace = true
