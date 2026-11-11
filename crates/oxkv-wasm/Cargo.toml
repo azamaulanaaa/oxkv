@@ -5,6 +5,28 @@ edition = "2024"
 description = "WebAssembly bindings for the oxkv key-value store."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/azamaulanaaa/oxkv"
+readme = "../../README.md"
+keywords = ["wasm", "keyvalue", "kv-store", "transaction"]
+categories = ["wasm", "database"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+oxkv = { path = "../..", features = ["btree", "oxkv"] }
+futures = { version = "0.3", default-features = false, features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+console_error_panic_hook = "0.1"
+js-sys = "0.3"
+serde-wasm-bindgen = "0.6"
+wasm-streams = "0.6"
+web-sys = { version = "0.3", features = ["ReadableStream", "Window", "Navigator", "StorageManager", "File", "Blob", "DomException", "FileSystemDirectoryHandle", "FileSystemFileHandle", "FileSystemWritableFileStream", "WritableStream", "FileSystemGetDirectoryOptions", "FileSystemGetFileOptions", "FileSystemRemoveOptions", "console"] }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 [lints]
 workspace = true

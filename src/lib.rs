@@ -11,10 +11,6 @@
 //! tested versions of that wiring live in the linked API docs.
 #![doc = include_str!("../README.md")]
 
-/// Wasm Bindings
-#[cfg(target_arch = "wasm32")]
-pub mod wasm;
-
 mod store;
 pub use store::*;
 mod query;

@@ -4,7 +4,7 @@
 
 use wasm_bindgen::prelude::*;
 
-use crate::store::{self, GetSet, GetSetExt, Store, StoreExt, Transaction, load_stream};
+use oxkv::{self as store, GetSet, GetSetExt, Store, StoreExt, Transaction, load_stream};
 
 use super::{Direction, json_compatible};
 
@@ -635,12 +635,11 @@ js_tx!(
     "Transaction handle for [`JsCachedOxKvStore`]: staged overlay, durable only on `commit`."
 );
 
-#[cfg(all(test, feature = "oxkv"))]
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use wasm_bindgen_test::*;
 
-    #[cfg(feature = "btree")]
     use super::super::btree::JsBTreeStore;
     use super::*;
 
@@ -792,7 +791,6 @@ mod tests {
         assert_eq!(ok_bytes(restored.get_bytes("a").await), Some(b"1".to_vec()));
     }
 
-    #[cfg(feature = "btree")]
     #[wasm_bindgen_test]
     async fn snapshot_portable_btree_to_cached() {
         let btree = JsBTreeStore::new();
@@ -815,7 +813,7 @@ mod tests {
         // OPFS exists only in browsers. Node runs the rest of the suite.
         // Browser CI executes this test for real.
         if web_sys::window().is_none() {
-            crate::wasm::announce_skip(
+            crate::announce_skip(
                 "cached_persistent_roundtrip_survives_reopen",
                 "no window/OPFS under Node; executed for real by CI's `wasm-pack test --headless --chrome` job",
             );

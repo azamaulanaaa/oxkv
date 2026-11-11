@@ -40,6 +40,8 @@ use js_sys::{Function, Promise};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast as _, JsValue};
 
+#[cfg(test)]
+use super::announce_skip;
 use super::{ObjectPath, Result, js_await, js_err};
 
 /// Prefix of every lock name this crate takes.
@@ -269,7 +271,7 @@ mod tests {
     /// vacuously.
     fn announce_skip_if(test: &str, needed: bool) -> bool {
         if !needed {
-            crate::wasm::announce_skip(
+            announce_skip(
                 test,
                 "this host has no navigator.locks: the bridge runs on browsers and Node 24+, the fallback runs here (e.g. CI's Node 22)",
             );

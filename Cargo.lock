@@ -1139,7 +1139,6 @@ version = "0.10.0"
 dependencies = [
  "async-lock",
  "async-trait",
- "console_error_panic_hook",
  "crc32fast",
  "criterion",
  "futures",
@@ -1154,7 +1153,6 @@ dependencies = [
  "pest_derive",
  "regex",
  "serde",
- "serde-wasm-bindgen",
  "serde_json",
  "sha2",
  "strsim",
@@ -1162,8 +1160,6 @@ dependencies = [
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-bindgen-test",
- "wasm-streams 0.6.0",
  "web-sys",
 ]
 
@@ -1178,6 +1174,20 @@ version = "0.10.0"
 [[package]]
 name = "oxkv-wasm"
 version = "0.10.0"
+dependencies = [
+ "console_error_panic_hook",
+ "futures",
+ "js-sys",
+ "oxkv",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "wasm-streams 0.6.0",
+ "web-sys",
+]
 
 [[package]]
 name = "parking"

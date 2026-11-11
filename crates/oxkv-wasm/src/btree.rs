@@ -4,7 +4,7 @@
 
 use wasm_bindgen::prelude::*;
 
-use crate::store::{self, GetSet, GetSetExt, Store, StoreExt, Transaction, load_stream};
+use oxkv::{self as store, GetSet, GetSetExt, Store, StoreExt, Transaction, load_stream};
 
 use super::{Direction, json_compatible};
 
@@ -436,7 +436,7 @@ js_tx!(
     "Transaction handle for [`JsBTreeStore`]: staged overlay, durable only on `commit`."
 );
 
-#[cfg(all(test, feature = "btree"))]
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use wasm_bindgen_test::*;

@@ -27,9 +27,6 @@ keywords = ["wasm", "keyvalue", "kv-store", "transaction", "opentelemetry"]
 categories = ["wasm", "database", "data-structures"]
 readme = "README.md"
 
-[lib]
-crate-type = ["cdylib", "rlib"]
-
 [features]
 default = ["btree", "oxkv"]
 ## In-memory B-tree backend (pure Rust, test and bench baseline).
@@ -108,20 +105,16 @@ opentelemetry_sdk = { version = "0.32", default-features = false, features = [
   "testing",
 ] }
 
+# The core keeps the bindings that the browser OPFS backend needs. The
+# JavaScript-facing wrappers own their own copy in `crates/oxkv-wasm`.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 # futures-timer's setTimeout-backed wheel; without it the native wheel calls
 # Instant::now(), which panics on wasm32-unknown-unknown.
 futures-timer = { version = "3", optional = true, features = ["wasm-bindgen"] }
 wasm-bindgen-futures = "0.4"
-console_error_panic_hook = "0.1"
 js-sys = "0.3"
-serde-wasm-bindgen = "0.6"
-wasm-streams = "0.6"
 web-sys = { version = "0.3", features = ["ReadableStream", "Window", "Navigator", "StorageManager", "File", "Blob", "DomException", "FileSystemDirectoryHandle", "FileSystemFileHandle", "FileSystemWritableFileStream", "WritableStream", "FileSystemGetDirectoryOptions", "FileSystemGetFileOptions", "FileSystemRemoveOptions", "console"] }
-
-[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-wasm-bindgen-test = "0.3"
 
 [lints]
 workspace = true

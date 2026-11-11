@@ -20,6 +20,45 @@ use std::sync::Arc;
 
 use crate::store::{Result, StoreError};
 
+/// Announces that a browser-only test will check nothing on this host.
+///
+/// The Node harness has no `window`. The Chrome CI job runs the real test.
+#[cfg(all(test, target_arch = "wasm32"))]
+fn announce_skip(test: &str, reason: &str) {
+    let message = format!("SKIPPED {test}: {reason}\n");
+    if write_host_stderr(&message) {
+        return;
+    }
+    web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(&message));
+}
+
+/// Writes `message` to the host process's stderr.
+///
+/// Returns `false` when the host process has no stderr.
+#[cfg(all(test, target_arch = "wasm32"))]
+fn write_host_stderr(message: &str) -> bool {
+    fn property(
+        object: &wasm_bindgen::JsValue,
+        key: &str,
+    ) -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue> {
+        js_sys::Reflect::get(object, &wasm_bindgen::JsValue::from_str(key))
+    }
+    let Ok(process) = property(&js_sys::global(), "process") else {
+        return false;
+    };
+    let Ok(stderr) = property(&process, "stderr") else {
+        return false;
+    };
+    let Ok(write) =
+        property(&stderr, "write").and_then(wasm_bindgen::JsCast::dyn_into::<js_sys::Function>)
+    else {
+        return false;
+    };
+    write
+        .call1(&stderr, &wasm_bindgen::JsValue::from_str(message))
+        .is_ok()
+}
+
 /// `/`-delimited object path, e.g. `e000007/wal/00000042.log`.
 ///
 /// Owned replacement for `object_store::Path`. [`Display`](std::fmt::Display)
@@ -1069,7 +1108,7 @@ impl Storage for OpfsStorage {
 ///
 /// These tests need a real browser. OPFS is not available under
 /// `wasm-pack test --node`. The tests announce the skip instead of passing
-/// vacuously. See [`crate::wasm::announce_skip`]. The CI Chrome job
+/// vacuously. See [`announce_skip`]. The CI Chrome job
 /// (`wasm-pack test --headless --chrome`) executes them.
 #[cfg(all(test, target_arch = "wasm32"))]
 mod opfs_tests {
@@ -1081,7 +1120,7 @@ mod opfs_tests {
     /// else that a previous run left in OPFS.
     async fn store_for(test: &str) -> Option<OpfsStorage> {
         if web_sys::window().is_none() {
-            crate::wasm::announce_skip(
+            announce_skip(
                 test,
                 "no window/OPFS under Node; executed for real by CI's `wasm-pack test --headless --chrome` job",
             );
@@ -1286,7 +1325,7 @@ mod opfs_tests {
         // Web Locks. The detection test in `opfs_lock` pins this to
         // `navigator.locks`.
         if web_sys::window().is_none() {
-            crate::wasm::announce_skip(
+            announce_skip(
                 "opfs_lock_is_available_wherever_opfs_is",
                 "no OPFS outside a browser; CI's Chrome job asserts the real thing",
             );
