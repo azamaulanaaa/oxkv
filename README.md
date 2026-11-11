@@ -48,6 +48,8 @@ scan, fencing, S3, error, and memory contracts.
 ## Quick Start
 
 ```rust
+# #[cfg(feature = "btree")]
+# mod btree_example {
 use oxkv::{BTreeStore, Direction, GetSet, GetSetExt, Store, Transaction};
 
 #[tokio::main(flavor = "current_thread")]
@@ -79,6 +81,7 @@ async fn main() {
     store.set("config", &json!({"theme": "dark"})).await.unwrap();
     let config: serde_json::Value = store.get("config").await.unwrap().unwrap();
 }
+# }
 ```
 
 ## Querying Stored Documents
@@ -88,6 +91,8 @@ query string, using `gets`. It mirrors `gets_bytes`: same `limit`, `direction`
 and cursor semantics — when no query is passed it is a plain pass-through.
 
 ```rust,no_run
+# #[cfg(feature = "btree")]
+# mod btree_example {
 # #[tokio::main(flavor = "current_thread")]
 # async fn main() {
 #     let store = oxkv::BTreeStore::default();
@@ -107,6 +112,7 @@ let matches = store
 for kv in &matches {
     println!("{} -> {}", kv.key, String::from_utf8_lossy(&kv.value));
 }
+# }
 # }
 ```
 
@@ -191,6 +197,8 @@ Any store can validate values and watch for changes:
 and to listen for changes:
 
 ```rust
+# #[cfg(feature = "btree")]
+# mod btree_example {
 # #[tokio::main(flavor = "current_thread")]
 # async fn main() {
 use oxkv::{BTreeStore, ChangeEvent, ChangeKind, GetSet, Hooks, Scope, Validator};
@@ -229,6 +237,7 @@ assert_eq!(event.kind, ChangeKind::Set);
 assert_eq!(event.old_value, None);
 assert_eq!(event.new_value, Some(b"hello".to_vec()));
 # }
+# }
 ```
 
 - Validators run before every write, including transactional staging; an
@@ -266,6 +275,8 @@ locks, so reentrant hook calls can deadlock.
 stream the same wire format instead:
 
 ```rust
+# #[cfg(feature = "btree")]
+# mod btree_example {
 # #[tokio::main(flavor = "current_thread")]
 # async fn main() {
 use futures::StreamExt;
@@ -295,6 +306,7 @@ assert_eq!(
     dest.get_bytes("hello").await.unwrap().as_deref(),
     Some(b"world".as_slice())
 );
+# }
 # }
 ```
 
@@ -556,6 +568,8 @@ through to the core with fill and scans delegate wholly, so unwarmed
 handles stay correct; `is_warmed` reports convergence.
 
 ```rust
+# #[cfg(feature = "cached")]
+# mod cached_example {
 # #[tokio::main(flavor = "current_thread")]
 # async fn main() {
 use std::sync::Arc;
@@ -574,6 +588,7 @@ assert_eq!(
     Some(b"world".as_slice())
 );
 assert!(!cached.check_stale().await.unwrap());
+# }
 # }
 ```
 

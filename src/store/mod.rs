@@ -48,7 +48,7 @@ pub use scan::{KeyPrefix, Page, ScanExt};
 mod storage;
 #[cfg(feature = "oxkv")]
 pub use cache::{Cache, CacheStats, LruCache};
-#[cfg(all(feature = "oxkv", feature = "btree"))]
+#[cfg(feature = "cached")]
 pub use lsm::{CachedOxKvStore, CachedTx, WarmMode};
 #[cfg(feature = "oxkv")]
 pub use lsm::{OxKvReader, OxKvRoTx, OxKvStore, OxKvStoreBuilder, OxKvTx, SstFile};
@@ -295,6 +295,7 @@ pub(crate) fn lock_ignore_poison<T>(mutex: &std::sync::Mutex<T>) -> std::sync::M
 }
 
 /// `std::sync::RwLock` counterpart of [`lock_ignore_poison`].
+#[cfg(feature = "btree")]
 pub(crate) fn rwlock_ignore_poison<T>(
     lock: &std::sync::RwLock<T>,
 ) -> std::sync::RwLockWriteGuard<'_, T> {
@@ -1060,10 +1061,10 @@ impl<T: GetSet> GetSetExt for T {}
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::{
-        Direction, ErrorKind, GetSet, GetSetExt, SNAPSHOT_HEADER_LEN, StoreError, StoreExt,
-        load_stream,
-    };
+    use super::{Direction, ErrorKind, GetSet, GetSetExt, StoreError};
+    #[cfg(feature = "btree")]
+    use super::{SNAPSHOT_HEADER_LEN, StoreExt, load_stream};
+    #[cfg(feature = "btree")]
     use futures::stream;
 
     /// `limit = 0` means zero rows. Regression: the loop tested the limit
@@ -1259,6 +1260,7 @@ mod tests {
 
     /// A chunk-level failure must surface *as that error*, not as some
     /// unrelated failure that happens to also be an `Err`.
+    #[cfg(feature = "btree")]
     #[tokio::test]
     async fn load_stream_propagates_the_chunk_error_identity() {
         let store = crate::store::BTreeStore::default();
@@ -1276,6 +1278,7 @@ mod tests {
     }
 
     /// A malformed payload is rejected outright, with nothing committed.
+    #[cfg(feature = "btree")]
     #[tokio::test]
     async fn load_stream_rejects_a_malformed_payload() {
         let store = crate::store::BTreeStore::default();

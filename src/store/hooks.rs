@@ -54,6 +54,8 @@
 //! # Example
 //!
 //! ```rust
+//! # #[cfg(feature = "btree")]
+//! # mod btree_example {
 //! use oxkv::{BTreeStore, GetSet, Hooks, Scope, StoreView, Validator};
 //!
 //! struct RequireJson(Scope);
@@ -90,6 +92,7 @@
 //!     assert_eq!(event.kind, oxkv::ChangeKind::Set);
 //!     assert_eq!(event.old_value, None);
 //! }
+//! # }
 //! ```
 //!
 //! Hooks may read freely through the [`StoreView`] that they are given. They
@@ -683,6 +686,8 @@ pub trait Hooks: Send + Sync {
 /// # Example
 ///
 /// ```rust
+/// # #[cfg(feature = "btree")]
+/// # mod btree_example {
 /// use oxkv::{BTreeStore, GetSet, Hooked, Hooks, Scope, Validator};
 ///
 /// struct RejectLocked(Scope);
@@ -709,6 +714,7 @@ pub trait Hooks: Send + Sync {
 ///
 /// assert!(store.set_bytes("locked", b"v").await.is_err());
 /// assert!(store.set_bytes("free", b"v").await.is_ok());
+/// # }
 /// # }
 /// ```
 #[derive(Default)]

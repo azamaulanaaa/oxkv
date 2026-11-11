@@ -7,7 +7,7 @@ use std::sync::Arc;
 use crate::store::storage::{MemStorage, Storage};
 
 mod blob;
-#[cfg(feature = "btree")]
+#[cfg(feature = "cached")]
 mod cached;
 mod manifest;
 mod merge;
@@ -21,7 +21,7 @@ mod tx;
 mod wal;
 
 pub(crate) use blob::{get_blob, try_decode_blob_pointer};
-#[cfg(feature = "btree")]
+#[cfg(feature = "cached")]
 pub use cached::{CachedOxKvStore, CachedTx, WarmMode};
 pub(crate) use manifest::{Manifest, ManifestCache, load_manifest};
 pub(crate) use ownership::read_ownership;

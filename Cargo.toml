@@ -28,9 +28,12 @@ categories = ["wasm", "database", "data-structures"]
 readme = "README.md"
 
 [features]
-default = ["btree", "oxkv"]
+default = ["oxkv"]
 ## In-memory B-tree backend (pure Rust, test and bench baseline).
 btree = []
+## Write-through RAM mirror over [`OxKvStore`] (`CachedOxKvStore`).
+## It needs the B-tree backend for the mirror.
+cached = ["oxkv", "btree"]
 ## Enables [`OxKvStore`] — portable LSM over `Storage` (native + `wasm32`).
 ## Each `dep:` below is justified inline where the dependency is declared.
 oxkv = ["dep:crc32fast", "dep:sha2", "dep:async-lock", "dep:futures-timer"]
@@ -60,14 +63,17 @@ moka = { version = "0.12", optional = true, features = ["future"] }
 [[bench]]
 name = "kv_bench"
 harness = false
+required-features = ["btree", "oxkv"]
 
 [[bench]]
 name = "cache_bench"
 harness = false
+required-features = ["oxkv"]
 
 [[bench]]
 name = "query_bench"
 harness = false
+required-features = []
 
 [dev-dependencies]
 mockall = "0.15"
