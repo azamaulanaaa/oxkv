@@ -102,6 +102,10 @@ wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = ["ReadableStream", "Window", "Navigator", "StorageManager", "File", "Blob", "DomException", "FileSystemDirectoryHandle", "FileSystemFileHandle", "FileSystemWritableFileStream", "WritableStream", "FileSystemGetDirectoryOptions", "FileSystemGetFileOptions", "FileSystemRemoveOptions", "console"] }
 
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+# The OPFS backend and its browser contract tests live in this crate.
+wasm-bindgen-test = "0.3"
+
 [lints]
 workspace = true
 
