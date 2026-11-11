@@ -71,12 +71,12 @@ job_native() {
   require_tool native cargo-fmt "rustup component add rustfmt"
   require_tool native cargo-clippy "rustup component add clippy"
 
-  cargo fmt --check
-  cargo clippy --all-targets -- -D warnings
-  cargo test
-  cargo clippy --all-targets --all-features -- -D warnings
-  cargo test --all-features
-  RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+  cargo fmt --all --check
+  cargo clippy --workspace --all-targets -- -D warnings
+  cargo test --workspace
+  cargo clippy --workspace --all-targets --all-features -- -D warnings
+  cargo test --workspace --all-features
+  RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 }
 
 job_wasm() {
@@ -85,9 +85,9 @@ job_wasm() {
   require_tool wasm node "mise install"
   require_wasm_target wasm
 
-  wasm-pack test --node
-  cargo check --target wasm32-unknown-unknown --all-features
-  cargo clippy --target wasm32-unknown-unknown --all-features -- -D warnings
+  (cd crates/oxkv-wasm && wasm-pack test --node)
+  cargo check -p oxkv -p oxkv-wasm --target wasm32-unknown-unknown --all-features
+  cargo clippy -p oxkv -p oxkv-wasm --target wasm32-unknown-unknown --all-features -- -D warnings
 }
 
 job_deps() {
@@ -116,7 +116,7 @@ job_wasm_browser() {
     skip wasm-browser "missing Chrome/Chromium. Install it with: apt-get install chromium"
   fi
 
-  wasm-pack test --headless --chrome
+  (cd crates/oxkv-wasm && wasm-pack test --headless --chrome)
 }
 
 release_job_block() {

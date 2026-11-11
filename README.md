@@ -9,15 +9,28 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 - **Cursor-based pagination** — bidirectional traversal (`Next` / `Prev`) with inclusive range cursors and limit control
 - **Lucene-style query engine** — filter stored JSON documents with a query language supporting field paths, ranges, wildcards, regex, fuzzy matching, and boolean operators
 - **JSON serialization** — extension methods for inserting and retrieving `serde_json::Value` types via JSON, stored as raw bytes
-- **WASM bindings** — thread-safe wrappers in `src/wasm/` expose `BTreeStore`, `OxKvStore`, and `CachedOxKvStore` to JavaScript as async promises (`otel` native-only, OXKV snapshot portable across all)
+- **WASM bindings** — thread-safe wrappers in `crates/oxkv-wasm/` expose `BTreeStore`, `OxKvStore`, and `CachedOxKvStore` to JavaScript as async promises (`oxkv-otel` is native-only, the OXKV snapshot is portable across all)
 - **Extensible backends** — the crate defines three traits (`GetSet`, `Transaction`, `Store`) that any backend can implement; ships with an in-memory B-tree backend (`btree`, test and bench baseline + WASM baseline) and an LSM backend (`oxkv`, native + wasm) generic over `Storage` + `Cache` (S3/GCS/Azure via the `oxkv-s3` crate)
 - **LSM backend** — portable LSM over pluggable `Storage` (in-memory `MemStorage` everywhere including browsers; S3/GCS/Azure/local via the [`oxkv-s3`](crates/oxkv-s3) crate, OPFS origin-private storage in browsers): epoch-fenced single writer, WAL with RPO=0, `MemTable` + SST (L0/L1) with Bloom + CRC, blob overflow for large values, scan-resistant `S3-FIFO` SST cache (trait, `moka` optional), WAL replay, GC and L0→L1 compaction, group-committed batched writes, lazy pull-merge range scans, read-only `OxKvReader` followers, write-through `CachedOxKvStore` RAM mirror
 - **Validation hooks** — reject invalid writes before they reach storage, scoped to a single key, a key prefix, or the whole store
 - **Reactivity** — watch keys or prefixes and observe every committed change via channels or observer traits; rolled-back transactions never notify
 - **Save/Load** — serialize the entire store contents into a single contiguous `Uint8Array` and reconstruct it from binary data
 - **Streaming snapshots** — same wire format as an incremental byte stream: memory stays bounded regardless of store size on both Rust (via `futures::Stream`) and JavaScript (native `ReadableStream`)
-- **OpenTelemetry** — opt-in `OtelStore` decorator emitting spans and metrics around every operation; the crate ships API-only, so your application plugs in any SDK/exporter
-- **Strict linting** — all warnings and clippy lints are enforced at the crate level
+- **OpenTelemetry** — the `oxkv-otel` crate provides the `OtelStore` decorator. It emits spans and metrics around every operation. The crate uses the API only, so your application plugs in any SDK or exporter
+- **Strict linting** — all warnings and clippy lints are enforced at the workspace level
+
+## Feature Flags
+
+The default feature is `oxkv`. The other surfaces are opt-in:
+
+| Feature | Purpose |
+| --- | --- |
+| `oxkv` | LSM engine over any `Storage` backend (default) |
+| `btree` | In-memory B-tree backend |
+| `cached` | `CachedOxKvStore` RAM mirror. It enables `oxkv` and `btree` |
+| `moka` | `moka` SST cache backend (native-only) |
+
+`oxkv-wasm`, `oxkv-otel`, and `oxkv-s3` are separate workspace crates.
 
 ## Core Traits
 
@@ -37,7 +50,7 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 | `oxkv_otel::OtelStore` | Separate crate adding OpenTelemetry traces and metrics to any store |
 | [`store::OxKvStore`] / [`store::OxKvStoreBuilder`] / [`store::OxKvTx`] | Feature-gated (`oxkv`, native + wasm) LSM generic over `Storage` + `Cache` (in-memory `MemStorage`; S3 via the `oxkv-s3` crate); single-writer epoch fencing, WAL + SST + blob overflow |
 | [`store::OxKvReader`] / [`store::OxKvRoTx`] | Feature-gated (`oxkv`, native + wasm) read-only follower sharing the `Store` trait — opens without epoch CAS, follows writer WALs, writes rejected, empty-tx commit is a no-op |
-| [`store::CachedOxKvStore`] / [`store::CachedTx`] / [`store::WarmMode`] | Feature-gated (`oxkv` **and** `btree`, native + wasm) write-through RAM mirror sharing the `Store` trait — zero-I/O reads once warmed, `Eager`/`Background`/`Lazy` fill via `warm`/`warm_step`/`is_warmed`, WAL durability, TTL-checked reads, `refresh`/`check_stale` catch-up, fencing poisons until refresh |
+| [`store::CachedOxKvStore`] / [`store::CachedTx`] / [`store::WarmMode`] | Feature-gated (`cached`, native + wasm) write-through RAM mirror sharing the `Store` trait — zero-I/O reads once warmed, `Eager`/`Background`/`Lazy` fill via `warm`/`warm_step`/`is_warmed`, WAL durability, TTL-checked reads, `refresh`/`check_stale` catch-up, fencing poisons until refresh |
 | [`store::StoreError::Fenced`] | Terminal fencing error — another owner acquired the epoch via `ownership.json` CAS |
 | [`store::StoreError::CasConflict`] | Conditional-write precondition failed — someone else won the CAS race; retryable unless fencing says otherwise |
 | [`store::ErrorKind`] | Coarse class from `StoreError::kind` — `Conflict` and `Transient` are retryable; `Fenced`, `Rejected`, `InvalidInput`, and `Other` are not; `retry_after` returns `None` today |
@@ -594,7 +607,7 @@ assert!(!cached.check_stale().await.unwrap());
 
 ## WASM Bindings
 
-The WASM module in `src/wasm/` provides thread-safe wrappers for `BTreeStore`, `OxKvStore` (in-memory LSM), and `CachedOxKvStore` (write-through RAM mirror), exposing every store method to JavaScript as async promises. Snapshots are byte-identical across backends, so bytes saved anywhere restore anywhere.
+The `crates/oxkv-wasm/` crate provides thread-safe wrappers for `BTreeStore`, `OxKvStore` (in-memory LSM), and `CachedOxKvStore` (write-through RAM mirror), exposing every store method to JavaScript as async promises. Snapshots are byte-identical across backends, so bytes saved anywhere restore anywhere.
 
 ### Persistent browser storage (OPFS)
 
@@ -644,7 +657,7 @@ const done = await warming.warmStep(16); // drive from a timer until true
 Build for WebAssembly:
 
 ```bash
-wasm-pack build --target web  # or nodejs, bundler, etc.
+wasm-pack build crates/oxkv-wasm --target web --out-name oxkv  # or nodejs, bundler, etc.
 ```
 
 ### Querying from JavaScript
@@ -726,10 +739,10 @@ Requires Node.js.
 
 ```bash
 # Build for WASM with wasm-bindgen-test support
-wasm-pack build --target web
+wasm-pack build crates/oxkv-wasm --target web --out-name oxkv
 
 # Run tests using the Node.js runtime
-wasm-pack test --node
+wasm-pack test crates/oxkv-wasm --node
 ```
 
 ## Benchmarking
@@ -738,12 +751,14 @@ Criterion benchmarks live in [`benches/kv_bench.rs`](benches/kv_bench.rs) and
 cover `btree_mem`, `oxkv_mem` (LSM over in-memory `MemStorage` with `skip_probe(true)`), and `cached_mem` (same core via `build_cached`, read shapes only) at 1K / 100K / 1M scales with a sampling strategy that keeps the full suite in minutes, not hours. `btree` is bench baseline only.
 
 ```bash
-cargo bench --bench kv_bench                     # everything (tuned to minutes)
-cargo bench --bench kv_bench 1000                # quick sweep of the 1k groups
-cargo bench --bench kv_bench point_update        # just the changes matrix
-cargo bench --bench kv_bench random_get/cached_mem/1000/get  # one cached cell
-cargo bench --features oxkv --bench kv_bench       # include OxKv (MemStorage)
+cargo bench --features btree,oxkv --bench kv_bench     # btree + LSM groups (tuned to minutes)
+cargo bench --features btree,oxkv --bench kv_bench 1000  # quick sweep of the 1k groups
+cargo bench --features btree,oxkv --bench kv_bench point_update  # just the changes matrix
+cargo bench --features cached --bench kv_bench random_get/cached_mem/1000/get  # one cached cell
 ```
+
+The `kv_bench` target needs `btree` and `oxkv`. The `cached_mem` groups need
+`cached`. The `cache_bench` target needs `oxkv`.
 
 Query-engine benchmarks live in [`benches/query_bench.rs`](benches/query_bench.rs)
 and measure the Lucene-style parser and matcher in isolation — no backend
@@ -834,12 +849,14 @@ samples 10K gets in ~14 ms (726 K/s) versus ~103 ms for oxkv (~7.5×) and
 ## Building for WebAssembly
 
 ```bash
-wasm-pack build --target web   # or nodejs, bundler, etc.
+wasm-pack build crates/oxkv-wasm --target web --out-name oxkv   # or nodejs, bundler, etc.
 ```
 
 ## Architecture
 
-- `src/wasm/` — manual wasm-bindgen wrappers (`mod` + `btree` + `oxkv` + `cached`) for `BTreeStore` + `OxKvStore` + `CachedOxKvStore` (thread-safe JS-facing types; OXKV snapshot portable across all backends)
+- `crates/oxkv-wasm/` — manual wasm-bindgen wrappers (`lib` + `btree` + `oxkv` + `cached`) for `BTreeStore` + `OxKvStore` + `CachedOxKvStore` (thread-safe JS-facing types; OXKV snapshot portable across all backends)
+- `crates/oxkv-otel/` — `OtelStore` decorator emitting OpenTelemetry spans and metrics
+- `crates/oxkv-s3/` — `ObjectStoreStorage` adapter for S3, GCS, Azure, and local files
 - `src/store/mod.rs` — core traits (`GetSet`, `Transaction`, `Store`, `GetSetExt`, `StoreExt`), error types (`StoreError::Fenced`, `StoreError::CasConflict`, `StoreError::NotModified`), and the `lock_ignore_poison` policy helper
 - `src/store/btree.rs` — in-memory B-tree backend (`btree`, test/bench + WASM baseline)
 - `src/store/lsm/mod.rs` — LSM facade (`oxkv`, native + wasm): re-exports `OxKvStore`/`OxKvTx`/`OxKvReader`/`CachedOxKvStore`/`CachedTx`/`WarmMode`/`SstFile`, shared `MemTable` types + WAL/GC tuning constants
@@ -857,8 +874,7 @@ wasm-pack build --target web   # or nodejs, bundler, etc.
 - `src/store/lsm/probe.rs` — conditional-write probe (`If-None-Match` / `If-Match`)
 - `src/store/storage.rs` — `Storage` trait + `MemStorage` (in-memory, every target) + `OpfsStorage` (browser origin-private storage, wasm); the S3/GCS/Azure/local adapter lives in `crates/oxkv-s3`
 - `src/store/cache.rs` — `Cache` trait + `LruCache` (scan-resistant `S3-FIFO`, `moka` optional)
-- `src/store/hooks.rs` — `Hooks` trait providing validation hooks and change notifications
-- `src/store/otel.rs` — `OtelStore` decorator emitting OpenTelemetry spans and metrics (feature `otel`)
+- `src/store/hooks.rs` — `Hooks` trait, the `Hooked` decorator for any `GetSet` backend, and change notifications
 - `src/query/mod.rs` — query AST types and the pest-based parser (`query/query.pest` grammar)
 - `src/query/json.rs` — compiled-query matcher evaluating queries against `serde_json::Value` documents
 

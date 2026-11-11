@@ -35,8 +35,9 @@ jobs:
         with:
           node-version: 24
       - name: Verify npm packaging
+        working-directory: crates/oxkv-wasm
         run: |
-          rm -rf pkg && wasm-pack build --target web --release --out-dir pkg
+          rm -rf pkg && wasm-pack build --target web --release --out-dir pkg --out-name oxkv
           npm publish ./pkg --dry-run
 
   publish-crate:
@@ -79,6 +80,8 @@ jobs:
       # github.blog 2026-07-08), making OIDC the only automated path.
       - name: Install recent npm
         run: npm install -g npm@latest
-      - run: rm -rf pkg && wasm-pack build --target web --release --out-dir pkg
+      - run: rm -rf pkg && wasm-pack build --target web --release --out-dir pkg --out-name oxkv
+        working-directory: crates/oxkv-wasm
       - name: Publish to npm
         run: npm publish ./pkg --provenance
+        working-directory: crates/oxkv-wasm

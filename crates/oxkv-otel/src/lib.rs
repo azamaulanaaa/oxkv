@@ -3,12 +3,12 @@
 //! OpenTelemetry instrumentation for stores.
 //!
 //! This crate provides [`OtelStore`], a decorator that wraps any backend
-//! implementing [`Store`](oxkv::Store). The decorator emits OpenTelemetry
+//! implementing [`oxkv::Store`]. The decorator emits OpenTelemetry
 //! traces and metrics around every operation. It follows the same decorator
-//! idiom as [`Hooks`](oxkv::Hooks), so it composes transparently with
+//! idiom as [`oxkv::Hooks`], so it composes transparently with
 //! the rest of the crate. It also composes with transactions. It composes with
-//! the extension traits [`GetSetExt`](oxkv::GetSetExt) and
-//! [`StoreExt`](oxkv::StoreExt). It composes with other decorators:
+//! the extension traits [`oxkv::GetSetExt`] and
+//! [`oxkv::StoreExt`]. It composes with other decorators:
 //!
 //! ```text
 //! OtelStore::new(BTreeStore::default())

@@ -1,7 +1,8 @@
 //! Validation and reactivity hooks for stores.
 //!
-//! This module provides [`Hooks`]. This decorator wraps any backend that
-//! implements [`Store`]. It adds two capabilities.
+//! This module provides [`Hooks`]. A backend implements this trait directly.
+//! [`Hooked`] adds the same hooks to any [`GetSet`] backend. Hooks add two
+//! capabilities.
 //!
 //! - **Validation**. [`Validator`] implementations run before a value is
 //!   written. A validator rejects the write when `validate` returns an error.

@@ -32,20 +32,20 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: ./.github/actions/setup-rust
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets --locked -- -D warnings
-      - run: cargo test --locked
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
       - name: Clippy (--all-features)
-        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Test (--all-features)
-        run: cargo test --all-features --locked
+        run: cargo test --workspace --all-features --locked
       - name: Doctests
         # `--all-targets` does not run doctests. This step runs them.
-        run: cargo test --doc --all-features --locked
+        run: cargo test --workspace --doc --all-features --locked
       - name: Check docs
         # README ships as crate docs: intra-doc links (e.g. feature-gated
         # items) resolve only when every feature exists — docs.rs does the same.
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --locked
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --locked
 
   wasm:
     name: Test (wasm32)
@@ -61,14 +61,15 @@ jobs:
         with:
           node-version: 22
       - run: wasm-pack test --node
+        working-directory: crates/oxkv-wasm
       - name: Check wasm32 build with all features
-        # Feature-gated code (e.g. otel) must stay compilable on wasm even
-        # though its tests only run in the native job.
-        run: cargo check --target wasm32-unknown-unknown --all-features --locked
+        # The core keeps the OPFS backend. The binding crate holds the JS
+        # wrappers. Both must stay compilable on wasm.
+        run: cargo check -p oxkv -p oxkv-wasm --target wasm32-unknown-unknown --all-features --locked
       - name: Clippy (wasm32)
-        # Lints inside wasm-only code (timer bridges, OPFS backend) are
-        # invisible to the native job.
-        run: cargo clippy --target wasm32-unknown-unknown --all-features --locked -- -D warnings
+        # Lints inside wasm-only code (timer bridges, OPFS backend, bindings)
+        # are invisible to the native job.
+        run: cargo clippy -p oxkv -p oxkv-wasm --target wasm32-unknown-unknown --all-features --locked -- -D warnings
 
   wasm-browser:
     name: Test (wasm32 headless Chrome)
@@ -102,6 +103,7 @@ jobs:
           apt-get update -qq
           apt-get install -y -qq chromium
       - run: wasm-pack test --headless --chrome
+        working-directory: crates/oxkv-wasm
 
   # One job per cargo-deny check. A failure names the check that failed:
   # a licence problem and a vulnerability are different conversations.

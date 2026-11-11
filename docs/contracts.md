@@ -438,8 +438,8 @@ unsupported. See `src/store/lsm/probe.rs`, `probe_store`.
 
 `PutMode::Create` maps to `If-None-Match: *`. `PutMode::Update` maps to
 `If-Match` with an ETag and optional backend version. See
-`src/store/storage.rs`, `enum PutMode`, `ObjectVersion`, and
-`impl Storage for Arc<dyn object_store::ObjectStore>`.
+`src/store/storage.rs`, `enum PutMode`, and `ObjectVersion`. The adapter lives
+in `crates/oxkv-s3/src/lib.rs`, `impl Storage for ObjectStoreStorage`.
 
 The engine uses conditional writes for these objects.
 
@@ -498,14 +498,15 @@ probe checks the conditional-write part at build time.
 
 This branch does not expose multipart upload settings, object-store request
 concurrency, or a client retry policy. Those settings belong to the
-`object_store` client that the caller passes in. The engine's own retry loops
+`object_store` client that the caller passes to `ObjectStoreStorage`. The
+engine's own retry loops
 are the four manifest CAS attempts and the one stale-manifest retry on a
 `not found` read. See `src/store/lsm/store.rs`, `append_wal_locked`, and
 `src/store/lsm/read.rs`, `retry_once_not_found`.
 
 The `Storage` implementation maps backend errors to `StoreError::Storage` or
 `StoreError::CasConflict`. It does not add retries. See
-`src/store/storage.rs`, `impl Storage for Arc<dyn object_store::ObjectStore>`.
+`crates/oxkv-s3/src/lib.rs`, `impl Storage for ObjectStoreStorage`.
 
 ## 6. Errors
 
@@ -612,7 +613,7 @@ provide. Do not rely on an absent feature.
 | Durable change feed | Absent. `events_since` uses an in-memory history. |
 | Cross-store transactions | Absent. A transaction covers one store. |
 | Lease and fencing helpers | Absent. `ownership.json` epoch fencing is internal to the LSM writer. There is no public lease type and no fencing token API. |
-| Metrics and scoped handles | Absent. The core store has no metrics or scoped-handle API. `OtelStore` is an optional decorator. |
+| Metrics and scoped handles | Absent. The core store has no metrics or scoped-handle API. The `oxkv-otel` crate provides an optional `OtelStore` decorator. |
 | Export and restore | Absent. `save`/`load` and `save_stream`/`load_stream` move a whole snapshot. There is no filtered export or restore API. |
 | `ErrorKind` and `is_retryable` | Present. `StoreError::kind` maps every variant to an `ErrorKind`. `StoreError::is_retryable` is true only for `Conflict` and `Transient`. |
 

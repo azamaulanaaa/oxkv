@@ -1,9 +1,9 @@
-//! A transactional key-value store. It provides WASM bindings (`BTreeStore` and
-//! `OxKvStore`). It also provides Lucene-style JSON queries.
+//! A transactional key-value store. It provides the `BTreeStore` and
+//! `OxKvStore` backends. It also provides Lucene-style JSON queries.
 //!
-//! The `oxkv-otel` crate provides `OtelStore`. It wraps any backend and adds
-//! OpenTelemetry traces and metrics. See the `oxkv-otel` docs for wiring
-//! guidance.
+//! The `oxkv-wasm` crate provides the WASM bindings. The `oxkv-otel` crate
+//! provides `OtelStore`. It wraps any backend and adds OpenTelemetry traces and
+//! metrics. The `oxkv-s3` crate provides the `object_store` adapter.
 #![allow(clippy::multiple_crate_versions)]
 //! The [README](https://github.com/azamaulanaaa/oxkv/blob/main/README.md)
 //! below is the user guide. Its live Rust examples run as doctests under

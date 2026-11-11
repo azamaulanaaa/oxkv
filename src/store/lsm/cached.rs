@@ -1,5 +1,7 @@
 //! Write-through RAM mirror over [`OxKvStore`].
 //!
+//! This module is available with the `cached` feature.
+//!
 //! [`CachedOxKvStore`] pairs a durable LSM core with a [`BTreeStore`]. The
 //! [`BTreeStore`] holds every resolved key. Therefore point and range reads
 //! serve from memory. Writes keep WAL durability. The code imports

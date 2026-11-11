@@ -74,8 +74,8 @@ yanked = "deny"
 #
 # RUSTSEC-2026-0194 and RUSTSEC-2026-0195: quick-xml 0.38.4.
 # `object_store 0.12.5` pins `quick-xml ^0.38.0`, and 0.12.5 is the latest
-# release. The code is reached only through the optional `oxkv-s3` feature and
-# the GCS XML parser. The input comes from the configured object-store endpoint
+# release. The code is reached only through the `oxkv-s3` crate and the GCS XML
+# parser. The input comes from the configured object-store endpoint
 # over TLS. Both fixes need `quick-xml >= 0.41.0`.
 #
 # RUSTSEC-2025-0134: rustls-pemfile 2.2.0.
