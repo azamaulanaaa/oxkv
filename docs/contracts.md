@@ -414,7 +414,8 @@ transaction commit is a no-op. See `src/store/lsm/reader.rs`,
 
 The engine speaks only to the `Storage` trait. The trait has five methods:
 `get`, `get_opts`, `put_opts`, `delete`, and `list`. See
-`src/store/storage.rs`, `trait Storage`.
+`src/store/storage.rs`, `trait Storage`. Browser OPFS is a `Storage`
+implementation in `crates/oxkv-opfs`, `OpfsStorage`.
 
 The trait contract requires two error forms. A missing object is
 `StoreError::Storage` with `not found` in the message. A failed conditional

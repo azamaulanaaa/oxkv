@@ -7,8 +7,8 @@
 //! `OxKvStore` on every target. The format comes from `snapshot.rs`. It uses
 //! the magic `OXKV` and version 1. Bytes from `save` restore everywhere via
 //! `load`. `OxKvStore` binds the LSM engine to an in-memory
-//! [`oxkv::MemStorage`]. Durable browser storage (OPFS) arrives later as
-//! another [`oxkv::Storage`] backend.
+//! [`oxkv::MemStorage`]. The `oxkv-opfs` crate provides durable browser
+//! storage through [`oxkv::Storage`].
 //!
 //! The crate is empty on native targets. The bindings compile only for
 //! `wasm32`.

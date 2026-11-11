@@ -11,11 +11,11 @@ use super::{Direction, json_compatible};
 
 /// Wrapper around the LSM [`store::OxKvStore`] for use in a WASM environment.
 ///
-/// The wrapper uses an in-memory [`store::MemStorage`], so contents live only
-/// as long as the page. The page has no browser persistence yet. OPFS arrives
-/// as another [`store::Storage`] backend. Snapshots are byte-identical with the
-/// snapshots of every other backend. The `load` method restores `save` bytes
-/// anywhere.
+/// The `create` method uses an in-memory [`store::MemStorage`], so contents
+/// live only as long as the page. The `createPersistent` method uses
+/// `oxkv_opfs::OpfsStorage`, so contents survive reloads. Snapshots are
+/// byte-identical with the snapshots of every other backend. The `load` method
+/// restores `save` bytes anywhere.
 ///
 /// The wrapper holds an `Arc<Mutex<OxKvStore>>` so that multiple concurrent
 /// JavaScript calls share one underlying store. Each method acquires the lock,

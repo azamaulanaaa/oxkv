@@ -13,11 +13,11 @@ use super::{Direction, json_compatible};
 ///
 /// This store has the same API as [`JsOxKvStore`](super::oxkv::JsOxKvStore). It
 /// mirrors every key in memory. Reads serve without storage I/O. Writes keep WAL
-/// durability. An in-memory [`store::MemStorage`] backs the store, so the
-/// contents live only as long as the page. The store has no browser persistence
-/// yet. OPFS arrives later as another [`store::Storage`] backend. The snapshots
-/// are byte-identical with the snapshots of every other backend, so `save`
-/// bytes restore anywhere via `load`.
+/// durability. The `create` method uses an in-memory [`store::MemStorage`], so
+/// contents live only as long as the page. The `createPersistent` method uses
+/// `oxkv_opfs::OpfsStorage`, so contents survive reloads. The snapshots are
+/// byte-identical with the snapshots of every other backend, so `save` bytes
+/// restore anywhere via `load`.
 ///
 /// The wrapper holds an `Arc<Mutex<CachedOxKvStore>>`. This lets multiple
 /// JavaScript calls share one underlying store. Each method acquires the lock,

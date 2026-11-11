@@ -11,7 +11,7 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 - **JSON serialization** — extension methods for inserting and retrieving `serde_json::Value` types via JSON, stored as raw bytes
 - **WASM bindings** — thread-safe wrappers in `crates/oxkv-wasm/` expose `BTreeStore`, `OxKvStore`, and `CachedOxKvStore` to JavaScript as async promises (`oxkv-otel` is native-only, the OXKV snapshot is portable across all)
 - **Extensible backends** — the crate defines three traits (`GetSet`, `Transaction`, `Store`) that any backend can implement; ships with an in-memory B-tree backend (`btree`, test and bench baseline + WASM baseline) and an LSM backend (`oxkv`, native + wasm) generic over `Storage` + `Cache` (S3/GCS/Azure via the `oxkv-s3` crate)
-- **LSM backend** — portable LSM over pluggable `Storage` (in-memory `MemStorage` everywhere including browsers; S3/GCS/Azure/local via the [`oxkv-s3`](crates/oxkv-s3) crate, OPFS origin-private storage in browsers): epoch-fenced single writer, WAL with RPO=0, `MemTable` + SST (L0/L1) with Bloom + CRC, blob overflow for large values, scan-resistant `S3-FIFO` SST cache (trait, `moka` optional), WAL replay, GC and L0→L1 compaction, group-committed batched writes, lazy pull-merge range scans, read-only `OxKvReader` followers, write-through `CachedOxKvStore` RAM mirror
+- **LSM backend** — portable LSM over pluggable `Storage` (in-memory `MemStorage` everywhere including browsers; S3/GCS/Azure/local via the [`oxkv-s3`](crates/oxkv-s3) crate, OPFS origin-private storage in browsers via the [`oxkv-opfs`](crates/oxkv-opfs) crate): epoch-fenced single writer, WAL with RPO=0, `MemTable` + SST (L0/L1) with Bloom + CRC, blob overflow for large values, scan-resistant `S3-FIFO` SST cache (trait, `moka` optional), WAL replay, GC and L0→L1 compaction, group-committed batched writes, lazy pull-merge range scans, read-only `OxKvReader` followers, write-through `CachedOxKvStore` RAM mirror
 - **Validation hooks** — reject invalid writes before they reach storage, scoped to a single key, a key prefix, or the whole store
 - **Reactivity** — watch keys or prefixes and observe every committed change via channels or observer traits; rolled-back transactions never notify
 - **Save/Load** — serialize the entire store contents into a single contiguous `Uint8Array` and reconstruct it from binary data
@@ -372,7 +372,7 @@ the full validation pipeline.
 
 ## LSM Backend (feature `oxkv`, native + wasm)
 
-`OxKvStore` is an LSM tree over any [`Storage`](src/store/storage.rs) backend: in-memory `MemStorage` (native + wasm, including the browser `OxKvStore`), or S3-compatible storage (S3, GCS, Azure) and local FS via the `oxkv-s3` crate. `Storage` requires `get`, `get_opts`, `put_opts`, `delete`, and `list` (a custom backend must implement all five). It shares the same `GetSet`/`Store`/`Transaction` traits as the other backends, so application code is portable. Snapshot bytes (`OXKV` magic `+` version + records) are identical across `BTreeStore` and `OxKvStore` on every target — `save`/`load` round-trip everywhere.
+`OxKvStore` is an LSM tree over any [`Storage`](src/store/storage.rs) backend: in-memory `MemStorage` (native + wasm), browser OPFS via the `oxkv-opfs` crate, or S3-compatible storage (S3, GCS, Azure) and local FS via the `oxkv-s3` crate. `Storage` requires `get`, `get_opts`, `put_opts`, `delete`, and `list` (a custom backend must implement all five). It shares the same `GetSet`/`Store`/`Transaction` traits as the other backends, so application code is portable. Snapshot bytes (`OXKV` magic `+` version + records) are identical across `BTreeStore` and `OxKvStore` on every target — `save`/`load` round-trip everywhere.
 
 ```rust
 # #[tokio::main(flavor = "current_thread")]
@@ -458,6 +458,7 @@ Enable it:
 cargo add oxkv --features oxkv   # portable LSM core
 cargo add oxkv-query             # + Lucene-style JSON queries
 cargo add oxkv-s3                # + S3/GCS/Azure/local via object_store (native)
+cargo add oxkv-opfs              # + browser OPFS storage (wasm)
 ```
 
 The snippets use `cargo add`, so no README change is needed for a release.
@@ -611,6 +612,10 @@ The `crates/oxkv-wasm/` crate provides thread-safe wrappers for `BTreeStore`, `O
 
 ### Persistent browser storage (OPFS)
 
+The browser backend lives in `crates/oxkv-opfs`. Rust callers use
+`oxkv_opfs::OpfsStorage`. JavaScript callers reach it through
+`OxKvStore.createPersistent()`.
+
 `OxKvStore.create()` is memory-only. For data that survives page reloads, open the same engine on origin private storage instead — same API, real files, content-hash etags so fencing and CAS work across sessions:
 
 ```js
@@ -625,7 +630,7 @@ const reopened = await OxKvStore.createPersistent("my-app");
 console.log(await reopened.get("user1")); // { name: "Ada" }
 ```
 
-Main-thread only (async OPFS handles). OPFS has no native conditional-write primitive, so `OpfsStorage` supplies one: each `put`/`delete` runs inside a [Web Lock](https://developer.mozilla.org/docs/Web/API/Web_Locks_API) named after the object, which serialises `Create`/`Update` across tabs sharing an origin. Where `navigator.locks` is unavailable the write runs unguarded and resolves best-effort rather than atomically — `OpfsStorage::cross_tab_cas_is_atomic()` reports which mode the current host is in. Reads are never locked; a concurrent read sees the old or the new value, never a partial one.
+Main-thread only (async OPFS handles). OPFS has no native conditional-write primitive, so `oxkv_opfs::OpfsStorage` supplies one: each `put`/`delete` runs inside a [Web Lock](https://developer.mozilla.org/docs/Web/API/Web_Locks_API) named after the object, which serialises `Create`/`Update` across tabs sharing an origin. Where `navigator.locks` is unavailable the write runs unguarded and resolves best-effort rather than atomically — `OpfsStorage::cross_tab_cas_is_atomic()` reports which mode the current host is in. Reads are never locked; a concurrent read sees the old or the new value, never a partial one.
 
 ### Cached reads in the browser
 
@@ -858,6 +863,7 @@ wasm-pack build crates/oxkv-wasm --target web --out-name oxkv   # or nodejs, bun
 - `crates/oxkv-wasm/` — manual wasm-bindgen wrappers (`lib` + `btree` + `oxkv` + `cached`) for `BTreeStore` + `OxKvStore` + `CachedOxKvStore` (thread-safe JS-facing types; OXKV snapshot portable across all backends)
 - `crates/oxkv-otel/` — `OtelStore` decorator emitting OpenTelemetry spans and metrics
 - `crates/oxkv-s3/` — `ObjectStoreStorage` adapter for S3, GCS, Azure, and local files
+- `crates/oxkv-opfs/` — `OpfsStorage` browser backend and its Web Lock bridge
 - `crates/oxkv-query/` — Lucene-style parser, JSON matcher, `QueryExt`, and `QueryViewExt`
 - `src/store/mod.rs` — core traits (`GetSet`, `Transaction`, `Store`, `GetSetExt`, `StoreExt`), error types (`StoreError::Fenced`, `StoreError::CasConflict`, `StoreError::NotModified`), and the `lock_ignore_poison` policy helper
 - `src/store/btree.rs` — in-memory B-tree backend (`btree`, test/bench + WASM baseline)
@@ -874,7 +880,7 @@ wasm-pack build crates/oxkv-wasm --target web --out-name oxkv   # or nodejs, bun
 - `src/store/lsm/manifest.rs` — `manifest.json` with `ETag` CAS and `ManifestCache`
 - `src/store/lsm/ownership.rs` — `ownership.json` epoch fencing
 - `src/store/lsm/probe.rs` — conditional-write probe (`If-None-Match` / `If-Match`)
-- `src/store/storage.rs` — `Storage` trait + `MemStorage` (in-memory, every target) + `OpfsStorage` (browser origin-private storage, wasm); the S3/GCS/Azure/local adapter lives in `crates/oxkv-s3`
+- `src/store/storage.rs` — `Storage` trait + `MemStorage` (in-memory, every target); the S3/GCS/Azure/local adapter lives in `crates/oxkv-s3`, and the browser OPFS adapter lives in `crates/oxkv-opfs`
 - `src/store/cache.rs` — `Cache` trait + `LruCache` (scan-resistant `S3-FIFO`, `moka` optional)
 - `src/store/hooks.rs` — `Hooks` trait, the `Hooked` decorator for any `GetSet` backend, and change notifications
 
