@@ -7,7 +7,7 @@ use wasm_bindgen::prelude::*;
 use oxkv::{self as store, GetSet, GetSetExt, Store, StoreExt, Transaction, load_stream};
 use oxkv_query::QueryExt;
 
-use super::{Direction, json_compatible};
+use super::{Direction, js_error, json_compatible};
 
 /// Wrapper around the concrete [`store::BTreeStore`] for use in a WASM environment.
 ///
@@ -52,7 +52,7 @@ impl JsBTreeStore {
                 Ok(arr.into())
             }
             Ok(None) => Ok(JsValue::null()),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -67,7 +67,7 @@ impl JsBTreeStore {
         let store = self.inner.lock().await;
         match store.has(key).await {
             Ok(exists) => Ok(JsValue::from(exists)),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -90,7 +90,7 @@ impl JsBTreeStore {
                 Ok(arr.into())
             }
             Ok(None) => Ok(JsValue::null()),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -114,7 +114,7 @@ impl JsBTreeStore {
         value: JsValue,
     ) -> Result<JsValue, JsValue> {
         let json_value: serde_json::Value = serde_wasm_bindgen::from_value(value)
-            .map_err(|e| store::StoreError::Serialization(e.to_string()))?;
+            .map_err(|e| js_error(&store::StoreError::Serialization(e.to_string())))?;
         let store = self.inner.lock().await;
         match store.set(key, &json_value).await {
             Ok(Some(prev)) => {
@@ -122,7 +122,7 @@ impl JsBTreeStore {
                 Ok(js_value)
             }
             Ok(None) => Ok(JsValue::null()),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -148,7 +148,7 @@ impl JsBTreeStore {
                 Ok(js_value)
             }
             Ok(None) => Ok(JsValue::null()),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -165,7 +165,7 @@ impl JsBTreeStore {
         let store = self.inner.lock().await;
         match store.delete(key).await {
             Ok(deleted) => Ok(JsValue::from(deleted)),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -205,7 +205,7 @@ impl JsBTreeStore {
                     Ok(obj)
                 })
                 .collect::<Result<_, JsValue>>(),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -276,7 +276,7 @@ impl JsBTreeStore {
                     Ok(obj)
                 })
                 .collect(),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -294,7 +294,7 @@ impl JsBTreeStore {
                 };
                 Ok(js_tx.into())
             }
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -310,7 +310,7 @@ impl JsBTreeStore {
                 let arr = js_sys::Uint8Array::from(&bytes[..]);
                 Ok(arr.into())
             }
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -329,10 +329,10 @@ impl JsBTreeStore {
         match store.load(data).await {
             Ok(count) => {
                 let count_u32 = u32::try_from(count)
-                    .map_err(|e| store::StoreError::Serialization(e.to_string()))?;
+                    .map_err(|e| js_error(&store::StoreError::Serialization(e.to_string())))?;
                 Ok(JsValue::from(count_u32))
             }
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -352,6 +352,7 @@ impl JsBTreeStore {
     #[wasm_bindgen(
         return_description = "A ReadableStream of Uint8Array chunks containing the serialized store"
     )]
+    #[must_use]
     pub fn save_stream(&self) -> web_sys::ReadableStream {
         use futures::{SinkExt, StreamExt, TryStreamExt};
 
@@ -380,7 +381,7 @@ impl JsBTreeStore {
 
         let chunks = receiver
             .map_ok(|chunk| js_sys::Uint8Array::from(&chunk[..]).into())
-            .map_err(store::StoreError::into);
+            .map_err(|e| js_error(&e));
         wasm_streams::readable::ReadableStream::from_stream(chunks).into_raw()
     }
 
@@ -422,9 +423,11 @@ impl JsBTreeStore {
         });
 
         let store = self.inner.lock().await;
-        let count = load_stream(&*store, chunks).await?;
-        let count_u32 =
-            u32::try_from(count).map_err(|e| store::StoreError::Serialization(e.to_string()))?;
+        let count = load_stream(&*store, chunks)
+            .await
+            .map_err(|e| js_error(&e))?;
+        let count_u32 = u32::try_from(count)
+            .map_err(|e| js_error(&store::StoreError::Serialization(e.to_string())))?;
         Ok(JsValue::from(count_u32))
     }
 }
@@ -547,7 +550,7 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn store_error_converts_to_js_error() {
-        let value = JsValue::from(store::StoreError::Other("boom".to_owned()));
+        let value = js_error(&store::StoreError::Other("boom".to_owned()));
         assert!(value.is_instance_of::<js_sys::Error>());
         let message = js_sys::Reflect::get(&value, &"message".into())
             .expect("error has no message")

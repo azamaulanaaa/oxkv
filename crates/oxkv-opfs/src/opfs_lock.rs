@@ -182,7 +182,7 @@ impl Drop for SettleOnDrop {
 /// The function carries the [`Result`] back through a shared slot. The
 /// function does not carry the [`Result`] through a JS rejection. A rejection
 /// can only carry a stringified error. Losing the variant would turn a
-/// [`CasConflict`](crate::store::StoreError::CasConflict) into an opaque
+/// [`CasConflict`](oxkv::StoreError::CasConflict) into an opaque
 /// backend error. That would break `probe_store`.
 ///
 /// `guarded` runs with the lock already held. It must not take the same lock
@@ -258,7 +258,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::StoreError;
+    use oxkv::StoreError;
     use std::sync::{Arc, Mutex};
     use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -389,7 +389,7 @@ mod tests {
             // `with_object_lock` replaced by a bare `guarded().await`. The
             // sleep makes "no overlap" mean "mutual exclusion held". Without
             // the sleep, "no overlap" means only "nothing could ever overlap".
-            crate::store::sleep(std::time::Duration::from_millis(1)).await;
+            futures_timer::Delay::new(std::time::Duration::from_millis(1)).await;
             Ok(tag)
         })
         .await

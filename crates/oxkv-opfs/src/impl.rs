@@ -20,7 +20,7 @@ fn write_host_stderr(message: &str) -> bool {
     fn property(
         object: &wasm_bindgen::JsValue,
         key: &str,
-    ) -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue> {
+    ) -> std::result::Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue> {
         js_sys::Reflect::get(object, &wasm_bindgen::JsValue::from_str(key))
     }
     let Ok(process) = property(&js_sys::global(), "process") else {
@@ -483,6 +483,7 @@ impl Storage for OpfsStorage {
 #[cfg(all(test, target_arch = "wasm32"))]
 mod opfs_tests {
     use super::*;
+    use oxkv::ObjectVersion;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     /// Opens a store under a prefix of its own. This prevents tests from

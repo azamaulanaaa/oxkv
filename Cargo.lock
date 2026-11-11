@@ -1174,6 +1174,7 @@ version = "0.10.0"
 dependencies = [
  "async-trait",
  "futures",
+ "futures-timer",
  "js-sys",
  "oxkv",
  "sha2",

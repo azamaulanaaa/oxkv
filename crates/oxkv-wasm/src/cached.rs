@@ -7,7 +7,7 @@ use wasm_bindgen::prelude::*;
 use oxkv::{self as store, GetSet, GetSetExt, Store, StoreExt, Transaction, load_stream};
 use oxkv_query::QueryExt;
 
-use super::{Direction, json_compatible};
+use super::{Direction, js_error, json_compatible};
 
 /// Wrapper around the write-through [`oxkv_cached::CachedOxKvStore`] for WASM.
 ///
@@ -42,10 +42,9 @@ impl JsCachedOxKvStore {
             None | Some("eager" | "Eager" | "EAGER") => Ok(oxkv_cached::WarmMode::Eager),
             Some("background") => Ok(oxkv_cached::WarmMode::Background),
             Some("lazy") => Ok(oxkv_cached::WarmMode::Lazy),
-            Some(other) => Err(store::StoreError::Other(format!(
+            Some(other) => Err(js_error(&store::StoreError::Other(format!(
                 "unknown warm mode `{other}`: expected eager, background, or lazy"
-            ))
-            .into()),
+            )))),
         }
     }
     /// Create a new in-memory cached store (`MemStorage`, probe skipped).
@@ -85,11 +84,12 @@ impl JsCachedOxKvStore {
             Ok(store) => Ok(Self {
                 inner: std::sync::Arc::new(futures::lock::Mutex::new(
                     oxkv_cached::CachedOxKvStore::open_with_mode(store, mode)
-                        .await?
+                        .await
+                        .map_err(|e| js_error(&e))?
                         .with_stale_ttl(ttl),
                 )),
             }),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -121,7 +121,11 @@ impl JsCachedOxKvStore {
         warm_mode: Option<String>,
     ) -> Result<JsCachedOxKvStore, JsValue> {
         let prefix = prefix.unwrap_or_else(|| "js-lsm".to_string());
-        let backend = std::sync::Arc::new(oxkv_opfs::OpfsStorage::open().await?);
+        let backend = std::sync::Arc::new(
+            oxkv_opfs::OpfsStorage::open()
+                .await
+                .map_err(|e| js_error(&e))?,
+        );
         let ttl = std::time::Duration::from_millis(stale_ttl_ms.unwrap_or(1000));
         let mode = Self::parse_warm_mode(warm_mode.as_deref())?;
         match store::OxKvStore::builder()
@@ -133,11 +137,12 @@ impl JsCachedOxKvStore {
             Ok(store) => Ok(Self {
                 inner: std::sync::Arc::new(futures::lock::Mutex::new(
                     oxkv_cached::CachedOxKvStore::open_with_mode(store, mode)
-                        .await?
+                        .await
+                        .map_err(|e| js_error(&e))?
                         .with_stale_ttl(ttl),
                 )),
             }),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -156,7 +161,7 @@ impl JsCachedOxKvStore {
                 Ok(arr.into())
             }
             Ok(None) => Ok(JsValue::null()),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -171,7 +176,7 @@ impl JsCachedOxKvStore {
         let store = self.inner.lock().await;
         match store.has(key).await {
             Ok(exists) => Ok(JsValue::from(exists)),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -196,7 +201,7 @@ impl JsCachedOxKvStore {
                 Ok(arr.into())
             }
             Ok(None) => Ok(JsValue::null()),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -213,10 +218,10 @@ impl JsCachedOxKvStore {
         match store.refresh().await {
             Ok(applied) => {
                 let count = u32::try_from(applied)
-                    .map_err(|e| store::StoreError::Serialization(e.to_string()))?;
+                    .map_err(|e| js_error(&store::StoreError::Serialization(e.to_string())))?;
                 Ok(JsValue::from(count))
             }
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -234,7 +239,7 @@ impl JsCachedOxKvStore {
         let store = self.inner.lock().await;
         match store.check_stale().await {
             Ok(stale) => Ok(JsValue::from(stale)),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -265,10 +270,10 @@ impl JsCachedOxKvStore {
         match store.warm().await {
             Ok(applied) => {
                 let count = u32::try_from(applied)
-                    .map_err(|e| store::StoreError::Serialization(e.to_string()))?;
+                    .map_err(|e| js_error(&store::StoreError::Serialization(e.to_string())))?;
                 Ok(JsValue::from(count))
             }
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -290,7 +295,7 @@ impl JsCachedOxKvStore {
         let store = self.inner.lock().await;
         match store.warm_step(pages).await {
             Ok(done) => Ok(JsValue::from(done)),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -313,7 +318,7 @@ impl JsCachedOxKvStore {
                 Ok(arr.into())
             }
             Ok(None) => Ok(JsValue::null()),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -329,7 +334,7 @@ impl JsCachedOxKvStore {
         value: JsValue,
     ) -> Result<JsValue, JsValue> {
         let json_value: serde_json::Value = serde_wasm_bindgen::from_value(value)
-            .map_err(|e| store::StoreError::Serialization(e.to_string()))?;
+            .map_err(|e| js_error(&store::StoreError::Serialization(e.to_string())))?;
         let store = self.inner.lock().await;
         match store.set(key, &json_value).await {
             Ok(Some(prev)) => {
@@ -337,7 +342,7 @@ impl JsCachedOxKvStore {
                 Ok(js_value)
             }
             Ok(None) => Ok(JsValue::null()),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -357,7 +362,7 @@ impl JsCachedOxKvStore {
                 Ok(js_value)
             }
             Ok(None) => Ok(JsValue::null()),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -374,7 +379,7 @@ impl JsCachedOxKvStore {
         let store = self.inner.lock().await;
         match store.delete(key).await {
             Ok(deleted) => Ok(JsValue::from(deleted)),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -414,7 +419,7 @@ impl JsCachedOxKvStore {
                     Ok(obj)
                 })
                 .collect::<Result<_, JsValue>>(),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -471,7 +476,7 @@ impl JsCachedOxKvStore {
                     Ok(obj)
                 })
                 .collect(),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -489,7 +494,7 @@ impl JsCachedOxKvStore {
                 };
                 Ok(js_tx.into())
             }
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -509,7 +514,7 @@ impl JsCachedOxKvStore {
                 let arr = js_sys::Uint8Array::from(&bytes[..]);
                 Ok(arr.into())
             }
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -528,10 +533,10 @@ impl JsCachedOxKvStore {
         match store.load(data).await {
             Ok(count) => {
                 let count_u32 = u32::try_from(count)
-                    .map_err(|e| store::StoreError::Serialization(e.to_string()))?;
+                    .map_err(|e| js_error(&store::StoreError::Serialization(e.to_string())))?;
                 Ok(JsValue::from(count_u32))
             }
-            Err(e) => Err(e.into()),
+            Err(e) => Err(js_error(&e)),
         }
     }
 
@@ -551,6 +556,7 @@ impl JsCachedOxKvStore {
     #[wasm_bindgen(
         return_description = "A ReadableStream of Uint8Array chunks containing the serialized store"
     )]
+    #[must_use]
     pub fn save_stream(&self) -> web_sys::ReadableStream {
         use futures::{SinkExt, StreamExt, TryStreamExt};
 
@@ -579,7 +585,7 @@ impl JsCachedOxKvStore {
 
         let chunks = receiver
             .map_ok(|chunk| js_sys::Uint8Array::from(&chunk[..]).into())
-            .map_err(store::StoreError::into);
+            .map_err(|e| js_error(&e));
         wasm_streams::readable::ReadableStream::from_stream(chunks).into_raw()
     }
 
@@ -621,9 +627,11 @@ impl JsCachedOxKvStore {
         });
 
         let store = self.inner.lock().await;
-        let count = load_stream(&*store, chunks).await?;
-        let count_u32 =
-            u32::try_from(count).map_err(|e| store::StoreError::Serialization(e.to_string()))?;
+        let count = load_stream(&*store, chunks)
+            .await
+            .map_err(|e| js_error(&e))?;
+        let count_u32 = u32::try_from(count)
+            .map_err(|e| js_error(&store::StoreError::Serialization(e.to_string())))?;
         Ok(JsValue::from(count_u32))
     }
 }

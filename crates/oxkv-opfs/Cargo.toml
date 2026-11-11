@@ -13,6 +13,7 @@ categories = ["wasm", "database"]
 oxkv = { path = "../..", default-features = false }
 async-trait = "0.1"
 futures = { version = "0.3", default-features = false, features = ["std"] }
+futures-timer = { version = "3", features = ["wasm-bindgen"] }
 sha2 = "0.10"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"

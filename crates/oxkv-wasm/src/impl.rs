@@ -1,7 +1,9 @@
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
-use oxkv as store;
+// The `oxkv` module below shadows the external crate at this crate root. The
+// leading `::` keeps this alias pointed at the dependency.
+use ::oxkv as store;
 
 /// Entry point for the WASM module.
 #[wasm_bindgen(start)]
@@ -28,10 +30,12 @@ impl From<Direction> for store::Direction {
     }
 }
 
-impl From<store::StoreError> for JsValue {
-    fn from(value: store::StoreError) -> Self {
-        JsError::new(value.to_string().as_str()).into()
-    }
+/// Convert a store error into a JS error object.
+///
+/// The conversion cannot be a `From` impl in this crate: both `StoreError` and
+/// `JsValue` are defined by other crates, so the orphan rule rejects it.
+fn js_error(value: &store::StoreError) -> JsValue {
+    JsError::new(value.to_string().as_str()).into()
 }
 
 /// Announce that a browser-only test will check nothing here.
@@ -78,10 +82,10 @@ fn write_host_stderr(message: &str) -> bool {
 /// objects look like opaque `{}` to JavaScript property access and to
 /// `JSON.stringify`. This function produces plain objects, so callers see real
 /// JSON documents.
-fn json_compatible<T: Serialize>(value: &T) -> Result<JsValue, store::StoreError> {
+fn json_compatible<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
     value
         .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
-        .map_err(|e| store::StoreError::Serialization(e.to_string()))
+        .map_err(|e| js_error(&store::StoreError::Serialization(e.to_string())))
 }
 
 /// Generate the `wasm_bindgen` transaction wrapper shared by every backend.
@@ -127,14 +131,14 @@ macro_rules! js_tx {
                 let mut guard = self.inner.lock().await;
                 let tx = guard.as_mut().ok_or_else(|| {
                     store::StoreError::Other("transaction already committed or rolled back".into())
-                })?;
+                }).map_err(|e| js_error(&e))?;
                 match tx.get_bytes(key).await {
                     Ok(Some(bytes)) => {
                         let arr = js_sys::Uint8Array::from(&bytes[..]);
                         Ok(arr.into())
                     }
                     Ok(None) => Ok(JsValue::null()),
-                    Err(e) => Err(e.into()),
+                    Err(e) => Err(js_error(&e)),
                 }
             }
 
@@ -152,10 +156,10 @@ macro_rules! js_tx {
                 let mut guard = self.inner.lock().await;
                 let tx = guard.as_mut().ok_or_else(|| {
                     store::StoreError::Other("transaction already committed or rolled back".into())
-                })?;
+                }).map_err(|e| js_error(&e))?;
                 match tx.has(key).await {
                     Ok(exists) => Ok(JsValue::from(exists)),
-                    Err(e) => Err(e.into()),
+                    Err(e) => Err(js_error(&e)),
                 }
             }
 
@@ -175,14 +179,14 @@ macro_rules! js_tx {
                 let mut guard = self.inner.lock().await;
                 let tx = guard.as_mut().ok_or_else(|| {
                     store::StoreError::Other("transaction already committed or rolled back".into())
-                })?;
+                }).map_err(|e| js_error(&e))?;
                 match tx.set_bytes(key, value).await {
                     Ok(Some(prev)) => {
                         let arr = js_sys::Uint8Array::from(&prev[..]);
                         Ok(arr.into())
                     }
                     Ok(None) => Ok(JsValue::null()),
-                    Err(e) => Err(e.into()),
+                    Err(e) => Err(js_error(&e)),
                 }
             }
 
@@ -200,10 +204,10 @@ macro_rules! js_tx {
                 let mut guard = self.inner.lock().await;
                 let tx = guard.as_mut().ok_or_else(|| {
                     store::StoreError::Other("transaction already committed or rolled back".into())
-                })?;
+                }).map_err(|e| js_error(&e))?;
                 match tx.delete(key).await {
                     Ok(deleted) => Ok(JsValue::from(deleted)),
-                    Err(e) => Err(e.into()),
+                    Err(e) => Err(js_error(&e)),
                 }
             }
 
@@ -221,18 +225,18 @@ macro_rules! js_tx {
                 #[wasm_bindgen(param_description = "A JSON-shaped value from JavaScript")] value: JsValue,
             ) -> Result<JsValue, JsValue> {
                 let json_value: serde_json::Value = serde_wasm_bindgen::from_value(value)
-                    .map_err(|e| store::StoreError::Serialization(e.to_string()))?;
+                    .map_err(|e| js_error(&store::StoreError::Serialization(e.to_string())))?;
                 let mut guard = self.inner.lock().await;
                 let tx = guard.as_mut().ok_or_else(|| {
                     store::StoreError::Other("transaction already committed or rolled back".into())
-                })?;
+                }).map_err(|e| js_error(&e))?;
                 match tx.set(key, &json_value).await {
                     Ok(Some(prev)) => {
                         let js_value = json_compatible(&prev)?;
                         Ok(js_value)
                     }
                     Ok(None) => Ok(JsValue::null()),
-                    Err(e) => Err(e.into()),
+                    Err(e) => Err(js_error(&e)),
                 }
             }
 
@@ -251,14 +255,14 @@ macro_rules! js_tx {
                 let mut guard = self.inner.lock().await;
                 let tx = guard.as_mut().ok_or_else(|| {
                     store::StoreError::Other("transaction already committed or rolled back".into())
-                })?;
+                }).map_err(|e| js_error(&e))?;
                 match tx.get::<serde_json::Value>(key).await {
                     Ok(Some(value)) => {
                         let js_value = json_compatible(&value)?;
                         Ok(js_value)
                     }
                     Ok(None) => Ok(JsValue::null()),
-                    Err(e) => Err(e.into()),
+                    Err(e) => Err(js_error(&e)),
                 }
             }
 
@@ -289,7 +293,7 @@ macro_rules! js_tx {
                 let mut guard = self.inner.lock().await;
                 let tx = guard.as_mut().ok_or_else(|| {
                     store::StoreError::Other("transaction already committed or rolled back".into())
-                })?;
+                }).map_err(|e| js_error(&e))?;
                 match tx.gets_bytes(limit, direction.into(), cursor).await {
                     Ok(kvs) => kvs
                         .into_iter()
@@ -302,7 +306,7 @@ macro_rules! js_tx {
                             Ok(obj)
                         })
                         .collect::<Result<_, JsValue>>(),
-                    Err(e) => Err(e.into()),
+                    Err(e) => Err(js_error(&e)),
                 }
             }
 
@@ -311,10 +315,10 @@ macro_rules! js_tx {
             /// * `StoreError` - if an I/O error occurs while committing the transaction
             #[wasm_bindgen(return_description = "Undefined on success")]
             pub async fn commit(self) -> Result<JsValue, JsValue> {
-                let tx = self.take_tx().await?;
+                let tx = self.take_tx().await.map_err(|e| js_error(&e))?;
                 match tx.commit().await {
                     Ok(()) => Ok(JsValue::undefined()),
-                    Err(e) => Err(e.into()),
+                    Err(e) => Err(js_error(&e)),
                 }
             }
 
@@ -323,10 +327,10 @@ macro_rules! js_tx {
             /// * `StoreError` - if an I/O error occurs while rolling back the transaction
             #[wasm_bindgen(return_description = "Undefined on success")]
             pub async fn rollback(self) -> Result<JsValue, JsValue> {
-                let tx = self.take_tx().await?;
+                let tx = self.take_tx().await.map_err(|e| js_error(&e))?;
                 match tx.rollback().await {
                     Ok(()) => Ok(JsValue::undefined()),
-                    Err(e) => Err(e.into()),
+                    Err(e) => Err(js_error(&e)),
                 }
             }
         }
