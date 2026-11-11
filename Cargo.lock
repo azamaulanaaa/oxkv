@@ -1145,7 +1145,6 @@ dependencies = [
  "futures-timer",
  "mockall",
  "moka",
- "oxkv-cached",
  "serde",
  "serde_json",
  "sha2",
@@ -1161,6 +1160,7 @@ version = "0.10.0"
 dependencies = [
  "async-lock",
  "async-trait",
+ "criterion",
  "futures",
  "oxkv",
  "serde_json",

@@ -749,17 +749,28 @@ wasm-pack test crates/oxkv-wasm --node
 ## Benchmarking
 
 Criterion benchmarks live in [`benches/kv_bench.rs`](benches/kv_bench.rs) and
-cover `btree_mem`, `oxkv_mem` (LSM over in-memory `MemStorage` with `skip_probe(true)`), and `cached_mem` (same core via `build_cached`, read shapes only) at 1K / 100K / 1M scales with a sampling strategy that keeps the full suite in minutes, not hours. `btree` is bench baseline only.
+cover `btree_mem` and `oxkv_mem` (LSM over in-memory `MemStorage` with
+`skip_probe(true)`) at 1K / 100K / 1M scales with a sampling strategy that
+keeps the full suite in minutes, not hours. `btree` is bench baseline only.
 
 ```bash
 cargo bench --features btree,oxkv --bench kv_bench     # btree + LSM groups (tuned to minutes)
 cargo bench --features btree,oxkv --bench kv_bench 1000  # quick sweep of the 1k groups
 cargo bench --features btree,oxkv --bench kv_bench point_update  # just the changes matrix
-cargo bench --features btree,oxkv --bench kv_bench random_get/cached_mem/1000/get  # one cached cell
 ```
 
-The `kv_bench` target needs `btree` and `oxkv`. The `cached_mem` groups use
-the `oxkv-cached` dev-dependency. The `cache_bench` target needs `oxkv`.
+The `kv_bench` target needs `btree` and `oxkv`. The `cache_bench` target needs
+`oxkv`.
+
+The `cached_mem` groups live in
+[`crates/oxkv-cached/benches/cached_bench.rs`](crates/oxkv-cached/benches/cached_bench.rs).
+They measure the same core through `build_cached`, read shapes only:
+
+```bash
+cargo bench -p oxkv-cached --bench cached_bench
+cargo bench -p oxkv-cached --bench cached_bench random_get/cached_mem/1000/get
+cargo bench -p oxkv-cached --bench cached_bench page_fetch_100/cached_mem/1000/fetch
+```
 
 Query-engine benchmarks live in
 [`crates/oxkv-query/benches/query_bench.rs`](crates/oxkv-query/benches/query_bench.rs)
@@ -798,8 +809,8 @@ leave your machine:
 | --------- | ------- | ----------- |
 | `seq_insert/{backend}/{n}` | 1K, 100K | building a store from scratch — every key inserted sequentially (`oxkv` via blind `put_bytes` writes) |
 | `seq_delete/{backend}/{n}` | 1K, 100K (cap 100K) | deleting every key from a freshly built store (cap keeps per-iteration rebuilds sane) |
-| `random_get/{backend}/{n}` | 1K, 100K, 1M | scattered reads (prime-stride order); at 1M each iteration samples 10K gets out of a 1M-key store so depth is preserved without 1M GETs per iteration; `cached_mem` reads serve from the mirror |
-| `page_fetch_100/{backend}/{n}` | 1K, 1M | one paginated range fetch of 100 entries from rotating start cursors; `cached_mem` scans the mirror |
+| `random_get/{backend}/{n}` | 1K, 100K, 1M | scattered reads (prime-stride order); at 1M each iteration samples 10K gets out of a 1M-key store so depth is preserved without 1M GETs per iteration; `cached_mem` in `cached_bench` reads serve from the mirror |
+| `page_fetch_100/{backend}/{n}` | 1K, 1M | one paginated range fetch of 100 entries from rotating start cursors; `cached_mem` in `cached_bench` scans the mirror |
 | `point_update/{backend}/{n}items_{m}changes` | 1K×{1,10}, 1M×{1,100,1000} | in-place updates of a few keys inside a large store (oxkv setup quiesced: force-flush, WAL GC, and compaction drain before timing, so iterations measure updates instead of the populate backlog) |
 | `tx_commit_batch_1000/{backend}` | 1K | committing a pre-staged 1,000-write transaction (staging is untimed, so this isolates durability cost) |
 | `concurrent_write/oxkv_mem/1024` | 1,024 writes (8 tasks × 128) | blind writes from spawned tasks sharing one store (multi-thread runtime): write-gate + group-commit throughput; store rebuilt per iteration in untimed setup |
@@ -830,7 +841,7 @@ count only the operation under test. `cached_mem` needs no extra warm step:
 the mirror fills synchronously on every write, so populating the store warms
 it. Write groups are not repeated for `cached_mem` — its writes share
 `oxkv_mem`'s durable path plus one B-tree insert each, which the other
-groups already cover.
+groups already cover. The `cached_mem` groups live in the `oxkv-cached` crate.
 
 Indicative read numbers (one machine, release profile) put the mirror next
 to `btree_mem` instead of `oxkv_mem`: at 1K, `random_get` measures ~219 µs

@@ -70,7 +70,6 @@ required-features = ["oxkv"]
 
 [dev-dependencies]
 mockall = "0.15"
-oxkv-cached = { path = "crates/oxkv-cached" }
 # Kept wasm-safe on purpose: `wasm-pack test --node` builds `--tests`, and
 # tokio hard-errors on wasm32 when any of fs/io-std/net/process/
 # rt-multi-thread/signal is enabled. The engine itself stays
@@ -91,8 +90,8 @@ tokio = { version = "1.53.1", features = ["rt-multi-thread"] }
 futures-timer = { version = "3", optional = true, features = ["wasm-bindgen"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-# The core keeps its cache and LSM wasm tests. The browser OPFS tests live in
-# `crates/oxkv-opfs`.
+# The core keeps its LSM wasm tests. The cache tests live in
+# `crates/oxkv-cached`, and the browser OPFS tests live in `crates/oxkv-opfs`.
 wasm-bindgen-test = "0.3"
 
 [lints]
