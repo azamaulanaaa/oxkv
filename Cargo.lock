@@ -1158,6 +1158,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxkv-opfs"
+version = "0.10.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "js-sys",
+ "oxkv",
+ "sha2",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "web-sys",
+]
+
+[[package]]
 name = "oxkv-otel"
 version = "0.10.0"
 dependencies = [

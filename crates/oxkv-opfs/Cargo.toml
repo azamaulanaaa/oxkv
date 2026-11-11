@@ -1,0 +1,26 @@
+[package]
+name = "oxkv-opfs"
+version = "0.10.0"
+edition = "2024"
+description = "Browser OPFS storage backend for the oxkv key-value store."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/azamaulanaaa/oxkv"
+readme = "../../README.md"
+keywords = ["opfs", "wasm", "keyvalue", "storage"]
+categories = ["wasm", "database"]
+
+[dependencies]
+oxkv = { path = "../.." }
+async-trait = "0.1"
+futures = { version = "0.3", default-features = false, features = ["std"] }
+sha2 = "0.10"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["ReadableStream", "Window", "Navigator", "StorageManager", "File", "Blob", "DomException", "FileSystemDirectoryHandle", "FileSystemFileHandle", "FileSystemWritableFileStream", "WritableStream", "FileSystemGetDirectoryOptions", "FileSystemGetFileOptions", "FileSystemRemoveOptions", "console"] }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[lints]
+workspace = true
