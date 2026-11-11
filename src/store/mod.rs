@@ -58,6 +58,38 @@ pub use storage::{
 /// A specialized `Result` type for store operations.
 pub type Result<T> = std::result::Result<T, StoreError>;
 
+/// A coarse class for a [`StoreError`].
+///
+/// Use this type to choose a recovery step. The class does not name the
+/// failing backend or the failing key. Match on [`StoreError`] when you need
+/// those details.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ErrorKind {
+    /// Another writer won a race. A retry of the same call can succeed.
+    Conflict,
+    /// The storage backend failed. A retry of the same call can succeed.
+    ///
+    /// A failed write may still have landed. Re-read the key to learn the
+    /// outcome before you retry the write.
+    Transient,
+    /// Another owner holds the epoch. The store rejected the call.
+    ///
+    /// This state is terminal. A retry cannot succeed. Restart the process
+    /// and acquire the epoch again.
+    Fenced,
+    /// A validator rejected the write.
+    ///
+    /// A retry sends the same invalid write. Change the write before you
+    /// retry.
+    Rejected,
+    /// The input was malformed. Examples are a JSON error and a UTF-8 error.
+    ///
+    /// A retry sends the same bytes. Change the input before you retry.
+    InvalidInput,
+    /// The error has no finer class.
+    Other,
+}
+
 /// Portable async sleep for retry backoff.
 ///
 /// Uses `futures-timer`, so it resolves on every target. This includes
@@ -92,6 +124,10 @@ pub(crate) fn now_millis() -> u64 {
 }
 
 /// Errors that can occur during store operations.
+///
+/// Use [`StoreError::kind`] to get a coarse class. Use
+/// [`StoreError::is_retryable`] to learn whether a retry of the same call can
+/// succeed. Use [`StoreError::retry_after`] to get a backend delay hint.
 #[derive(Debug, Clone, Error)]
 pub enum StoreError {
     /// An error originating from the underlying storage engine.
@@ -152,6 +188,51 @@ pub enum StoreError {
     /// Conditional read not modified. The `ETag` matches `If-None-Match`.
     #[error("not modified")]
     NotModified,
+}
+
+impl StoreError {
+    /// Returns the coarse class of this error.
+    ///
+    /// This method is the single source of truth for
+    /// [`StoreError::is_retryable`].
+    #[must_use]
+    pub fn kind(&self) -> ErrorKind {
+        match self {
+            StoreError::CasConflict(_) => ErrorKind::Conflict,
+            StoreError::Storage(_) => ErrorKind::Transient,
+            StoreError::Fenced(_) => ErrorKind::Fenced,
+            StoreError::Rejected { .. } => ErrorKind::Rejected,
+            StoreError::Serialization(_)
+            | StoreError::Utf8(_)
+            | StoreError::Json(_)
+            | StoreError::Utf8Slice(_) => ErrorKind::InvalidInput,
+            StoreError::Other(_) | StoreError::NotModified => ErrorKind::Other,
+        }
+    }
+
+    /// Returns `true` when a retry of the same call can succeed.
+    ///
+    /// A retry can succeed for [`ErrorKind::Conflict`] and
+    /// [`ErrorKind::Transient`]. It cannot succeed for every other kind. This
+    /// method reads [`StoreError::kind`], so the two methods cannot disagree.
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        matches!(self.kind(), ErrorKind::Conflict | ErrorKind::Transient)
+    }
+
+    /// Returns the delay that the backend asks the caller to wait before a
+    /// retry.
+    ///
+    /// This method returns `None` for every variant today. No backend reports
+    /// a server hint yet. Callers choose their own backoff. Do not read `None`
+    /// as "retry now".
+    // The signature takes `&self` to give callers one uniform error API.
+    // No backend supplies a hint yet.
+    #[allow(clippy::unused_self)]
+    #[must_use]
+    pub fn retry_after(&self) -> Option<std::time::Duration> {
+        None
+    }
 }
 
 impl PartialEq for StoreError {
@@ -943,7 +1024,8 @@ impl<T: GetSet> GetSetExt for T {}
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{
-        Direction, GetSet, GetSetExt, SNAPSHOT_HEADER_LEN, StoreError, StoreExt, load_stream,
+        Direction, ErrorKind, GetSet, GetSetExt, SNAPSHOT_HEADER_LEN, StoreError, StoreExt,
+        load_stream,
     };
     use futures::stream;
 
@@ -1009,6 +1091,108 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// One table covers every `StoreError` variant. Each row checks the kind,
+    /// the retry answer, and the delay hint. A new variant must add a row.
+    #[test]
+    fn every_store_error_variant_has_a_stable_class() {
+        let invalid_utf8 = vec![0xFF_u8];
+        let cases = [
+            (
+                "Storage",
+                StoreError::Storage("backend failed".into()),
+                ErrorKind::Transient,
+                true,
+            ),
+            (
+                "CasConflict",
+                StoreError::CasConflict("key changed".into()),
+                ErrorKind::Conflict,
+                true,
+            ),
+            (
+                "Serialization",
+                StoreError::Serialization("bad record".into()),
+                ErrorKind::InvalidInput,
+                false,
+            ),
+            (
+                "Utf8",
+                StoreError::Utf8(String::from_utf8(vec![0xFF]).expect_err("invalid utf8")),
+                ErrorKind::InvalidInput,
+                false,
+            ),
+            (
+                "Json",
+                StoreError::Json(std::sync::Arc::new(
+                    serde_json::from_str::<i32>("not json").expect_err("invalid json"),
+                )),
+                ErrorKind::InvalidInput,
+                false,
+            ),
+            (
+                "Utf8Slice",
+                StoreError::Utf8Slice(
+                    std::str::from_utf8(&invalid_utf8).expect_err("invalid utf8"),
+                ),
+                ErrorKind::InvalidInput,
+                false,
+            ),
+            (
+                "Other",
+                StoreError::Other("misc".into()),
+                ErrorKind::Other,
+                false,
+            ),
+            (
+                "Rejected",
+                StoreError::Rejected {
+                    key: "k".into(),
+                    reason: "r".into(),
+                },
+                ErrorKind::Rejected,
+                false,
+            ),
+            (
+                "Fenced",
+                StoreError::Fenced("stale epoch".into()),
+                ErrorKind::Fenced,
+                false,
+            ),
+            (
+                "NotModified",
+                StoreError::NotModified,
+                ErrorKind::Other,
+                false,
+            ),
+        ];
+
+        for (name, error, kind, retryable) in cases {
+            assert_eq!(error.kind(), kind, "{name}: kind");
+            assert_eq!(error.is_retryable(), retryable, "{name}: is_retryable");
+            assert_eq!(error.retry_after(), None, "{name}: retry_after");
+        }
+    }
+
+    /// `is_retryable` must follow `kind`, not a second mapping.
+    #[test]
+    fn only_conflict_and_transient_are_retryable() {
+        let kinds = [
+            (ErrorKind::Conflict, true),
+            (ErrorKind::Transient, true),
+            (ErrorKind::Fenced, false),
+            (ErrorKind::Rejected, false),
+            (ErrorKind::InvalidInput, false),
+            (ErrorKind::Other, false),
+        ];
+        for (kind, retryable) in kinds {
+            assert_eq!(
+                matches!(kind, ErrorKind::Conflict | ErrorKind::Transient),
+                retryable,
+                "{kind:?}"
+            );
+        }
     }
 
     /// No test ever constructed the public UTF-8 error variants. Their

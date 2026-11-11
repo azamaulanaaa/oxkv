@@ -37,6 +37,7 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 | [`store::CachedOxKvStore`] / [`store::CachedTx`] / [`store::WarmMode`] | Feature-gated (`oxkv` **and** `btree`, native + wasm) write-through RAM mirror sharing the `Store` trait — zero-I/O reads once warmed, `Eager`/`Background`/`Lazy` fill via `warm`/`warm_step`/`is_warmed`, WAL durability, TTL-checked reads, `refresh`/`check_stale` catch-up, fencing poisons until refresh |
 | [`store::StoreError::Fenced`] | Terminal fencing error — another owner acquired the epoch via `ownership.json` CAS |
 | [`store::StoreError::CasConflict`] | Conditional-write precondition failed — someone else won the CAS race; retryable unless fencing says otherwise |
+| [`store::ErrorKind`] | Coarse class from `StoreError::kind` — `Conflict` and `Transient` are retryable; `Fenced`, `Rejected`, `InvalidInput`, and `Other` are not; `retry_after` returns `None` today |
 
 ## Quick Start
 
