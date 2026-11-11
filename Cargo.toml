@@ -5,6 +5,7 @@ members = [
   "crates/oxkv-s3",
   "crates/oxkv-query",
   "crates/oxkv-opfs",
+  "crates/oxkv-cached",
 ]
 resolver = "3"
 

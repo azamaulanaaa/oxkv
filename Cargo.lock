@@ -1155,6 +1155,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxkv-cached"
+version = "0.10.0"
+dependencies = [
+ "async-lock",
+ "async-trait",
+ "futures",
+ "oxkv",
+ "serde_json",
+ "tokio",
+ "web-time",
+]
+
+[[package]]
 name = "oxkv-opfs"
 version = "0.10.0"
 dependencies = [
