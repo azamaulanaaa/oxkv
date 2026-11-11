@@ -30,8 +30,10 @@ pub use btree::{BTreeStore, BTreeTx};
 mod btree;
 pub use hooks::{ChangeEvent, ChangeKind, HookState, Hooks, Observer, Scope, StoreView, Validator};
 mod hooks;
+pub mod testkit;
 #[cfg(all(feature = "otel", not(target_arch = "wasm32")))]
 pub use otel::{OtelStore, OtelTx};
+pub use testkit::unique_prefix;
 #[cfg(feature = "oxkv")]
 mod cache;
 #[cfg(feature = "oxkv")]

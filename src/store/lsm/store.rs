@@ -32,7 +32,7 @@ use super::{
     L1_MERGE_COUNT, MAX_GROUP_WRITES, MemTable, SESSION_CTR, WAL_MAINTENANCE_COUNT, WalBuffer,
 };
 use crate::store::cache::{Cache, CacheStats, LruCache};
-use crate::store::storage::{ObjectPath, PutMode, Storage};
+use crate::store::storage::{MemStorage, ObjectPath, PutMode, Storage};
 use crate::store::{
     ChangeEvent, ChangeKind, Direction, GetSet, HookState, Hooks, KeyValue, Observer, Result,
     Scope, Store, StoreError, Validator, lock_ignore_poison, sleep,
@@ -162,6 +162,43 @@ impl OxKvStore {
             session: None,
             assume_single_writer: false,
         }
+    }
+
+    /// Creates a store on a fresh in-memory backend.
+    ///
+    /// Use this constructor in tests and examples. The store uses the default
+    /// `LruCache` type and skips the startup probe. The data is not durable.
+    /// The data disappears when the store drops. The prefix is empty.
+    ///
+    /// Call [`crate::testkit::unique_prefix`] when a test needs a private
+    /// prefix. Then pass the result to [`Self::in_memory_with_prefix`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if the builder cannot acquire ownership of the
+    /// prefix.
+    pub async fn in_memory() -> Result<Self> {
+        Self::in_memory_with_prefix(ObjectPath::default()).await
+    }
+
+    /// Creates a store on a fresh in-memory backend under `prefix`.
+    ///
+    /// Use this constructor in tests and examples. The store uses the default
+    /// `LruCache` type and skips the startup probe. The data is not durable.
+    /// The data disappears when the store drops.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if the builder cannot acquire ownership of
+    /// `prefix`.
+    pub async fn in_memory_with_prefix(prefix: impl Into<ObjectPath>) -> Result<Self> {
+        let backend: Arc<dyn Storage> = Arc::new(MemStorage::new());
+        Self::builder()
+            .with_store(backend)
+            .with_prefix(prefix.into())
+            .skip_probe(true)
+            .build()
+            .await
     }
 
     /// Runs the storage probe against `store` at `prefix/probe/canary`.
@@ -1904,5 +1941,87 @@ impl OxKvStoreBuilder {
                 .store(max_sst, std::sync::atomic::Ordering::SeqCst);
         }
         Ok(s3store)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::store::testkit::unique_prefix;
+    use crate::store::{Direction, GetSet, Store, Transaction};
+
+    /// The in-memory constructor must serve the full write and read surface.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn in_memory_supports_set_get_scan_and_tx() {
+        let store = OxKvStore::in_memory().await.expect("in-memory store");
+        assert_eq!(store.set_bytes("a", b"1").await.expect("set a"), None);
+        assert_eq!(
+            store.get_bytes("a").await.expect("get a").as_deref(),
+            Some(b"1".as_slice())
+        );
+
+        store.set_bytes("b", b"2").await.expect("set b");
+        let rows = store
+            .gets_bytes(None, Direction::Next, (None, None))
+            .await
+            .expect("scan");
+        let keys: Vec<&str> = rows.iter().map(|kv| kv.key.as_str()).collect();
+        assert_eq!(keys, vec!["a", "b"]);
+
+        let tx = store.begin_tx().expect("begin tx");
+        tx.set_bytes("c", b"3").await.expect("stage c");
+        assert_eq!(store.get_bytes("c").await.expect("get staged"), None);
+        tx.commit().await.expect("commit");
+        assert_eq!(
+            store
+                .get_bytes("c")
+                .await
+                .expect("get committed")
+                .as_deref(),
+            Some(b"3".as_slice())
+        );
+    }
+
+    /// A prefixed in-memory store must keep every object under its prefix.
+    /// A second store on the same backend must read the value back.
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn in_memory_with_prefix_stores_under_the_prefix() {
+        let prefix = unique_prefix("in-memory-prefix");
+        let store = OxKvStore::in_memory_with_prefix(prefix.as_str())
+            .await
+            .expect("prefixed in-memory store");
+        assert_eq!(store.prefix().as_str(), prefix);
+        store.set_bytes("k", b"v").await.expect("set k");
+
+        let objects = store
+            .inner_store()
+            .list(&ObjectPath::from(prefix.as_str()))
+            .await
+            .expect("list prefix");
+        assert!(!objects.is_empty(), "the store must write objects");
+        let expected = format!("{prefix}/");
+        for object in &objects {
+            assert!(
+                object.as_str().starts_with(&expected),
+                "object {} is outside prefix {prefix}",
+                object.as_str()
+            );
+        }
+
+        let reopened = OxKvStore::builder()
+            .with_store(store.inner_store())
+            .with_prefix(ObjectPath::from(prefix.as_str()))
+            .with_session("reopen-session")
+            .skip_probe(true)
+            .build()
+            .await
+            .expect("reopen");
+        assert_eq!(
+            reopened.get_bytes("k").await.expect("get k").as_deref(),
+            Some(b"v".as_slice())
+        );
     }
 }
