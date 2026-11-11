@@ -1229,6 +1229,7 @@ dependencies = [
  "futures",
  "js-sys",
  "oxkv",
+ "oxkv-cached",
  "oxkv-opfs",
  "oxkv-query",
  "serde",

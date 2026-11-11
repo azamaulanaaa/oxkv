@@ -1,4 +1,4 @@
-//! WASM bindings for [`store::CachedOxKvStore`], the write-through RAM mirror.
+//! WASM bindings for [`oxkv_cached::CachedOxKvStore`], the write-through RAM mirror.
 //!
 //! The JS names match the Rust names (`CachedOxKvStore`, `CachedOxKvTx`).
 
@@ -9,7 +9,7 @@ use oxkv_query::QueryExt;
 
 use super::{Direction, json_compatible};
 
-/// Wrapper around the write-through [`store::CachedOxKvStore`] for WASM.
+/// Wrapper around the write-through [`oxkv_cached::CachedOxKvStore`] for WASM.
 ///
 /// This store has the same API as [`JsOxKvStore`](super::oxkv::JsOxKvStore). It
 /// mirrors every key in memory. Reads serve without storage I/O. Writes keep WAL
@@ -24,12 +24,12 @@ use super::{Direction, json_compatible};
 /// runs the operation (async), then releases the lock before it returns.
 #[wasm_bindgen(js_name = CachedOxKvStore)]
 pub struct JsCachedOxKvStore {
-    inner: std::sync::Arc<futures::lock::Mutex<store::CachedOxKvStore>>,
+    inner: std::sync::Arc<futures::lock::Mutex<oxkv_cached::CachedOxKvStore>>,
 }
 
 #[wasm_bindgen(js_class = CachedOxKvStore)]
 impl JsCachedOxKvStore {
-    /// Parses a fill-policy name into its [`store::WarmMode`].
+    /// Parses a fill-policy name into its [`oxkv_cached::WarmMode`].
     ///
     /// This function accepts `eager`, `background`, and `lazy` in exact
     /// lowercase. Any other name produces a [`store::StoreError`], which the
@@ -37,11 +37,11 @@ impl JsCachedOxKvStore {
     ///
     /// The `create` functions call this function to keep their bodies linear.
     /// JavaScript does not call this function.
-    fn parse_warm_mode(name: Option<&str>) -> Result<store::WarmMode, JsValue> {
+    fn parse_warm_mode(name: Option<&str>) -> Result<oxkv_cached::WarmMode, JsValue> {
         match name {
-            None | Some("eager" | "Eager" | "EAGER") => Ok(store::WarmMode::Eager),
-            Some("background") => Ok(store::WarmMode::Background),
-            Some("lazy") => Ok(store::WarmMode::Lazy),
+            None | Some("eager" | "Eager" | "EAGER") => Ok(oxkv_cached::WarmMode::Eager),
+            Some("background") => Ok(oxkv_cached::WarmMode::Background),
+            Some("lazy") => Ok(oxkv_cached::WarmMode::Lazy),
             Some(other) => Err(store::StoreError::Other(format!(
                 "unknown warm mode `{other}`: expected eager, background, or lazy"
             ))
@@ -84,7 +84,7 @@ impl JsCachedOxKvStore {
         {
             Ok(store) => Ok(Self {
                 inner: std::sync::Arc::new(futures::lock::Mutex::new(
-                    store::CachedOxKvStore::open_with_mode(store, mode)
+                    oxkv_cached::CachedOxKvStore::open_with_mode(store, mode)
                         .await?
                         .with_stale_ttl(ttl),
                 )),
@@ -132,7 +132,7 @@ impl JsCachedOxKvStore {
         {
             Ok(store) => Ok(Self {
                 inner: std::sync::Arc::new(futures::lock::Mutex::new(
-                    store::CachedOxKvStore::open_with_mode(store, mode)
+                    oxkv_cached::CachedOxKvStore::open_with_mode(store, mode)
                         .await?
                         .with_stale_ttl(ttl),
                 )),
@@ -632,7 +632,7 @@ impl JsCachedOxKvStore {
 js_tx!(
     JsCachedOxKvTx,
     "CachedOxKvTx",
-    store::CachedOxKvStore,
+    oxkv_cached::CachedOxKvStore,
     "Transaction handle for [`JsCachedOxKvStore`]: staged overlay, durable only on `commit`."
 );
 
