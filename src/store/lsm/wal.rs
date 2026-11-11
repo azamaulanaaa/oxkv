@@ -20,7 +20,7 @@ use crate::store::{Result, StoreError};
 /// stops at the first truncated tail. A partially written file therefore
 /// decodes without an error.
 #[must_use]
-pub(crate) fn decode_wal_records(data: &[u8]) -> Vec<(String, Option<Vec<u8>>)> {
+pub fn decode_wal_records(data: &[u8]) -> Vec<(String, Option<Vec<u8>>)> {
     let mut records = Vec::new();
     let mut pos = 0usize;
     while pos + 4 <= data.len() {

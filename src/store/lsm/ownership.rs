@@ -11,7 +11,7 @@ use crate::store::{Result, StoreError};
 
 /// Ownership record stored at `{prefix}/ownership.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct OwnershipRecord {
+pub struct OwnershipRecord {
     /// Monotonic epoch. Every successful CAS bumps it.
     pub epoch: u64,
     /// Owner session identifier (e.g. `node-a:uuid`).
@@ -134,7 +134,7 @@ pub(crate) async fn acquire_ownership(
 }
 
 /// Reads the current ownership record, if any.
-pub(crate) async fn read_ownership(
+pub async fn read_ownership(
     store: Arc<dyn Storage>,
     prefix: &ObjectPath,
 ) -> Result<Option<OwnershipRecord>> {

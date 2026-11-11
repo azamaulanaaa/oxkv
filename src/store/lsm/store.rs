@@ -219,25 +219,44 @@ impl<C> OxKvStore<C>
 where
     C: Cache<String, Arc<SstFile>>,
 {
-    /// Returns the underlying object store (for tests).
-    #[cfg(test)]
+    /// Returns the underlying object store.
+    ///
+    /// This method is an unstable internal API for `oxkv-cached`. It is not
+    /// part of the supported public surface.
+    #[doc(hidden)]
     #[must_use]
     pub fn inner_store(&self) -> Arc<dyn Storage> {
         Arc::clone(&self.inner)
     }
 
     /// Returns the prefix.
-    #[cfg(test)]
+    ///
+    /// This method is an unstable internal API for `oxkv-cached`. It is not
+    /// part of the supported public surface.
+    #[doc(hidden)]
     #[must_use]
     pub fn prefix(&self) -> &ObjectPath {
         &self.prefix
     }
 
     /// Returns the current epoch.
-    #[cfg(test)]
+    ///
+    /// This method is an unstable internal API for `oxkv-cached`. It is not
+    /// part of the supported public surface.
+    #[doc(hidden)]
     #[must_use]
     pub fn epoch(&self) -> u64 {
         self.epoch
+    }
+
+    /// Returns the shared manifest cache.
+    ///
+    /// This method is an unstable internal API for `oxkv-cached`. It is not
+    /// part of the supported public surface.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn manifest_cache(&self) -> &Arc<async_lock::Mutex<ManifestCache>> {
+        &self.manifest_cache
     }
 
     /// Returns the session id.

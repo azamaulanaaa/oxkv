@@ -128,7 +128,7 @@ pub(crate) async fn cas_manifest(
 
 /// In-memory cache with `ETag` + TTL.
 #[derive(Debug)]
-pub(crate) struct ManifestCache {
+pub struct ManifestCache {
     entry: Option<CachedEntry>,
     /// Skip revalidation polls on `TTL`-fresh entries.
     ///
@@ -197,7 +197,7 @@ impl ManifestCache {
 /// loads may publish out of order. The last writer wins in that case. This
 /// stays inside the accepted TTL staleness envelope because every writer
 /// revalidates through manifest CAS.
-pub(crate) async fn load_manifest(
+pub async fn load_manifest(
     store: Arc<dyn Storage>,
     prefix: &ObjectPath,
     epoch: u64,

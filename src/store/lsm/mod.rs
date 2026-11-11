@@ -49,6 +49,18 @@ pub(crate) use manifest::manifest_path;
 #[allow(unused_imports)]
 pub(crate) use ownership::{epoch_prefix, ownership_path};
 
+/// Unstable LSM internals for the `oxkv-cached` crate.
+///
+/// This module is not a stable public API. It exists so the cache mirror can
+/// read manifest and WAL state without exposing store fields. The names and
+/// layout can change without a deprecation cycle.
+#[doc(hidden)]
+pub mod internals {
+    pub use super::manifest::{Manifest, ManifestCache, SstMeta, load_manifest};
+    pub use super::ownership::{OwnershipRecord, read_ownership};
+    pub use super::wal::decode_wal_records;
+}
+
 type MemMap = std::collections::BTreeMap<String, Option<Vec<u8>>>;
 type MemTable = Arc<async_lock::RwLock<MemMap>>;
 type WalBuffer = Arc<async_lock::Mutex<Vec<(String, Option<Vec<u8>>)>>>;
