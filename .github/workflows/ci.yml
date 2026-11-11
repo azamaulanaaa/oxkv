@@ -60,7 +60,12 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22
-      - run: wasm-pack test --node
+      - name: Test core wasm (Node)
+        # OPFS, cache, and LSM wasm tests live in the core crate. Dependency
+        # tests do not run under the binding crate, so run both crates.
+        run: wasm-pack test --node
+      - name: Test wasm bindings (Node)
+        run: wasm-pack test --node
         working-directory: crates/oxkv-wasm
       - name: Check wasm32 build with all features
         # The core keeps the OPFS backend. The binding crate holds the JS
@@ -97,12 +102,15 @@ jobs:
         with:
           node-version: 22
       - name: Install Chromium
-        # Real browser execution: the OPFS persistence test skips on Node
-        # (no navigator.storage there), so only this job proves it.
         run: |
           apt-get update -qq
           apt-get install -y -qq chromium
-      - run: wasm-pack test --headless --chrome
+      - name: Test core wasm (headless Chrome)
+        # Real browser execution: the OPFS persistence test skips on Node
+        # (no navigator.storage there), so only this step proves it.
+        run: wasm-pack test --headless --chrome
+      - name: Test wasm bindings (headless Chrome)
+        run: wasm-pack test --headless --chrome
         working-directory: crates/oxkv-wasm
 
   # One job per cargo-deny check. A failure names the check that failed:
