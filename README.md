@@ -34,7 +34,7 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 | [`store::Validator`] | Validates writes before they are stored (attach per key, prefix, or globally) |
 | [`store::Observer`] | Receives change notifications after they become durable |
 | [`store::Hooks`] | Trait adding validators and change watching to any store |
-| [`store::OtelStore`] | Feature-gated decorator adding OpenTelemetry traces and metrics to any store |
+| `oxkv_otel::OtelStore` | Separate crate adding OpenTelemetry traces and metrics to any store |
 | [`store::OxKvStore`] / [`store::OxKvStoreBuilder`] / [`store::OxKvTx`] | Feature-gated (`oxkv`, native + wasm) LSM generic over `Storage` + `Cache` (in-memory `MemStorage`; S3 via `oxkv-s3`); single-writer epoch fencing, WAL + SST + blob overflow |
 | [`store::OxKvReader`] / [`store::OxKvRoTx`] | Feature-gated (`oxkv`, native + wasm) read-only follower sharing the `Store` trait — opens without epoch CAS, follows writer WALs, writes rejected, empty-tx commit is a no-op |
 | [`store::CachedOxKvStore`] / [`store::CachedTx`] / [`store::WarmMode`] | Feature-gated (`oxkv` **and** `btree`, native + wasm) write-through RAM mirror sharing the `Store` trait — zero-I/O reads once warmed, `Eager`/`Background`/`Lazy` fill via `warm`/`warm_step`/`is_warmed`, WAL durability, TTL-checked reads, `refresh`/`check_stale` catch-up, fencing poisons until refresh |
@@ -307,12 +307,13 @@ evolution is trackable. Chunk boundaries always fall between records, so
 chunks concatenate to exactly what `save` returns and each decodes
 independently.
 
-## OpenTelemetry (feature `otel`)
+## OpenTelemetry (`oxkv-otel` crate)
 
-Enable the `otel` feature and wrap any backend:
+Add the `oxkv-otel` crate and wrap any backend:
 
 ```text
-use oxkv::{BTreeStore, OtelStore};
+use oxkv::BTreeStore;
+use oxkv_otel::OtelStore;
 
 let store = OtelStore::new(BTreeStore::default());
 // every operation below now emits spans + metrics; without an SDK installed

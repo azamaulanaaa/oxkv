@@ -31,12 +31,6 @@ readme = "README.md"
 default = ["btree", "oxkv"]
 ## In-memory B-tree backend (pure Rust, test and bench baseline).
 btree = []
-## Enables [`OtelStore`], an OpenTelemetry-instrumented decorator that wraps
-## any [`Store`] and emits spans and metrics around every operation.
-##
-## The crate depends only on the OpenTelemetry *API*; applications plug in
-## their own SDK providers globally, so exporters stay out of this crate.
-otel = ["dep:opentelemetry"]
 ## Enables [`OxKvStore`] — portable LSM over `Storage` (native + `wasm32`).
 ## Each `dep:` below is justified inline where the dependency is declared.
 oxkv = ["dep:crc32fast", "dep:sha2", "dep:async-lock", "dep:futures-timer"]
@@ -64,10 +58,6 @@ thiserror = "2"
 # Native-only deps (not wasm32) — gated here so `cargo check --target wasm32
 # --all-features` does not try to build getrandom/object_store for wasm.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-opentelemetry = { version = "0.32", default-features = false, features = [
-  "trace",
-  "metrics",
-], optional = true }
 object_store = { version = "0.12", optional = true, features = ["aws", "gcp", "azure"] }
 moka = { version = "0.12", optional = true, features = ["future"] }
 
@@ -92,18 +82,12 @@ mockall = "0.15"
 tokio = { version = "1.53.1", features = ["test-util", "macros", "rt"] }
 
 # Criterion pulls in Rayon, which does not compile for wasm32; benches are a
-# native-only concern. Same for the OpenTelemetry SDK used by the `otel`
-# feature's tests (its rand/getrandom chain needs a wasm-specific backend).
+# native-only concern.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = "0.7"
 # Multi-threaded scheduler for the threaded stress tests and benches.
 # Native-only: the feature does not compile for wasm32 (see above).
 tokio = { version = "1.53.1", features = ["rt-multi-thread"] }
-opentelemetry_sdk = { version = "0.32", default-features = false, features = [
-  "trace",
-  "metrics",
-  "testing",
-] }
 
 # The core keeps the bindings that the browser OPFS backend needs. The
 # JavaScript-facing wrappers own their own copy in `crates/oxkv-wasm`.

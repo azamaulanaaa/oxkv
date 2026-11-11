@@ -9,5 +9,24 @@ readme = "../../README.md"
 keywords = ["opentelemetry", "keyvalue", "kv-store", "database"]
 categories = ["database"]
 
+[dependencies]
+oxkv = { path = "../.." }
+async-trait = "0.1"
+futures = { version = "0.3", default-features = false, features = ["std"] }
+opentelemetry = { version = "0.32", default-features = false, features = [
+  "trace",
+  "metrics",
+] }
+
+[dev-dependencies]
+oxkv = { path = "../..", features = ["btree"] }
+opentelemetry_sdk = { version = "0.32", default-features = false, features = [
+  "trace",
+  "metrics",
+  "testing",
+] }
+serde_json = "1"
+tokio = { version = "1.53.1", features = ["test-util", "macros", "rt"] }
+
 [lints]
 workspace = true

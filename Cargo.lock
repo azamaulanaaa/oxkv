@@ -1147,8 +1147,6 @@ dependencies = [
  "mockall",
  "moka",
  "object_store",
- "opentelemetry",
- "opentelemetry_sdk",
  "pest",
  "pest_derive",
  "regex",
@@ -1166,6 +1164,15 @@ dependencies = [
 [[package]]
 name = "oxkv-otel"
 version = "0.10.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "oxkv",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "oxkv-s3"

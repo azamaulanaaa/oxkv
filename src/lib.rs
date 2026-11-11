@@ -1,8 +1,8 @@
 //! A transactional key-value store. It provides WASM bindings (`BTreeStore` and
 //! `OxKvStore`). It also provides Lucene-style JSON queries.
 //!
-//! With the `otel` feature enabled, `OtelStore` wraps any backend. It adds
-//! OpenTelemetry traces and metrics. See the `OtelStore` docs for wiring
+//! The `oxkv-otel` crate provides `OtelStore`. It wraps any backend and adds
+//! OpenTelemetry traces and metrics. See the `oxkv-otel` docs for wiring
 //! guidance.
 #![allow(clippy::multiple_crate_versions)]
 //! The [README](https://github.com/azamaulanaaa/oxkv/blob/main/README.md)
