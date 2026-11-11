@@ -395,12 +395,14 @@ pub(crate) async fn notify(
 /// instead. Without this exception, an absence-based rule (e.g. "must not
 /// overwrite") sees the staged write itself. Such a rule falsely rejects
 /// legitimate inserts.
+#[cfg(any(feature = "btree", feature = "oxkv"))]
 pub(crate) struct RevalidateView<'a> {
     pub(crate) inner: &'a dyn StoreView,
     pub(crate) key: &'a str,
     pub(crate) old_value: Option<&'a [u8]>,
 }
 
+#[cfg(any(feature = "btree", feature = "oxkv"))]
 #[async_trait]
 impl StoreView for RevalidateView<'_> {
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
