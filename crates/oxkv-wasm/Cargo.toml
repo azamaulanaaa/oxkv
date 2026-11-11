@@ -15,6 +15,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 oxkv = { path = "../..", features = ["btree", "oxkv", "cached"] }
 oxkv-query = { path = "../oxkv-query" }
+oxkv-opfs = { path = "../oxkv-opfs" }
 futures = { version = "0.3", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

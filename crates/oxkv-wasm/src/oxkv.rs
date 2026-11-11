@@ -73,7 +73,7 @@ impl JsOxKvStore {
         prefix: Option<String>,
     ) -> Result<JsOxKvStore, JsValue> {
         let prefix = prefix.unwrap_or_else(|| "js-lsm".to_string());
-        let backend = std::sync::Arc::new(store::OpfsStorage::open().await?);
+        let backend = std::sync::Arc::new(oxkv_opfs::OpfsStorage::open().await?);
         match store::OxKvStore::builder()
             .with_store(backend)
             .with_prefix(store::ObjectPath::from(prefix))

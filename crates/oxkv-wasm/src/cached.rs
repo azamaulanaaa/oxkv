@@ -121,7 +121,7 @@ impl JsCachedOxKvStore {
         warm_mode: Option<String>,
     ) -> Result<JsCachedOxKvStore, JsValue> {
         let prefix = prefix.unwrap_or_else(|| "js-lsm".to_string());
-        let backend = std::sync::Arc::new(store::OpfsStorage::open().await?);
+        let backend = std::sync::Arc::new(oxkv_opfs::OpfsStorage::open().await?);
         let ttl = std::time::Duration::from_millis(stale_ttl_ms.unwrap_or(1000));
         let mode = Self::parse_warm_mode(warm_mode.as_deref())?;
         match store::OxKvStore::builder()
