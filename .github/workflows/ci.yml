@@ -104,22 +104,37 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22
-      - name: Install Chromium
+      - name: Install Chromium and its matching driver
+        # Install both packages from the same Debian repository so the
+        # chromedriver version matches the installed Chromium.
         run: |
           apt-get update -qq
-          apt-get install -y -qq chromium
+          apt-get install -y -qq chromium chromium-driver
+      - name: Print browser and driver versions
+        run: |
+          chromium --version
+          chromedriver --version
       - name: Test core wasm (headless Chrome)
         # The core covers its cache and LSM wasm tests.
         run: wasm-pack test --headless --chrome
+        env:
+          CHROME_BIN: /usr/bin/chromium
+          CHROMEDRIVER: /usr/bin/chromedriver
       - name: Test OPFS wasm (headless Chrome)
         # Real browser execution: the OPFS persistence and Web Lock tests
         # need a real browser, so only this step proves them.
         run: wasm-pack test --headless --chrome
         working-directory: crates/oxkv-opfs
+        env:
+          CHROME_BIN: /usr/bin/chromium
+          CHROMEDRIVER: /usr/bin/chromedriver
       - name: Test wasm bindings (headless Chrome)
         # The binding crate covers the JavaScript wrappers.
         run: wasm-pack test --headless --chrome
         working-directory: crates/oxkv-wasm
+        env:
+          CHROME_BIN: /usr/bin/chromium
+          CHROMEDRIVER: /usr/bin/chromedriver
 
   # One job per cargo-deny check. A failure names the check that failed:
   # a licence problem and a vulnerability are different conversations.

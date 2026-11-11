@@ -1,0 +1,7 @@
+{
+  "browserName": "chrome",
+  "goog:chromeOptions": {
+    "binary": "/usr/bin/chromium",
+    "args": ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+  }
+}
