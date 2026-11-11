@@ -50,8 +50,6 @@ pub use cache::{Cache, CacheStats, LruCache};
 pub use lsm::{CachedOxKvStore, CachedTx, WarmMode};
 #[cfg(feature = "oxkv")]
 pub use lsm::{OxKvReader, OxKvRoTx, OxKvStore, OxKvStoreBuilder, OxKvTx, SstFile};
-#[cfg(all(feature = "oxkv", target_arch = "wasm32"))]
-pub use storage::OpfsStorage;
 #[cfg(feature = "oxkv")]
 pub use storage::{
     GetOptions, GetOutput, MemStorage, ObjectPath, ObjectVersion, PutMode, PutOutcome, Storage,
@@ -103,26 +101,16 @@ pub(crate) async fn sleep(duration: std::time::Duration) {
 
 /// Portable millisecond clock for TTLs and identifiers.
 ///
-/// `std::time::Instant` panics on `wasm32-unknown-unknown`. TTLs use this clock
-/// instead. This clock reads epoch milliseconds on native targets. On wasm it
-/// reads `Date.now()`. A backwards jump only ever extends a cache TTL. A
-/// backwards jump is never a correctness issue.
+/// `std::time::Instant` panics on `wasm32-unknown-unknown`. The `web-time`
+/// crate provides the same clock on every target. This clock reads epoch
+/// milliseconds on native targets. On wasm it reads `Date.now()`. A backwards
+/// jump only ever extends a cache TTL. A backwards jump is never a correctness
+/// issue.
 #[cfg(feature = "oxkv")]
 pub(crate) fn now_millis() -> u64 {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        // `Date.now()` (~1.7e12, always finite and non-negative) fits in u64
-        // with room to spare, so this saturating cast is exact in practice.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let millis = js_sys::Date::now() as u64;
-        millis
-    }
+    web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// Errors that can occur during store operations.

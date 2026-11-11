@@ -1143,7 +1143,6 @@ dependencies = [
  "criterion",
  "futures",
  "futures-timer",
- "js-sys",
  "mockall",
  "moka",
  "serde",
@@ -1151,10 +1150,8 @@ dependencies = [
  "sha2",
  "thiserror",
  "tokio",
- "wasm-bindgen",
- "wasm-bindgen-futures",
  "wasm-bindgen-test",
- "web-sys",
+ "web-time",
 ]
 
 [[package]]

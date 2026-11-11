@@ -52,6 +52,8 @@ futures = { version = "0.3", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+# A drop-in `std::time` clock that also works on `wasm32-unknown-unknown`.
+web-time = "1"
 
 # Native-only deps (not wasm32) — gated here so `cargo check --target wasm32
 # --all-features` does not try to build the native-only dependencies.
@@ -84,19 +86,14 @@ criterion = "0.7"
 # Native-only: the feature does not compile for wasm32 (see above).
 tokio = { version = "1.53.1", features = ["rt-multi-thread"] }
 
-# The core keeps the bindings that the browser OPFS backend needs. The
-# JavaScript-facing wrappers own their own copy in `crates/oxkv-wasm`.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "0.2"
 # futures-timer's setTimeout-backed wheel; without it the native wheel calls
 # Instant::now(), which panics on wasm32-unknown-unknown.
 futures-timer = { version = "3", optional = true, features = ["wasm-bindgen"] }
-wasm-bindgen-futures = "0.4"
-js-sys = "0.3"
-web-sys = { version = "0.3", features = ["ReadableStream", "Window", "Navigator", "StorageManager", "File", "Blob", "DomException", "FileSystemDirectoryHandle", "FileSystemFileHandle", "FileSystemWritableFileStream", "WritableStream", "FileSystemGetDirectoryOptions", "FileSystemGetFileOptions", "FileSystemRemoveOptions", "console"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-# The OPFS backend and its browser contract tests live in this crate.
+# The core keeps its cache and LSM wasm tests. The browser OPFS tests live in
+# `crates/oxkv-opfs`.
 wasm-bindgen-test = "0.3"
 
 [lints]
