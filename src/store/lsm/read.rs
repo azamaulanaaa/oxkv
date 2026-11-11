@@ -230,7 +230,43 @@ where
         std::time::Duration::from_secs(1),
     )
     .await?;
-    scan_manifest(ctx, manifest, layers, limit, direction, cursor).await
+    scan_manifest(ctx, manifest, layers, limit, direction, cursor, true).await
+}
+
+/// Range scan that returns keys and skips value loading.
+///
+/// The function uses the same merge as [`range_lookup`]. It does not
+/// dereference blob pointers. It does not copy stored values. An SST scan
+/// still decodes the stored value bytes of each row that it reads.
+///
+/// # Errors
+///
+/// Returns `StoreError` on I/O or CRC failure.
+pub(crate) async fn range_keys<C>(
+    ctx: &ReadCtx<'_, C>,
+    layers: Vec<Vec<(String, Option<Vec<u8>>)>>,
+    limit: Option<u32>,
+    direction: Direction,
+    cursor: (Option<String>, Option<String>),
+) -> Result<Vec<String>>
+where
+    C: Cache<String, Arc<SstFile>>,
+{
+    let (manifest, _etag) = load_manifest(
+        Arc::clone(ctx.inner),
+        ctx.prefix,
+        ctx.epoch,
+        ctx.manifest_cache,
+        std::time::Duration::from_secs(1),
+    )
+    .await?;
+    Ok(
+        scan_manifest(ctx, manifest, layers, limit, direction, cursor, false)
+            .await?
+            .into_iter()
+            .map(|row| row.key)
+            .collect(),
+    )
 }
 
 async fn scan_manifest<C>(
@@ -240,6 +276,7 @@ async fn scan_manifest<C>(
     limit: Option<u32>,
     direction: Direction,
     cursor: (Option<String>, Option<String>),
+    load_values: bool,
 ) -> Result<Vec<KeyValue>>
 where
     C: Cache<String, Arc<SstFile>>,
@@ -278,7 +315,11 @@ where
         for (key, raw) in merged {
             out.push(KeyValue {
                 key,
-                value: resolve_value(ctx, raw).await?,
+                value: if load_values {
+                    resolve_value(ctx, raw).await?
+                } else {
+                    Vec::new()
+                },
             });
         }
         return Ok(out);
@@ -301,7 +342,11 @@ where
         for (key, value) in scan {
             match value {
                 Some(raw) => {
-                    let val = resolve_value(ctx, raw).await?;
+                    let val = if load_values {
+                        resolve_value(ctx, raw).await?
+                    } else {
+                        Vec::new()
+                    };
                     resolved.push((key, Some(val)));
                 }
                 None => resolved.push((key, None)),

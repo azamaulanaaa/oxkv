@@ -21,7 +21,7 @@ use super::ownership::{
 };
 use super::probe::probe_store;
 use super::read::{
-    ReadCtx, fetch_sst, filter_rows, point_lookup, range_lookup, resolve_value,
+    ReadCtx, fetch_sst, filter_rows, point_lookup, range_keys, range_lookup, resolve_value,
     retry_once_not_found,
 };
 use super::reader::OxKvReader;
@@ -888,6 +888,37 @@ where
         .await
     }
 
+    /// Range scan that returns keys and skips value loading.
+    ///
+    /// The scan skips blob dereference and value copies. An SST scan still
+    /// decodes the stored value bytes of each row that it reads. The
+    /// `MemTable` snapshot still copies row values into the merge layers.
+    ///
+    /// Restarts once against a fresh manifest when an SST read hits
+    /// `not found`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError` on I/O or CRC failure.
+    pub async fn gets_keys(
+        &self,
+        limit: Option<u32>,
+        direction: Direction,
+        cursor: (Option<String>, Option<String>),
+    ) -> Result<Vec<String>> {
+        retry_once_not_found(&self.manifest_cache, || {
+            let layers = async {
+                let mem = self.mem.read().await;
+                vec![filter_rows(&mem, direction, &cursor)]
+            };
+            let cursor2 = cursor.clone();
+            async move {
+                range_keys(&self.read_ctx(), layers.await, limit, direction, cursor2).await
+            }
+        })
+        .await
+    }
+
     /// Returns the current manifest version (for tests).
     ///
     /// # Errors
@@ -1566,6 +1597,15 @@ where
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
         OxKvStore::gets_bytes(self, limit, direction, cursor).await
+    }
+
+    async fn gets_keys(
+        &self,
+        limit: Option<u32>,
+        direction: Direction,
+        cursor: (Option<String>, Option<String>),
+    ) -> Result<Vec<String>> {
+        OxKvStore::gets_keys(self, limit, direction, cursor).await
     }
 }
 

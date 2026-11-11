@@ -10,7 +10,8 @@ use async_trait::async_trait;
 
 use super::manifest::ManifestCache;
 use super::read::{
-    ReadCtx, filter_rows, point_lookup, range_lookup, resolve_value, retry_once_not_found,
+    ReadCtx, filter_rows, point_lookup, range_keys, range_lookup, resolve_value,
+    retry_once_not_found,
 };
 use super::store::OxKvStore;
 use super::store::PendingWrite;
@@ -141,6 +142,22 @@ where
             let cursor2 = cursor.clone();
             async move {
                 range_lookup(&self.read_ctx(), layers.await, limit, direction, cursor2).await
+            }
+        })
+        .await
+    }
+
+    async fn gets_keys(
+        &self,
+        limit: Option<u32>,
+        direction: Direction,
+        cursor: (Option<String>, Option<String>),
+    ) -> Result<Vec<String>> {
+        retry_once_not_found(&self.manifest_cache, || {
+            let layers = self.snapshot_layers(direction, &cursor);
+            let cursor2 = cursor.clone();
+            async move {
+                range_keys(&self.read_ctx(), layers.await, limit, direction, cursor2).await
             }
         })
         .await

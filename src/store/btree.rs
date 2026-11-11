@@ -88,6 +88,19 @@ impl GetSet for BTreeStore {
             Direction::Prev => Ok(build_prev(&guard, &cursor, limit)),
         }
     }
+
+    async fn gets_keys(
+        &self,
+        limit: Option<u32>,
+        direction: Direction,
+        cursor: (Option<String>, Option<String>),
+    ) -> Result<Vec<String>> {
+        let guard = self.map.read().unwrap();
+        match direction {
+            Direction::Next => Ok(build_next_keys(&guard, &cursor, limit)),
+            Direction::Prev => Ok(build_prev_keys(&guard, &cursor, limit)),
+        }
+    }
 }
 
 #[async_trait]
@@ -209,6 +222,20 @@ impl GetSet for BTreeTx {
         match direction {
             Direction::Next => Ok(build_next_overlay(&guard, &overlay, &cursor, limit)),
             Direction::Prev => Ok(build_prev_overlay(&guard, &overlay, &cursor, limit)),
+        }
+    }
+
+    async fn gets_keys(
+        &self,
+        limit: Option<u32>,
+        direction: Direction,
+        cursor: (Option<String>, Option<String>),
+    ) -> Result<Vec<String>> {
+        let guard = self.store.read().unwrap();
+        let overlay = self.overlay.lock().unwrap();
+        match direction {
+            Direction::Next => Ok(build_next_overlay_keys(&guard, &overlay, &cursor, limit)),
+            Direction::Prev => Ok(build_prev_overlay_keys(&guard, &overlay, &cursor, limit)),
         }
     }
 }
@@ -350,6 +377,87 @@ fn build_prev(
         collect_prev_range(map, end.clone()..=start.clone(), limit)
     } else {
         collect_prev_range(map, ..=start.clone(), limit)
+    }
+}
+
+/// Collects keys in ascending order. The function never clones a value.
+fn collect_next_keys<R>(
+    map: &BTreeMap<String, Vec<u8>>,
+    range: R,
+    limit: Option<usize>,
+) -> Vec<String>
+where
+    R: RangeBounds<String>,
+{
+    let mut vec = Vec::new();
+    for (key, _) in map.range(range) {
+        if limit.is_some_and(|lim| vec.len() >= lim) {
+            break;
+        }
+        vec.push(key.clone());
+    }
+    vec
+}
+
+/// Collects keys in descending order. The function never clones a value.
+fn collect_prev_keys<R>(
+    map: &BTreeMap<String, Vec<u8>>,
+    range: R,
+    limit: Option<usize>,
+) -> Vec<String>
+where
+    R: RangeBounds<String>,
+{
+    let mut vec = Vec::new();
+    for (key, _) in map.range(range).rev() {
+        if limit.is_some_and(|lim| vec.len() >= lim) {
+            break;
+        }
+        vec.push(key.clone());
+    }
+    vec
+}
+
+/// Builds a vector of keys in ascending order (`Next` direction).
+fn build_next_keys(
+    map: &BTreeMap<String, Vec<u8>>,
+    cursor: &(Option<String>, Option<String>),
+    limit: Option<u32>,
+) -> Vec<String> {
+    let limit = limit.map(|l| l as usize);
+    match (&cursor.0, &cursor.1) {
+        (Some(start), Some(end)) => {
+            if start > end {
+                return Vec::new();
+            }
+            collect_next_keys(map, start.clone()..=end.clone(), limit)
+        }
+        (Some(start), None) => collect_next_keys(map, start.clone().., limit),
+        (None, Some(end)) => collect_next_keys(map, ..=end.clone(), limit),
+        (None, None) => collect_next_keys(map, .., limit),
+    }
+}
+
+/// Builds a vector of keys in descending order (`Prev` direction).
+fn build_prev_keys(
+    map: &BTreeMap<String, Vec<u8>>,
+    cursor: &(Option<String>, Option<String>),
+    limit: Option<u32>,
+) -> Vec<String> {
+    let limit = limit.map(|l| l as usize);
+    let (start_opt, end_opt) = cursor;
+
+    let Some(start) = start_opt else {
+        return Vec::new();
+    };
+
+    if let Some(end) = end_opt {
+        if start < end {
+            return Vec::new();
+        }
+        collect_prev_keys(map, end.clone()..=start.clone(), limit)
+    } else {
+        collect_prev_keys(map, ..=start.clone(), limit)
     }
 }
 
@@ -537,6 +645,78 @@ fn build_prev_overlay(
 ) -> Vec<KeyValue> {
     let overlay_keys: HashSet<&String> = overlay.keys().collect();
     merge_sides(
+        store_side(store, cursor, &overlay_keys, false).peekable(),
+        overlay_side(overlay, cursor, false).peekable(),
+        limit_of(limit),
+        false,
+    )
+}
+
+/// Merges two sorted side iterators into keys. The function never clones a
+/// value. The merge walks in the requested direction. It stops as soon as
+/// `limit` is reached.
+fn merge_side_keys(
+    mut store: std::iter::Peekable<SideIter<'_>>,
+    mut overlay: std::iter::Peekable<SideIter<'_>>,
+    limit: Option<usize>,
+    forward: bool,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    loop {
+        if limit_reached(limit, out.len()) {
+            break;
+        }
+        let take_store = match (store.peek(), overlay.peek()) {
+            (None, None) => break,
+            (None, Some(_)) => false,
+            (Some(_), None) => true,
+            (Some((store_key, _)), Some((overlay_key, _))) => {
+                if forward {
+                    store_key.as_str() <= overlay_key.as_str()
+                } else {
+                    store_key.as_str() >= overlay_key.as_str()
+                }
+            }
+        };
+        let key = if take_store {
+            store.next().unwrap().0
+        } else {
+            overlay.next().unwrap().0
+        };
+        out.push(key.clone());
+    }
+    out
+}
+
+/// Builds a vector of keys in ascending order. The merge reads the store and
+/// the overlay.
+fn build_next_overlay_keys(
+    store: &BTreeMap<String, Vec<u8>>,
+    overlay: &BTreeMap<String, Option<Vec<u8>>>,
+    cursor: &(Option<String>, Option<String>),
+    limit: Option<u32>,
+) -> Vec<String> {
+    let overlay_keys: HashSet<&String> = overlay.keys().collect();
+    merge_side_keys(
+        store_side(store, cursor, &overlay_keys, true).peekable(),
+        overlay_side(overlay, cursor, true).peekable(),
+        limit_of(limit),
+        true,
+    )
+}
+
+/// Builds a vector of keys in descending order. The merge reads the store and
+/// the overlay.
+///
+/// The semantics match [`build_next_overlay_keys`].
+fn build_prev_overlay_keys(
+    store: &BTreeMap<String, Vec<u8>>,
+    overlay: &BTreeMap<String, Option<Vec<u8>>>,
+    cursor: &(Option<String>, Option<String>),
+    limit: Option<u32>,
+) -> Vec<String> {
+    let overlay_keys: HashSet<&String> = overlay.keys().collect();
+    merge_side_keys(
         store_side(store, cursor, &overlay_keys, false).peekable(),
         overlay_side(overlay, cursor, false).peekable(),
         limit_of(limit),

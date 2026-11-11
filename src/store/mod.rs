@@ -44,6 +44,8 @@ mod cache;
 mod lsm;
 #[cfg(all(feature = "otel", not(target_arch = "wasm32")))]
 mod otel;
+mod scan;
+pub use scan::{KeyPrefix, Page, ScanExt};
 #[cfg(feature = "oxkv")]
 mod storage;
 #[cfg(feature = "oxkv")]
@@ -430,6 +432,36 @@ pub trait GetSet {
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>>;
+
+    /// Retrieves keys with cursor-based pagination. This method does not return
+    /// values.
+    ///
+    /// The parameters have the same meaning as [`GetSet::gets_bytes`]. The
+    /// returned keys are in the order that `direction` selects.
+    ///
+    /// The default body calls [`GetSet::gets_bytes`] and discards the values.
+    /// A backend overrides this method when it can read keys without loading
+    /// values.
+    ///
+    /// A limit of `Some(0)` returns an empty vector. A limit of `None` reads
+    /// every matching key and can exhaust memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] if the underlying storage fails.
+    async fn gets_keys(
+        &self,
+        limit: Option<u32>,
+        direction: Direction,
+        cursor: (Option<String>, Option<String>),
+    ) -> Result<Vec<String>> {
+        Ok(self
+            .gets_bytes(limit, direction, cursor)
+            .await?
+            .into_iter()
+            .map(|item| item.key)
+            .collect())
+    }
 }
 
 /// A transaction that groups multiple operations atomically.
