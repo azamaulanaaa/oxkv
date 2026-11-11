@@ -24,6 +24,8 @@ use thiserror::Error;
 
 use crate::query::{eval as eval_json_query, parse as parse_query};
 
+mod batch;
+pub use batch::{BatchExt, BatchOp};
 #[cfg(feature = "btree")]
 pub use btree::{BTreeStore, BTreeTx};
 #[cfg(feature = "btree")]
