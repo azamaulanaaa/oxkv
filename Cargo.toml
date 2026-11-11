@@ -116,8 +116,8 @@ workspace = true
 inherits = "release"
 
 # docs.rs builds default features only unless told otherwise — that hid
-# every feature-gated item (e.g. OtelStore behind `otel`). Build all
-# features so the full API (minus wasm-only targets) is documented.
+# every feature-gated item. Build all features so the full API (minus
+# wasm-only targets) is documented.
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
