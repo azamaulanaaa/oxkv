@@ -1693,20 +1693,11 @@ impl std::fmt::Debug for OxKvStoreBuilder {
 
 impl OxKvStoreBuilder {
     /// Sets the backing [`Storage`]. Use `MemStorage` in tests and wasm.
-    /// On native, an `object_store` backend also works via
-    /// `with_object_store`.
+    /// On native, wrap an `object_store` backend with
+    /// `oxkv_s3::ObjectStoreStorage`.
     #[must_use]
     pub fn with_store(mut self, store: Arc<dyn Storage>) -> Self {
         self.inner = Some(store);
-        self
-    }
-
-    /// Sets the backing store from an `object_store` backend (native-only,
-    /// requires the `oxkv-s3` feature).
-    #[cfg(all(not(target_arch = "wasm32"), feature = "oxkv-s3"))]
-    #[must_use]
-    pub fn with_object_store(mut self, store: Arc<dyn object_store::ObjectStore>) -> Self {
-        self.inner = Some(Arc::new(store));
         self
     }
 

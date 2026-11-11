@@ -1146,7 +1146,6 @@ dependencies = [
  "js-sys",
  "mockall",
  "moka",
- "object_store",
  "pest",
  "pest_derive",
  "regex",
@@ -1177,6 +1176,13 @@ dependencies = [
 [[package]]
 name = "oxkv-s3"
 version = "0.10.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "object_store",
+ "oxkv",
+ "tokio",
+]
 
 [[package]]
 name = "oxkv-wasm"

@@ -34,9 +34,6 @@ btree = []
 ## Enables [`OxKvStore`] — portable LSM over `Storage` (native + `wasm32`).
 ## Each `dep:` below is justified inline where the dependency is declared.
 oxkv = ["dep:crc32fast", "dep:sha2", "dep:async-lock", "dep:futures-timer"]
-## Native S3/GCS/Azure backing via `object_store` (native-only).
-## The engine itself never touches it directly — see `Storage`.
-oxkv-s3 = ["dep:object_store"]
 ## Optional moka-backed cache (native-only) — alternative to built-in LruCache.
 moka = ["dep:moka"]
 
@@ -56,9 +53,8 @@ strsim = "0.11"
 thiserror = "2"
 
 # Native-only deps (not wasm32) — gated here so `cargo check --target wasm32
-# --all-features` does not try to build getrandom/object_store for wasm.
+# --all-features` does not try to build the native-only dependencies.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-object_store = { version = "0.12", optional = true, features = ["aws", "gcp", "azure"] }
 moka = { version = "0.12", optional = true, features = ["future"] }
 
 [[bench]]

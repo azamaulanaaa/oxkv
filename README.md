@@ -10,8 +10,8 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 - **Lucene-style query engine** — filter stored JSON documents with a query language supporting field paths, ranges, wildcards, regex, fuzzy matching, and boolean operators
 - **JSON serialization** — extension methods for inserting and retrieving `serde_json::Value` types via JSON, stored as raw bytes
 - **WASM bindings** — thread-safe wrappers in `src/wasm/` expose `BTreeStore`, `OxKvStore`, and `CachedOxKvStore` to JavaScript as async promises (`otel` native-only, OXKV snapshot portable across all)
-- **Extensible backends** — the crate defines three traits (`GetSet`, `Transaction`, `Store`) that any backend can implement; ships with an in-memory B-tree backend (`btree`, test and bench baseline + WASM baseline) and an LSM backend (`oxkv`, native + wasm) generic over `Storage` + `Cache` (S3/GCS/Azure via `oxkv-s3`)
-- **LSM backend** — portable LSM over pluggable `Storage` (in-memory `MemStorage` everywhere including browsers; S3/GCS/Azure/local via [`object_store`](https://docs.rs/object_store) with `oxkv-s3`, OPFS origin-private storage in browsers): epoch-fenced single writer, WAL with RPO=0, `MemTable` + SST (L0/L1) with Bloom + CRC, blob overflow for large values, scan-resistant `S3-FIFO` SST cache (trait, `moka` optional), WAL replay, GC and L0→L1 compaction, group-committed batched writes, lazy pull-merge range scans, read-only `OxKvReader` followers, write-through `CachedOxKvStore` RAM mirror
+- **Extensible backends** — the crate defines three traits (`GetSet`, `Transaction`, `Store`) that any backend can implement; ships with an in-memory B-tree backend (`btree`, test and bench baseline + WASM baseline) and an LSM backend (`oxkv`, native + wasm) generic over `Storage` + `Cache` (S3/GCS/Azure via the `oxkv-s3` crate)
+- **LSM backend** — portable LSM over pluggable `Storage` (in-memory `MemStorage` everywhere including browsers; S3/GCS/Azure/local via the [`oxkv-s3`](crates/oxkv-s3) crate, OPFS origin-private storage in browsers): epoch-fenced single writer, WAL with RPO=0, `MemTable` + SST (L0/L1) with Bloom + CRC, blob overflow for large values, scan-resistant `S3-FIFO` SST cache (trait, `moka` optional), WAL replay, GC and L0→L1 compaction, group-committed batched writes, lazy pull-merge range scans, read-only `OxKvReader` followers, write-through `CachedOxKvStore` RAM mirror
 - **Validation hooks** — reject invalid writes before they reach storage, scoped to a single key, a key prefix, or the whole store
 - **Reactivity** — watch keys or prefixes and observe every committed change via channels or observer traits; rolled-back transactions never notify
 - **Save/Load** — serialize the entire store contents into a single contiguous `Uint8Array` and reconstruct it from binary data
@@ -35,7 +35,7 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 | [`store::Observer`] | Receives change notifications after they become durable |
 | [`store::Hooks`] | Trait adding validators and change watching to any store |
 | `oxkv_otel::OtelStore` | Separate crate adding OpenTelemetry traces and metrics to any store |
-| [`store::OxKvStore`] / [`store::OxKvStoreBuilder`] / [`store::OxKvTx`] | Feature-gated (`oxkv`, native + wasm) LSM generic over `Storage` + `Cache` (in-memory `MemStorage`; S3 via `oxkv-s3`); single-writer epoch fencing, WAL + SST + blob overflow |
+| [`store::OxKvStore`] / [`store::OxKvStoreBuilder`] / [`store::OxKvTx`] | Feature-gated (`oxkv`, native + wasm) LSM generic over `Storage` + `Cache` (in-memory `MemStorage`; S3 via the `oxkv-s3` crate); single-writer epoch fencing, WAL + SST + blob overflow |
 | [`store::OxKvReader`] / [`store::OxKvRoTx`] | Feature-gated (`oxkv`, native + wasm) read-only follower sharing the `Store` trait — opens without epoch CAS, follows writer WALs, writes rejected, empty-tx commit is a no-op |
 | [`store::CachedOxKvStore`] / [`store::CachedTx`] / [`store::WarmMode`] | Feature-gated (`oxkv` **and** `btree`, native + wasm) write-through RAM mirror sharing the `Store` trait — zero-I/O reads once warmed, `Eager`/`Background`/`Lazy` fill via `warm`/`warm_step`/`is_warmed`, WAL durability, TTL-checked reads, `refresh`/`check_stale` catch-up, fencing poisons until refresh |
 | [`store::StoreError::Fenced`] | Terminal fencing error — another owner acquired the epoch via `ownership.json` CAS |
@@ -348,7 +348,7 @@ the full validation pipeline.
 
 ## LSM Backend (feature `oxkv`, native + wasm)
 
-`OxKvStore` is an LSM tree over any [`Storage`](src/store/storage.rs) backend: in-memory `MemStorage` (native + wasm, including the browser `OxKvStore`), or S3-compatible storage (S3, GCS, Azure) and local FS via `object_store` with `oxkv-s3`. `Storage` requires `get`, `get_opts`, `put_opts`, `delete`, and `list` (a custom backend must implement all five). It shares the same `GetSet`/`Store`/`Transaction` traits as the other backends, so application code is portable. Snapshot bytes (`OXKV` magic `+` version + records) are identical across `BTreeStore` and `OxKvStore` on every target — `save`/`load` round-trip everywhere.
+`OxKvStore` is an LSM tree over any [`Storage`](src/store/storage.rs) backend: in-memory `MemStorage` (native + wasm, including the browser `OxKvStore`), or S3-compatible storage (S3, GCS, Azure) and local FS via the `oxkv-s3` crate. `Storage` requires `get`, `get_opts`, `put_opts`, `delete`, and `list` (a custom backend must implement all five). It shares the same `GetSet`/`Store`/`Transaction` traits as the other backends, so application code is portable. Snapshot bytes (`OXKV` magic `+` version + records) are identical across `BTreeStore` and `OxKvStore` on every target — `save`/`load` round-trip everywhere.
 
 ```rust
 # #[tokio::main(flavor = "current_thread")]
@@ -357,8 +357,8 @@ use std::sync::Arc;
 use oxkv::{GetSet, MemStorage, ObjectPath, OxKvStore, Storage, Store, Transaction};
 
 let store: Arc<dyn Storage> = Arc::new(MemStorage::new());
-// In prod replace MemStorage with an object_store backend (feature `oxkv-s3`):
-// `OxKvStore::builder().with_store(s3).with_prefix(...)`
+// In prod replace MemStorage with the `oxkv-s3` adapter:
+// `Arc::new(oxkv_s3::ObjectStoreStorage::new(s3))`
 let kv = OxKvStore::builder()
     .with_store(store)
     .with_prefix(ObjectPath::from("my-app/oxkv"))
@@ -374,6 +374,24 @@ let tx = kv.begin_tx().unwrap();
 tx.set_bytes("a", b"1").await.unwrap();
 tx.commit().await.unwrap();
 # }
+```
+
+For S3, GCS, Azure, or a local directory, wrap an `object_store` backend in
+the `oxkv-s3` adapter:
+
+```text
+use std::sync::Arc;
+use oxkv::Storage;
+use oxkv_s3::ObjectStoreStorage;
+
+let backend: Arc<dyn Storage> = Arc::new(ObjectStoreStorage::new(Arc::new(
+    object_store::memory::InMemory::new(),
+)));
+let kv = OxKvStore::builder()
+    .with_store(backend)
+    .with_prefix(ObjectPath::from("my-app/oxkv"))
+    .build()
+    .await?;
 ```
 
 What it does under the hood:
@@ -413,8 +431,8 @@ let kv = OxKvStore::builder()
 Enable it:
 
 ```console
-cargo add oxkv --features oxkv                  # portable LSM core
-cargo add oxkv --features oxkv,oxkv-s3         # + S3/GCS/Azure via object_store (native)
+cargo add oxkv --features oxkv   # portable LSM core
+cargo add oxkv-s3                # + S3/GCS/Azure/local via object_store (native)
 ```
 
 The snippets use `cargo add`, so no README change is needed for a release.
@@ -822,7 +840,7 @@ wasm-pack build --target web   # or nodejs, bundler, etc.
 - `src/store/lsm/manifest.rs` — `manifest.json` with `ETag` CAS and `ManifestCache`
 - `src/store/lsm/ownership.rs` — `ownership.json` epoch fencing
 - `src/store/lsm/probe.rs` — conditional-write probe (`If-None-Match` / `If-Match`)
-- `src/store/storage.rs` — `Storage` trait + `MemStorage` (in-memory, every target) + `object_store` impl (S3/memory/local, native `oxkv-s3`) + `OpfsStorage` (browser origin-private storage, wasm)
+- `src/store/storage.rs` — `Storage` trait + `MemStorage` (in-memory, every target) + `OpfsStorage` (browser origin-private storage, wasm); the S3/GCS/Azure/local adapter lives in `crates/oxkv-s3`
 - `src/store/cache.rs` — `Cache` trait + `LruCache` (scan-resistant `S3-FIFO`, `moka` optional)
 - `src/store/hooks.rs` — `Hooks` trait providing validation hooks and change notifications
 - `src/store/otel.rs` — `OtelStore` decorator emitting OpenTelemetry spans and metrics (feature `otel`)

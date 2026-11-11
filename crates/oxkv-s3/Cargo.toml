@@ -9,5 +9,14 @@ readme = "../../README.md"
 keywords = ["s3", "gcs", "azure", "keyvalue"]
 categories = ["database"]
 
+[dependencies]
+oxkv = { path = "../..", features = ["oxkv"] }
+async-trait = "0.1"
+futures = { version = "0.3", default-features = false, features = ["std"] }
+object_store = { version = "0.12", features = ["aws", "gcp", "azure"] }
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["test-util", "macros", "rt"] }
+
 [lints]
 workspace = true
