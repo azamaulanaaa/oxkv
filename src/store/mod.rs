@@ -32,7 +32,9 @@ pub use btree::{BTreeStore, BTreeTx};
 mod btree;
 mod cas;
 pub use cas::{Cas, CasResult};
-pub use hooks::{ChangeEvent, ChangeKind, HookState, Hooks, Observer, Scope, StoreView, Validator};
+pub use hooks::{
+    ChangeEvent, ChangeKind, HookState, Hooked, Hooks, Observer, Scope, StoreView, Validator,
+};
 mod hooks;
 pub mod testkit;
 pub use testkit::unique_prefix;
@@ -491,8 +493,11 @@ pub trait Transaction: GetSet {
 ///
 /// This trait extends [`GetSet`] with the ability to create a new transaction.
 /// All standalone (non-transactional) operations are immediately committed.
+///
+/// Hooks are separate from this trait. A backend may implement [`Hooks`]
+/// directly, or a caller may wrap any [`GetSet`] in [`Hooked`].
 #[async_trait]
-pub trait Store: GetSet + hooks::Hooks {
+pub trait Store: GetSet {
     /// The transaction type produced by [`begin_tx`][Self::begin_tx].
     ///
     /// Each concrete backend declares its own `Transaction` type here with the

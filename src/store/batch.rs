@@ -101,7 +101,7 @@ pub trait BatchExt: Store {
 }
 
 #[async_trait]
-impl<T: Store + ?Sized> BatchExt for T {
+impl<T: Store + Send + Sync + ?Sized> BatchExt for T {
     async fn get_many(&self, keys: &[&str]) -> Result<Vec<Option<Vec<u8>>>> {
         let mut values = Vec::with_capacity(keys.len());
         for key in keys {
@@ -237,7 +237,7 @@ mod tests {
         }
     }
 
-    async fn assert_get_many_preserves_order<S: Store + ?Sized>(store: &S) {
+    async fn assert_get_many_preserves_order<S: Store + Send + Sync + ?Sized>(store: &S) {
         store.set_bytes("a", b"1").await.unwrap();
         store.set_bytes("c", b"3").await.unwrap();
 
@@ -253,7 +253,7 @@ mod tests {
         );
     }
 
-    async fn assert_write_batch_applies_all_ops<S: Store + ?Sized>(store: &S) {
+    async fn assert_write_batch_applies_all_ops<S: Store + Send + Sync + ?Sized>(store: &S) {
         store.set_bytes("keep", b"old").await.unwrap();
         store.set_bytes("drop", b"old").await.unwrap();
 
@@ -281,7 +281,7 @@ mod tests {
         store.write_batch(&[]).await.unwrap();
     }
 
-    async fn assert_write_batch_is_atomic<S: Store + ?Sized>(store: &S) {
+    async fn assert_write_batch_is_atomic<S: Store + Send + Sync + ?Sized>(store: &S) {
         store.set_bytes("good", b"old").await.unwrap();
         store.set_bytes("bad", b"old").await.unwrap();
 
@@ -306,7 +306,7 @@ mod tests {
         assert_eq!(store.get_bytes("after").await.unwrap(), None);
     }
 
-    async fn assert_delete_prefix<S: Store + ?Sized>(store: &S) {
+    async fn assert_delete_prefix<S: Store + Send + Sync + ?Sized>(store: &S) {
         for key in ["a:1", "a:2", "a:b:1", "b:1"] {
             store.set_bytes(key, b"v").await.unwrap();
         }
@@ -356,7 +356,7 @@ mod tests {
     const REMAIN_AB: [&str; 5] = ["", "a", "a:", "a:b", "b"];
     const REMAIN_NONE: [&str; 0] = [];
 
-    async fn assert_delete_prefix_boundaries<S: Store + ?Sized>(store: &S) {
+    async fn assert_delete_prefix_boundaries<S: Store + Send + Sync + ?Sized>(store: &S) {
         let cases: [(&str, usize, &[&str]); 5] = [
             ("a", 4, &REMAIN_A),
             ("a:", 2, &REMAIN_A_COLON),

@@ -671,6 +671,186 @@ pub trait Hooks: Send + Sync {
     }
 }
 
+/// A decorator that adds [`Hooks`] to any [`GetSet`] backend.
+///
+/// The decorator validates a single-key write before the write reaches the
+/// backend. It sends the change event after the write succeeds. Reads and
+/// scans delegate to the backend.
+///
+/// The decorator does not implement [`Store`](super::Store). It does not wrap
+/// transactions. Transaction hooks stay on the backend.
+///
+/// # Example
+///
+/// ```rust
+/// use oxkv::{BTreeStore, GetSet, Hooked, Hooks, Scope, Validator};
+///
+/// struct RejectLocked(Scope);
+///
+/// #[async_trait::async_trait]
+/// impl Validator for RejectLocked {
+///     fn scope(&self) -> Scope {
+///         self.0.clone()
+///     }
+///
+///     async fn validate(&self, _ctx: &dyn oxkv::StoreView, key: &str, _value: &[u8])
+///         -> oxkv::Result<()>
+///     {
+///         Err(oxkv::StoreError::Rejected {
+///             key: key.to_string(),
+///             reason: "locked".to_string(),
+///         })
+///     }
+/// }
+///
+/// # #[tokio::main(flavor = "current_thread")] async fn main() {
+/// let store = Hooked::new(BTreeStore::default())
+///     .with_validator(RejectLocked(Scope::Exact("locked".to_string())));
+///
+/// assert!(store.set_bytes("locked", b"v").await.is_err());
+/// assert!(store.set_bytes("free", b"v").await.is_ok());
+/// # }
+/// ```
+#[derive(Default)]
+pub struct Hooked<S> {
+    inner: S,
+    state: HookState,
+}
+
+impl<S: std::fmt::Debug> std::fmt::Debug for Hooked<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Hooked")
+            .field("inner", &self.inner)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<S> Hooked<S> {
+    /// Wraps `inner` with empty hook state.
+    #[must_use]
+    pub fn new(inner: S) -> Self {
+        Self {
+            inner,
+            state: HookState::new(),
+        }
+    }
+
+    /// Returns the wrapped backend.
+    #[must_use]
+    pub fn inner(&self) -> &S {
+        &self.inner
+    }
+
+    /// Returns the wrapped backend, consuming the decorator.
+    #[must_use]
+    pub fn into_inner(self) -> S {
+        self.inner
+    }
+}
+
+impl<S: Clone> Clone for Hooked<S> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            state: self.state.clone(),
+        }
+    }
+}
+
+#[async_trait]
+impl<S: GetSet + Send + Sync> GetSet for Hooked<S> {
+    async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        self.inner.get_bytes(key).await
+    }
+
+    async fn has(&self, key: &str) -> Result<bool> {
+        self.inner.has(key).await
+    }
+
+    async fn delete(&self, key: &str) -> Result<bool> {
+        let old_value = self.inner.get_bytes(key).await?;
+        let deleted = self.inner.delete(key).await?;
+        if deleted {
+            let event = ChangeEvent {
+                key: key.to_string(),
+                kind: ChangeKind::Delete,
+                old_value,
+                new_value: None,
+                seq: 0,
+            };
+            notify(&self.state.subscribers(), &self.inner, event).await;
+        }
+        Ok(deleted)
+    }
+
+    async fn set_bytes(&self, key: &str, value: &[u8]) -> Result<Option<Vec<u8>>> {
+        let old_value = self.inner.get_bytes(key).await?;
+        validate_key(&self.state.validators(), &self.inner, key, value).await?;
+        let previous = self.inner.set_bytes(key, value).await?;
+        let event = ChangeEvent {
+            key: key.to_string(),
+            kind: ChangeKind::Set,
+            old_value,
+            new_value: Some(value.to_vec()),
+            seq: 0,
+        };
+        notify(&self.state.subscribers(), &self.inner, event).await;
+        Ok(previous)
+    }
+
+    async fn put_bytes(&self, key: &str, value: &[u8]) -> Result<()> {
+        let old_value = self.inner.get_bytes(key).await?;
+        validate_key(&self.state.validators(), &self.inner, key, value).await?;
+        self.inner.put_bytes(key, value).await?;
+        let event = ChangeEvent {
+            key: key.to_string(),
+            kind: ChangeKind::Set,
+            old_value,
+            new_value: Some(value.to_vec()),
+            seq: 0,
+        };
+        notify(&self.state.subscribers(), &self.inner, event).await;
+        Ok(())
+    }
+
+    async fn gets_bytes(
+        &self,
+        limit: Option<u32>,
+        direction: Direction,
+        cursor: (Option<String>, Option<String>),
+    ) -> Result<Vec<KeyValue>> {
+        self.inner.gets_bytes(limit, direction, cursor).await
+    }
+}
+
+impl<S: GetSet + Send + Sync> Hooks for Hooked<S> {
+    fn add_validator<V>(&self, validator: V)
+    where
+        V: Validator + 'static,
+    {
+        self.state.add_validator(validator);
+    }
+
+    fn add_observer<O>(&self, observer: O)
+    where
+        O: Observer + 'static,
+    {
+        self.state.add_observer(observer);
+    }
+
+    fn watch_scope(&self, scope: Scope) -> mpsc::Receiver<ChangeEvent> {
+        self.state.watch_scope(scope)
+    }
+
+    fn current_seq(&self) -> u64 {
+        self.state.current_seq()
+    }
+
+    fn events_since(&self, seq: u64) -> Option<Vec<ChangeEvent>> {
+        self.state.events_since(seq)
+    }
+}
+
 #[cfg(all(test, feature = "btree"))]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -1060,5 +1240,74 @@ mod tests {
         .unwrap();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].key, "doc:a");
+    }
+
+    #[tokio::test]
+    async fn test_hooked_rejects_a_write_before_it_lands() {
+        let s = Hooked::new(BTreeStore::default()).with_validator(Rejecting(Scope::All));
+
+        assert!(s.set_bytes("k", b"v").await.is_err());
+        assert_eq!(GetSet::get_bytes(&s, "k").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn test_hooked_notifies_a_watcher_after_set_and_delete() {
+        let s = Hooked::new(BTreeStore::default());
+        let mut rx = s.watch("k");
+
+        s.set_bytes("k", b"v").await.unwrap();
+        let event = rx.try_recv().unwrap();
+        assert_eq!(event.kind, ChangeKind::Set);
+        assert_eq!(event.old_value, None);
+        assert_eq!(event.new_value, Some(b"v".to_vec()));
+
+        s.delete("k").await.unwrap();
+        let event = rx.try_recv().unwrap();
+        assert_eq!(event.kind, ChangeKind::Delete);
+        assert_eq!(event.old_value, Some(b"v".to_vec()));
+        assert_eq!(event.new_value, None);
+    }
+
+    #[tokio::test]
+    async fn test_hooked_put_bytes_validates_and_notifies() {
+        let s = Hooked::new(BTreeStore::default()).with_validator(Rejecting(Scope::All));
+        assert!(s.put_bytes("bad", b"v").await.is_err());
+
+        let s = Hooked::new(BTreeStore::default());
+        let mut rx = s.watch_all();
+        s.put_bytes("k", b"v").await.unwrap();
+        assert_eq!(rx.try_recv().unwrap().new_value, Some(b"v".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn test_hooked_delegates_reads_and_scans() {
+        let s = Hooked::new(BTreeStore::default());
+        s.set_bytes("b", b"2").await.unwrap();
+        s.set_bytes("a", b"1").await.unwrap();
+
+        assert!(GetSet::has(&s, "a").await.unwrap());
+        assert_eq!(
+            GetSet::get_bytes(&s, "a").await.unwrap(),
+            Some(b"1".to_vec())
+        );
+        let keys = GetSet::gets_bytes(&s, None, Direction::Next, (None, None))
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|kv| kv.key)
+            .collect::<Vec<_>>();
+        assert_eq!(keys, ["a", "b"]);
+    }
+
+    #[tokio::test]
+    async fn test_hooked_observer_receives_the_event() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let s = Hooked::new(BTreeStore::default());
+        s.add_observer(Collector(Arc::clone(&log)));
+
+        s.set_bytes("user:1", b"v").await.unwrap();
+
+        assert_eq!(log.lock().unwrap().len(), 1);
+        assert_eq!(log.lock().unwrap()[0].key, "user:1");
     }
 }
