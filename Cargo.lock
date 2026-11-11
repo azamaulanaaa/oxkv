@@ -1207,6 +1207,7 @@ dependencies = [
  "futures",
  "js-sys",
  "oxkv",
+ "oxkv-query",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",

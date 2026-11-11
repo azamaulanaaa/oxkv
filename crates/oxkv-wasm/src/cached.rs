@@ -5,6 +5,7 @@
 use wasm_bindgen::prelude::*;
 
 use oxkv::{self as store, GetSet, GetSetExt, Store, StoreExt, Transaction, load_stream};
+use oxkv_query::QueryExt;
 
 use super::{Direction, json_compatible};
 
@@ -445,14 +446,14 @@ impl JsCachedOxKvStore {
         query: Option<String>,
     ) -> Result<Vec<js_sys::Object>, JsValue> {
         let store = self.inner.lock().await;
-        match store
-            .gets(
-                limit,
-                direction.into(),
-                (start_cursor, end_cursor),
-                query.as_deref(),
-            )
-            .await
+        match QueryExt::gets(
+            &*store,
+            limit,
+            direction.into(),
+            (start_cursor, end_cursor),
+            query.as_deref(),
+        )
+        .await
         {
             Ok(kvs) => kvs
                 .into_iter()
