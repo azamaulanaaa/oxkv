@@ -42,7 +42,6 @@ mod cache;
 mod lsm;
 mod scan;
 pub use scan::{KeyPrefix, Page, ScanExt};
-#[cfg(feature = "oxkv")]
 mod storage;
 #[cfg(feature = "oxkv")]
 pub use cache::{Cache, CacheStats, LruCache};
@@ -50,7 +49,6 @@ pub use cache::{Cache, CacheStats, LruCache};
 pub use lsm::{CachedOxKvStore, CachedTx, WarmMode};
 #[cfg(feature = "oxkv")]
 pub use lsm::{OxKvReader, OxKvRoTx, OxKvStore, OxKvStoreBuilder, OxKvTx, SstFile};
-#[cfg(feature = "oxkv")]
 pub use storage::{
     GetOptions, GetOutput, MemStorage, ObjectPath, ObjectVersion, PutMode, PutOutcome, Storage,
 };

@@ -10,7 +10,7 @@ keywords = ["opfs", "wasm", "keyvalue", "storage"]
 categories = ["wasm", "database"]
 
 [dependencies]
-oxkv = { path = "../.." }
+oxkv = { path = "../..", default-features = false }
 async-trait = "0.1"
 futures = { version = "0.3", default-features = false, features = ["std"] }
 sha2 = "0.10"
