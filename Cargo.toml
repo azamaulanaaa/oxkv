@@ -34,9 +34,6 @@ readme = "README.md"
 default = ["oxkv"]
 ## In-memory B-tree backend (pure Rust, test and bench baseline).
 btree = []
-## Write-through RAM mirror over [`OxKvStore`] (`CachedOxKvStore`).
-## It needs the B-tree backend for the mirror.
-cached = ["oxkv", "btree"]
 ## Enables [`OxKvStore`] — portable LSM over `Storage` (native + `wasm32`).
 ## Each `dep:` below is justified inline where the dependency is declared.
 oxkv = ["dep:crc32fast", "dep:sha2", "dep:async-lock", "dep:futures-timer"]
@@ -73,6 +70,7 @@ required-features = ["oxkv"]
 
 [dev-dependencies]
 mockall = "0.15"
+oxkv-cached = { path = "crates/oxkv-cached" }
 # Kept wasm-safe on purpose: `wasm-pack test --node` builds `--tests`, and
 # tokio hard-errors on wasm32 when any of fs/io-std/net/process/
 # rt-multi-thread/signal is enabled. The engine itself stays

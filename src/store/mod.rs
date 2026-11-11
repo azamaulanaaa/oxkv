@@ -48,8 +48,6 @@ pub use cache::{Cache, CacheStats, LruCache};
 #[cfg(feature = "oxkv")]
 #[doc(hidden)]
 pub use lsm::internals;
-#[cfg(feature = "cached")]
-pub use lsm::{CachedOxKvStore, CachedTx, WarmMode};
 #[cfg(feature = "oxkv")]
 pub use lsm::{OxKvReader, OxKvRoTx, OxKvStore, OxKvStoreBuilder, OxKvTx, SstFile};
 pub use storage::{

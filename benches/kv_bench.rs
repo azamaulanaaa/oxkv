@@ -849,12 +849,12 @@ mod oxkv_bench {
 // only. The mirror warms synchronously on every write. No extra warm step is
 // therefore needed. Writes share the durable path of `oxkv_mem` by construction.
 // ---------------------------------------------------------------------------
-#[cfg(feature = "cached")]
 #[allow(clippy::wildcard_imports)]
 mod cached_bench {
     use std::sync::Arc;
 
-    use oxkv::{CachedOxKvStore, MemStorage, ObjectPath};
+    use oxkv::{MemStorage, ObjectPath};
+    use oxkv_cached::{BuildCachedExt, CachedOxKvStore};
 
     use super::*;
 
@@ -961,7 +961,6 @@ fn benchmark(c: &mut Criterion) {
         #[cfg(feature = "oxkv")]
         oxkv_bench::random_get(&rt, c, n);
 
-        #[cfg(feature = "cached")]
         cached_bench::random_get(&rt, c, n);
     }
 
@@ -973,7 +972,6 @@ fn benchmark(c: &mut Criterion) {
         #[cfg(feature = "oxkv")]
         oxkv_bench::page_fetch(&rt, c, n);
 
-        #[cfg(feature = "cached")]
         cached_bench::page_fetch(&rt, c, n);
     }
 

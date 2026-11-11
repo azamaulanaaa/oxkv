@@ -1145,6 +1145,7 @@ dependencies = [
  "futures-timer",
  "mockall",
  "moka",
+ "oxkv-cached",
  "serde",
  "serde_json",
  "sha2",

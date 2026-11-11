@@ -16,7 +16,7 @@ use crate::store::{Result, StoreError};
 
 /// Decodes length-prefixed WAL records (`[u32 key len][key][u32 value len][value]`).
 ///
-/// A value length of [`TOMBSTONE_VLEN`] marks a tombstone (`None`). Decoding
+/// A value length of `TOMBSTONE_VLEN` marks a tombstone (`None`). Decoding
 /// stops at the first truncated tail. A partially written file therefore
 /// decodes without an error.
 #[must_use]
