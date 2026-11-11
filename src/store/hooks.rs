@@ -212,77 +212,6 @@ pub trait StoreView: Send + Sync {
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>>;
 
-    /// Retrieves JSON documents with cursor-based pagination. A query string
-    /// can filter the documents.
-    ///
-    /// This method mirrors [`super::GetSetExt::gets`]. It runs the query engine
-    /// against the committed-or-staged state visible through this view.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`StoreError`](super::StoreError) if the query is invalid or
-    /// retrieval fails.
-    async fn gets(
-        &self,
-        limit: Option<u32>,
-        direction: Direction,
-        cursor: (Option<String>, Option<String>),
-        query: Option<&str>,
-    ) -> Result<Vec<KeyValue>> {
-        const BATCH_SIZE: u32 = 256;
-
-        let Some(query) = query else {
-            return self.gets_bytes(limit, direction, cursor).await;
-        };
-
-        let max_results = limit.map_or(usize::MAX, |l| usize::try_from(l).unwrap_or(usize::MAX));
-        if max_results == 0 {
-            return Ok(Vec::new());
-        }
-        let ast = crate::query::parse(query).map_err(super::StoreError::Other)?;
-        let mut results = Vec::new();
-        let mut page_cursor: Option<String> = cursor.0.clone();
-
-        loop {
-            let batch = self
-                .gets_bytes(
-                    Some(BATCH_SIZE),
-                    direction,
-                    (page_cursor.clone(), cursor.1.clone()),
-                )
-                .await?;
-
-            if batch.is_empty() {
-                break;
-            }
-
-            let last_key = batch.last().map(|kv| kv.key.clone());
-            let is_last_batch = batch.len() < BATCH_SIZE as usize;
-
-            for kv in batch {
-                if page_cursor.as_deref() == Some(kv.key.as_str()) {
-                    continue;
-                }
-
-                let matches = serde_json::from_slice::<serde_json::Value>(&kv.value)
-                    .is_ok_and(|value| crate::query::eval(&ast, &value));
-                if matches {
-                    results.push(kv);
-                    if results.len() >= max_results {
-                        break;
-                    }
-                }
-            }
-
-            if is_last_batch || results.len() >= max_results {
-                break;
-            }
-            page_cursor = last_key;
-        }
-
-        Ok(results)
-    }
-
     /// Streams the store's serialized form as byte chunks.
     ///
     /// This method mirrors [`super::StoreExt::save_stream`]. It lets a hook export a
@@ -1223,30 +1152,6 @@ mod tests {
         let event = rx.try_recv().unwrap();
         assert_eq!(event.kind, ChangeKind::Delete);
         assert!(rx.try_recv().unwrap_err().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_hook_store_supports_the_get_set_extension() {
-        use crate::store::{Direction, GetSetExt};
-
-        let s = store().with_validator(RequireJson(Scope::Prefix(String::from("doc:"))));
-
-        s.set("doc:a", &serde_json::json!({ "lang": "rust", "stars": 10 }))
-            .await
-            .unwrap();
-        assert!(s.set_bytes("doc:b", b"not json").await.is_err());
-
-        let matches = GetSetExt::gets(
-            &s,
-            None,
-            Direction::Next,
-            (None, None),
-            Some("lang:rust AND stars:[5 TO 50]"),
-        )
-        .await
-        .unwrap();
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].key, "doc:a");
     }
 
     #[tokio::test]

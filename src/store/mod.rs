@@ -22,8 +22,6 @@ use async_trait::async_trait;
 use futures::stream::{self, Stream, StreamExt};
 use thiserror::Error;
 
-use crate::query::{eval as eval_json_query, parse as parse_query};
-
 mod batch;
 pub use batch::{BatchExt, BatchOp};
 #[cfg(feature = "btree")]
@@ -968,92 +966,6 @@ pub trait GetSetExt: GetSet {
             None => Ok(None),
         }
     }
-
-    /// Retrieves JSON documents with cursor-based pagination. A query string
-    /// can filter the documents.
-    ///
-    /// This method mirrors [`GetSet::gets_bytes`]. The `limit`, `direction`,
-    /// and `cursor` parameters carry identical semantics. When `query` is
-    /// `None`, this method passes through directly to
-    /// [`gets_bytes`][GetSet::gets_bytes].
-    ///
-    /// When a query is provided (Lucene-style syntax parsed by
-    /// [`crate::parse`]), the method scans entries in the requested order. An
-    /// entry matches if its stored bytes deserialize as a `serde_json::Value`
-    /// that satisfies the query. The method skips entries whose values are not
-    /// valid JSON. Here `limit` caps the number of *matching* entries returned.
-    /// Scanning continues across batches until the limit is reached or the
-    /// range is exhausted.
-    ///
-    /// Matching is evaluated with [`crate::eval`]. See the `query` module
-    /// documentation for the full matching semantics.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`StoreError`] if the query is invalid or retrieval fails.
-    async fn gets(
-        &self,
-        limit: Option<u32>,
-        direction: Direction,
-        cursor: (Option<String>, Option<String>),
-        query: Option<&str>,
-    ) -> Result<Vec<KeyValue>> {
-        const BATCH_SIZE: u32 = 256;
-
-        let Some(query) = query else {
-            return self.gets_bytes(limit, direction, cursor).await;
-        };
-
-        let max_results = limit.map_or(usize::MAX, |l| usize::try_from(l).unwrap_or(usize::MAX));
-        // Checked before the scan. The loop below tests the limit *after* each
-        // push. So `Some(0)` would otherwise return one row.
-        if max_results == 0 {
-            return Ok(Vec::new());
-        }
-        let ast = parse_query(query).map_err(StoreError::Other)?;
-        let mut results = Vec::new();
-        let mut page_cursor: Option<String> = cursor.0.clone();
-
-        loop {
-            let batch = self
-                .gets_bytes(
-                    Some(BATCH_SIZE),
-                    direction,
-                    (page_cursor.clone(), cursor.1.clone()),
-                )
-                .await?;
-
-            if batch.is_empty() {
-                break;
-            }
-
-            let last_key = batch.last().map(|kv| kv.key.clone());
-            let is_last_batch = batch.len() < BATCH_SIZE as usize;
-
-            for kv in batch {
-                // Skip duplicate processing when the cursor bound is inclusive
-                if page_cursor.as_deref() == Some(kv.key.as_str()) {
-                    continue;
-                }
-
-                let matches = serde_json::from_slice::<serde_json::Value>(&kv.value)
-                    .is_ok_and(|value| eval_json_query(&ast, &value));
-                if matches {
-                    results.push(kv);
-                    if results.len() >= max_results {
-                        break;
-                    }
-                }
-            }
-
-            if is_last_batch || results.len() >= max_results {
-                break;
-            }
-            page_cursor = last_key;
-        }
-
-        Ok(results)
-    }
 }
 
 impl<T: GetSet> GetSetExt for T {}
@@ -1061,75 +973,11 @@ impl<T: GetSet> GetSetExt for T {}
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::{Direction, ErrorKind, GetSet, GetSetExt, StoreError};
+    use super::{ErrorKind, StoreError};
     #[cfg(feature = "btree")]
-    use super::{SNAPSHOT_HEADER_LEN, StoreExt, load_stream};
+    use super::{GetSet, SNAPSHOT_HEADER_LEN, StoreExt, load_stream};
     #[cfg(feature = "btree")]
     use futures::stream;
-
-    /// `limit = 0` means zero rows. Regression: the loop tested the limit
-    /// *after* each push, so `Some(0)` returned one row. This method is a
-    /// `GetSet` default method, so every backend was affected.
-    async fn assert_limit_semantics<T: GetSet + Sync>(store: &T, name: &str) {
-        let rows = |limit| async move {
-            store
-                .gets(Some(limit), Direction::Next, (None, None), Some("n:1"))
-                .await
-                .unwrap()
-        };
-        assert_eq!(
-            rows(0).await.len(),
-            0,
-            "{name}: gets(limit=0) returned rows"
-        );
-        assert_eq!(rows(1).await.len(), 1, "{name}: gets(limit=1)");
-        assert_eq!(rows(2).await.len(), 2, "{name}: gets(limit=2)");
-    }
-
-    #[cfg(feature = "btree")]
-    #[tokio::test]
-    async fn query_gets_limit_zero_returns_nothing_on_btree() {
-        let s = crate::store::BTreeStore::default();
-        for k in ["a", "b", "c"] {
-            s.set_bytes(k, br#"{"n":1}"#).await.unwrap();
-        }
-        assert_limit_semantics(&s, "btree").await;
-        // The pass-through path (no query) must agree.
-        assert!(
-            s.gets(Some(0), Direction::Next, (None, None), None)
-                .await
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[cfg(feature = "oxkv")]
-    #[tokio::test]
-    async fn query_gets_limit_zero_returns_nothing_on_oxkv() {
-        let s = crate::store::OxKvStore::builder()
-            .with_store(crate::store::lsm::new_in_memory())
-            .skip_probe(true)
-            .build()
-            .await
-            .unwrap();
-        for k in ["a", "b", "c"] {
-            s.set_bytes(k, br#"{"n":1}"#).await.unwrap();
-        }
-        assert_limit_semantics(&s, "oxkv").await;
-        // The pass-through path (no query) must agree with `gets_bytes`.
-        assert!(
-            s.gets(Some(0), Direction::Next, (None, None), None)
-                .await
-                .unwrap()
-                .is_empty()
-        );
-        assert!(
-            s.gets_bytes(Some(0), Direction::Next, (None, None))
-                .await
-                .unwrap()
-                .is_empty()
-        );
-    }
 
     /// One table covers every `StoreError` variant. Each row checks the kind,
     /// the retry answer, and the delay hint. A new variant must add a row.

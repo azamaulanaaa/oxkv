@@ -1210,7 +1210,10 @@ mod tests {
 mod store_tests {
     use std::sync::Arc;
 
-    use oxkv::{BTreeStore, Direction, GetSet, MemStorage, OxKvStore, Storage, StoreView};
+    use oxkv::{
+        BTreeStore, Direction, GetSet, GetSetExt, Hooks, MemStorage, OxKvStore, Scope, Storage,
+        StoreView, Validator,
+    };
 
     use super::{QueryExt, QueryViewExt};
 
@@ -1270,6 +1273,48 @@ mod store_tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    struct RequireJson(Scope);
+
+    #[async_trait::async_trait]
+    impl Validator for RequireJson {
+        fn scope(&self) -> Scope {
+            self.0.clone()
+        }
+
+        async fn validate(
+            &self,
+            _ctx: &dyn StoreView,
+            key: &str,
+            value: &[u8],
+        ) -> oxkv::Result<()> {
+            serde_json::from_slice::<serde_json::Value>(value)
+                .map(|_| ())
+                .map_err(|e| format!("key `{key}` requires JSON: {e}").into())
+        }
+    }
+
+    #[tokio::test]
+    async fn query_gets_respects_a_validator() {
+        let s = BTreeStore::default().with_validator(RequireJson(Scope::Prefix("doc:".into())));
+
+        s.set("doc:a", &serde_json::json!({ "lang": "rust", "stars": 10 }))
+            .await
+            .unwrap();
+        assert!(s.set_bytes("doc:b", b"not json").await.is_err());
+
+        let matches = QueryExt::gets(
+            &s,
+            None,
+            Direction::Next,
+            (None, None),
+            Some("lang:rust AND stars:[5 TO 50]"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].key, "doc:a");
     }
 
     #[tokio::test]

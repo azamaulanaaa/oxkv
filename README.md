@@ -103,13 +103,11 @@ Any store can scan its entries and return only the JSON documents that match a
 query string, using `gets`. It mirrors `gets_bytes`: same `limit`, `direction`
 and cursor semantics — when no query is passed it is a plain pass-through.
 
-```rust,no_run
-# #[cfg(feature = "btree")]
-# mod btree_example {
-# #[tokio::main(flavor = "current_thread")]
-# async fn main() {
-#     let store = oxkv::BTreeStore::default();
-use oxkv::{Direction, GetSetExt};
+```text
+use oxkv::{BTreeStore, Direction};
+use oxkv_query::QueryExt;
+
+let store = BTreeStore::default();
 
 // Find users aged 30-40 tagged "rust", newest keys last, max 10 results
 let matches = store
@@ -125,8 +123,6 @@ let matches = store
 for kv in &matches {
     println!("{} -> {}", kv.key, String::from_utf8_lossy(&kv.value));
 }
-# }
-# }
 ```
 
 ### How Matching Works
@@ -136,8 +132,8 @@ and quoted phrases behave identically whether unscoped or field-scoped:
 unscoped terms search every leaf in the document; `field:` paths descend into
 objects (`address.city`) and fan out across arrays (`tags`).
 
-```rust
-use oxkv::{eval, parse};
+```text
+use oxkv_query::{eval, parse};
 use serde_json::json;
 
 fn matches(doc: &serde_json::Value, query: &str) -> bool {

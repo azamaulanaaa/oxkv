@@ -48,12 +48,8 @@ futures-timer = { version = "3", optional = true }
 crc32fast = { version = "1", optional = true }
 sha2 = { version = "0.10", optional = true }
 futures = { version = "0.3", default-features = false, features = ["std"] }
-pest = "2.9.0"
-pest_derive = "2.9.0"
-regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-strsim = "0.11"
 thiserror = "2"
 
 # Native-only deps (not wasm32) — gated here so `cargo check --target wasm32
