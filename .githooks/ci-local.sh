@@ -85,12 +85,14 @@ job_wasm() {
   require_tool wasm node "mise install"
   require_wasm_target wasm
 
-  # OPFS, cache, and LSM wasm tests live in the core crate. Dependency tests
-  # do not run under the binding crate, so run both crates.
+  # The core covers its cache and LSM wasm tests. The OPFS crate covers
+  # browser storage. The binding crate covers the JavaScript wrappers. Node
+  # has no window, so the OPFS tests announce a skip here.
   wasm-pack test --node
+  (cd crates/oxkv-opfs && wasm-pack test --node)
   (cd crates/oxkv-wasm && wasm-pack test --node)
-  cargo check -p oxkv -p oxkv-wasm --target wasm32-unknown-unknown --all-features
-  cargo clippy -p oxkv -p oxkv-wasm --target wasm32-unknown-unknown --all-features -- -D warnings
+  cargo check -p oxkv -p oxkv-opfs -p oxkv-wasm --target wasm32-unknown-unknown --all-features
+  cargo clippy -p oxkv -p oxkv-opfs -p oxkv-wasm --target wasm32-unknown-unknown --all-features -- -D warnings
 }
 
 job_deps() {
@@ -119,8 +121,11 @@ job_wasm_browser() {
     skip wasm-browser "missing Chrome/Chromium. Install it with: apt-get install chromium"
   fi
 
-  # The core holds the browser OPFS persistence test.
+  # The core covers its cache and LSM wasm tests.
   wasm-pack test --headless --chrome
+  # The OPFS crate proves browser persistence and Web Locks.
+  (cd crates/oxkv-opfs && wasm-pack test --headless --chrome)
+  # The binding crate covers the JavaScript wrappers.
   (cd crates/oxkv-wasm && wasm-pack test --headless --chrome)
 }
 
