@@ -5,7 +5,9 @@ covers the in-memory B-tree backend and the durable LSM backend. Each claim
 names the source file and function that implements it.
 
 The crate version is 0.10.0. The contracts below describe this branch only.
-They do not describe requested features that are absent from this branch.
+They do not describe requested features that are absent from this branch. The
+Lucene-style query engine lives in the `oxkv-query` crate at
+`crates/oxkv-query`.
 
 ## Terms
 
@@ -244,7 +246,7 @@ The caller must keep its own cursor. A page does not carry the next cursor.
 The usual pattern is to pass the last returned key as the next `start` and
 skip the first row of the next page, because the bound is inclusive. The
 streaming save path uses this pattern. See `src/store/mod.rs`, `SaveStream`
-and `GetSetExt::gets`.
+and `crates/oxkv-query/src/lib.rs`, `QueryExt::gets`.
 
 ```text
 let mut start = Some(prefix_start)

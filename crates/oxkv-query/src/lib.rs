@@ -27,6 +27,29 @@
 //! assert_eq!(rows.len(), 1);
 //! # }
 //! ```
+//!
+//! # Matching one document
+//!
+//! ```rust
+//! use oxkv_query::{eval, parse};
+//! use serde_json::json;
+//!
+//! let doc = json!({
+//!     "bio": "i am born on 2000",
+//!     "lang": "rust",
+//!     "age": 30,
+//!     "tags": ["systems", "kv"],
+//!     "address": { "city": "Berlin" }
+//! });
+//!
+//! assert!(eval(&parse("born").unwrap(), &doc));
+//! assert!(eval(&parse("boren").unwrap(), &doc));
+//! assert!(eval(&parse("bio:born").unwrap(), &doc));
+//! assert!(eval(&parse("systms").unwrap(), &doc));
+//! assert!(eval(&parse("\"am born on\"").unwrap(), &doc));
+//! assert!(eval(&parse("address.city:\"berlin\"").unwrap(), &doc));
+//! assert!(eval(&parse("age:30").unwrap(), &doc));
+//! ```
 
 use async_trait::async_trait;
 use oxkv::{Direction, GetSet, KeyValue, Result, StoreError, StoreView};

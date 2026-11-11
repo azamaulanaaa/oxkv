@@ -1,13 +1,13 @@
 
 # oxkv
 
-A transactional key-value store library written in Rust, with optional WebAssembly bindings for JavaScript interop. Features cursor-based pagination, a Lucene-style query engine that matches stored JSON documents, JSON serialization via `serde_json`, streaming snapshot export/import, optional OpenTelemetry instrumentation, and strict linting. All operations are `async` and take `&self`, and every store is `Send + Sync`, so one store can be shared across threads via `Arc` — the WASM bindings wrap the same backends for JavaScript.
+A transactional key-value store library written in Rust, with optional WebAssembly bindings for JavaScript interop. Features cursor-based pagination, a Lucene-style query engine that matches stored JSON documents, JSON serialization via `serde_json`, streaming snapshot export/import, optional OpenTelemetry instrumentation, and strict linting. The query engine lives in `oxkv-query`. The WASM bindings live in `oxkv-wasm`. All operations are `async` and take `&self`, and every store is `Send + Sync`, so one store can be shared across threads via `Arc`.
 
 ## Features
 
 - **Transaction support** — atomic commit/rollback batches of CRUD operations
 - **Cursor-based pagination** — bidirectional traversal (`Next` / `Prev`) with inclusive range cursors and limit control
-- **Lucene-style query engine** — filter stored JSON documents with a query language supporting field paths, ranges, wildcards, regex, fuzzy matching, and boolean operators
+- **Lucene-style query engine** — the `oxkv-query` crate filters stored JSON documents with a query language supporting field paths, ranges, wildcards, regex, fuzzy matching, and boolean operators
 - **JSON serialization** — extension methods for inserting and retrieving `serde_json::Value` types via JSON, stored as raw bytes
 - **WASM bindings** — thread-safe wrappers in `crates/oxkv-wasm/` expose `BTreeStore`, `OxKvStore`, and `CachedOxKvStore` to JavaScript as async promises (`oxkv-otel` is native-only, the OXKV snapshot is portable across all)
 - **Extensible backends** — the crate defines three traits (`GetSet`, `Transaction`, `Store`) that any backend can implement; ships with an in-memory B-tree backend (`btree`, test and bench baseline + WASM baseline) and an LSM backend (`oxkv`, native + wasm) generic over `Storage` + `Cache` (S3/GCS/Azure via the `oxkv-s3` crate)
@@ -39,7 +39,9 @@ The default feature is `oxkv`. The other surfaces are opt-in:
 | [`store::GetSet`] | Basic key-value operations: `get_bytes`, `set_bytes`, `put_bytes` (blind write, no previous-value read), `delete`, `has` (paginated via `gets_bytes`) |
 | [`store::Transaction`] | Extends `GetSet` with `commit` and `rollback` for atomic batches |
 | [`store::Store`] | Extends `GetSet` with `begin_tx` — starts a write transaction |
-| [`store::GetSetExt`] | Convenience methods: `set`, `get` (JSON-serialized) and `gets` (paginated JSON retrieval with optional query filtering) |
+| [`store::GetSetExt`] | Convenience methods: `set` and `get` (JSON-serialized) |
+| `oxkv_query::QueryExt` | Adds `gets` (paginated JSON retrieval with optional query filtering) to every `GetSet` backend |
+| `oxkv_query::QueryViewExt` | Adds the same `gets` method to every read-only `StoreView` |
 | [`store::Cas`] / [`store::CasResult`] | Atomic single-key conditional writes: `set_if_absent`, `compare_and_set`, and `delete_if`; `CasResult` reports `Applied` or `Conflict { current }` |
 | [`store::KeyPrefix`] / [`store::Page`] / [`store::ScanExt`] | Prefix-bounded scans that return one page at a time: `scan_keys`, `scan` (values optional), and `count_prefix`; `Page::next` carries the cursor |
 | [`store::BatchExt`] / [`store::BatchOp`] | Batch helpers: `get_many`, `write_batch` (one transaction), and `delete_prefix` (bounded chunks); `BatchOp::set` and `BatchOp::delete` build operations |
@@ -100,8 +102,9 @@ async fn main() {
 ## Querying Stored Documents
 
 Any store can scan its entries and return only the JSON documents that match a
-query string, using `gets`. It mirrors `gets_bytes`: same `limit`, `direction`
-and cursor semantics — when no query is passed it is a plain pass-through.
+query string, using `gets` from the `oxkv-query` crate. It mirrors
+`gets_bytes`: same `limit`, `direction` and cursor semantics — when no query is
+passed it is a plain pass-through.
 
 ```text
 use oxkv::{BTreeStore, Direction};
@@ -453,6 +456,7 @@ Enable it:
 
 ```console
 cargo add oxkv --features oxkv   # portable LSM core
+cargo add oxkv-query             # + Lucene-style JSON queries
 cargo add oxkv-s3                # + S3/GCS/Azure/local via object_store (native)
 ```
 
@@ -756,15 +760,16 @@ cargo bench --features cached --bench kv_bench random_get/cached_mem/1000/get  #
 The `kv_bench` target needs `btree` and `oxkv`. The `cached_mem` groups need
 `cached`. The `cache_bench` target needs `oxkv`.
 
-Query-engine benchmarks live in [`benches/query_bench.rs`](benches/query_bench.rs)
+Query-engine benchmarks live in
+[`crates/oxkv-query/benches/query_bench.rs`](crates/oxkv-query/benches/query_bench.rs)
 and measure the Lucene-style parser and matcher in isolation — no backend
 store involved:
 
 ```bash
-cargo bench --bench query_bench                      # all query benches
-cargo bench --bench query_bench query_parse          # parsing only, per feature
-cargo bench --bench query_bench query_match/1000docs # matching a 1k-doc corpus
-cargo bench --bench query_bench query_match/regex    # one query kind, both corpora
+cargo bench -p oxkv-query --bench query_bench                      # all query benches
+cargo bench -p oxkv-query --bench query_bench query_parse          # parsing only, per feature
+cargo bench -p oxkv-query --bench query_bench query_match/1000docs # matching a 1k-doc corpus
+cargo bench -p oxkv-query --bench query_bench query_match/regex    # one query kind, both corpora
 ```
 
 `query_parse/{kind}` parses one representative query string per engine
@@ -853,6 +858,7 @@ wasm-pack build crates/oxkv-wasm --target web --out-name oxkv   # or nodejs, bun
 - `crates/oxkv-wasm/` — manual wasm-bindgen wrappers (`lib` + `btree` + `oxkv` + `cached`) for `BTreeStore` + `OxKvStore` + `CachedOxKvStore` (thread-safe JS-facing types; OXKV snapshot portable across all backends)
 - `crates/oxkv-otel/` — `OtelStore` decorator emitting OpenTelemetry spans and metrics
 - `crates/oxkv-s3/` — `ObjectStoreStorage` adapter for S3, GCS, Azure, and local files
+- `crates/oxkv-query/` — Lucene-style parser, JSON matcher, `QueryExt`, and `QueryViewExt`
 - `src/store/mod.rs` — core traits (`GetSet`, `Transaction`, `Store`, `GetSetExt`, `StoreExt`), error types (`StoreError::Fenced`, `StoreError::CasConflict`, `StoreError::NotModified`), and the `lock_ignore_poison` policy helper
 - `src/store/btree.rs` — in-memory B-tree backend (`btree`, test/bench + WASM baseline)
 - `src/store/lsm/mod.rs` — LSM facade (`oxkv`, native + wasm): re-exports `OxKvStore`/`OxKvTx`/`OxKvReader`/`CachedOxKvStore`/`CachedTx`/`WarmMode`/`SstFile`, shared `MemTable` types + WAL/GC tuning constants
@@ -871,8 +877,6 @@ wasm-pack build crates/oxkv-wasm --target web --out-name oxkv   # or nodejs, bun
 - `src/store/storage.rs` — `Storage` trait + `MemStorage` (in-memory, every target) + `OpfsStorage` (browser origin-private storage, wasm); the S3/GCS/Azure/local adapter lives in `crates/oxkv-s3`
 - `src/store/cache.rs` — `Cache` trait + `LruCache` (scan-resistant `S3-FIFO`, `moka` optional)
 - `src/store/hooks.rs` — `Hooks` trait, the `Hooked` decorator for any `GetSet` backend, and change notifications
-- `src/query/mod.rs` — query AST types and the pest-based parser (`query/query.pest` grammar)
-- `src/query/json.rs` — compiled-query matcher evaluating queries against `serde_json::Value` documents
 
 ## License
 
