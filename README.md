@@ -27,6 +27,9 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 | [`store::Transaction`] | Extends `GetSet` with `commit` and `rollback` for atomic batches |
 | [`store::Store`] | Extends `GetSet` with `begin_tx` — starts a write transaction |
 | [`store::GetSetExt`] | Convenience methods: `set`, `get` (JSON-serialized) and `gets` (paginated JSON retrieval with optional query filtering) |
+| [`store::Cas`] / [`store::CasResult`] | Atomic single-key conditional writes: `set_if_absent`, `compare_and_set`, and `delete_if`; `CasResult` reports `Applied` or `Conflict { current }` |
+| [`store::KeyPrefix`] / [`store::Page`] / [`store::ScanExt`] | Prefix-bounded scans that return one page at a time: `scan_keys`, `scan` (values optional), and `count_prefix`; `Page::next` carries the cursor |
+| [`store::BatchExt`] / [`store::BatchOp`] | Batch helpers: `get_many`, `write_batch` (one transaction), and `delete_prefix` (bounded chunks); `BatchOp::set` and `BatchOp::delete` build operations |
 | [`store::StoreExt`] | Save/Load the entire store contents as binary; `save_stream`/`load_stream` stream it as byte chunks |
 | [`store::Validator`] | Validates writes before they are stored (attach per key, prefix, or globally) |
 | [`store::Observer`] | Receives change notifications after they become durable |
@@ -38,6 +41,9 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 | [`store::StoreError::Fenced`] | Terminal fencing error — another owner acquired the epoch via `ownership.json` CAS |
 | [`store::StoreError::CasConflict`] | Conditional-write precondition failed — someone else won the CAS race; retryable unless fencing says otherwise |
 | [`store::ErrorKind`] | Coarse class from `StoreError::kind` — `Conflict` and `Transient` are retryable; `Fenced`, `Rejected`, `InvalidInput`, and `Other` are not; `retry_after` returns `None` today |
+
+See [docs/contracts.md](docs/contracts.md) for the transaction, durability,
+scan, fencing, S3, error, and memory contracts.
 
 ## Quick Start
 
