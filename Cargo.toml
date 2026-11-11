@@ -3,6 +3,7 @@ members = [
   "crates/oxkv-wasm",
   "crates/oxkv-otel",
   "crates/oxkv-s3",
+  "crates/oxkv-query",
 ]
 resolver = "3"
 

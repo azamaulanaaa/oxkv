@@ -1,0 +1,26 @@
+[package]
+name = "oxkv-query"
+version = "0.10.0"
+edition = "2024"
+description = "Lucene-style query engine for the oxkv key-value store."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/azamaulanaaa/oxkv"
+readme = "../../README.md"
+keywords = ["lucene", "query", "keyvalue", "json"]
+categories = ["database"]
+
+[dependencies]
+oxkv = { path = "../.." }
+async-trait = "0.1"
+pest = "2.9.0"
+pest_derive = "2.9.0"
+regex = "1"
+serde_json = "1"
+strsim = "0.11"
+
+[dev-dependencies]
+oxkv = { path = "../..", features = ["btree"] }
+tokio = { version = "1.53.1", features = ["test-util", "macros", "rt"] }
+
+[lints]
+workspace = true
