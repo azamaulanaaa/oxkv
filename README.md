@@ -27,10 +27,10 @@ The default feature is `oxkv`. The other surfaces are opt-in:
 | --- | --- |
 | `oxkv` | LSM engine over any `Storage` backend (default) |
 | `btree` | In-memory B-tree backend |
-| `cached` | `CachedOxKvStore` RAM mirror. It enables `oxkv` and `btree` |
 | `moka` | `moka` SST cache backend (native-only) |
 
-`oxkv-wasm`, `oxkv-otel`, and `oxkv-s3` are separate workspace crates.
+`oxkv-cached`, `oxkv-wasm`, `oxkv-query`, `oxkv-opfs`, `oxkv-otel`, and
+`oxkv-s3` are separate workspace crates.
 
 ## Core Traits
 
@@ -52,7 +52,7 @@ The default feature is `oxkv`. The other surfaces are opt-in:
 | `oxkv_otel::OtelStore` | Separate crate adding OpenTelemetry traces and metrics to any store |
 | [`store::OxKvStore`] / [`store::OxKvStoreBuilder`] / [`store::OxKvTx`] | Feature-gated (`oxkv`, native + wasm) LSM generic over `Storage` + `Cache` (in-memory `MemStorage`; S3 via the `oxkv-s3` crate); single-writer epoch fencing, WAL + SST + blob overflow |
 | [`store::OxKvReader`] / [`store::OxKvRoTx`] | Feature-gated (`oxkv`, native + wasm) read-only follower sharing the `Store` trait — opens without epoch CAS, follows writer WALs, writes rejected, empty-tx commit is a no-op |
-| [`store::CachedOxKvStore`] / [`store::CachedTx`] / [`store::WarmMode`] | Feature-gated (`cached`, native + wasm) write-through RAM mirror sharing the `Store` trait — zero-I/O reads once warmed, `Eager`/`Background`/`Lazy` fill via `warm`/`warm_step`/`is_warmed`, WAL durability, TTL-checked reads, `refresh`/`check_stale` catch-up, fencing poisons until refresh |
+| `oxkv_cached::CachedOxKvStore` / `CachedTx` / `WarmMode` | Separate crate adding the write-through RAM mirror — zero-I/O reads once warmed, `Eager`/`Background`/`Lazy` fill via `warm`/`warm_step`/`is_warmed`, WAL durability, TTL-checked reads, `refresh`/`check_stale` catch-up, fencing poisons until refresh |
 | [`store::StoreError::Fenced`] | Terminal fencing error — another owner acquired the epoch via `ownership.json` CAS |
 | [`store::StoreError::CasConflict`] | Conditional-write precondition failed — someone else won the CAS race; retryable unless fencing says otherwise |
 | [`store::ErrorKind`] | Coarse class from `StoreError::kind` — `Conflict` and `Transient` are retryable; `Fenced`, `Rejected`, `InvalidInput`, and `Other` are not; `retry_after` returns `None` today |
@@ -459,6 +459,7 @@ cargo add oxkv --features oxkv   # portable LSM core
 cargo add oxkv-query             # + Lucene-style JSON queries
 cargo add oxkv-s3                # + S3/GCS/Azure/local via object_store (native)
 cargo add oxkv-opfs              # + browser OPFS storage (wasm)
+cargo add oxkv-cached            # + write-through RAM mirror
 ```
 
 The snippets use `cargo add`, so no README change is needed for a release.
@@ -581,13 +582,10 @@ arrive first and untouched keys cost no RAM. Until warmed, point reads fall
 through to the core with fill and scans delegate wholly, so unwarmed
 handles stay correct; `is_warmed` reports convergence.
 
-```rust
-# #[cfg(feature = "cached")]
-# mod cached_example {
-# #[tokio::main(flavor = "current_thread")]
-# async fn main() {
+```text
 use std::sync::Arc;
 use oxkv::{GetSet, MemStorage, ObjectPath, OxKvStore};
+use oxkv_cached::BuildCachedExt;
 
 let cached = OxKvStore::builder()
     .with_store(Arc::new(MemStorage::new()))
@@ -602,8 +600,6 @@ assert_eq!(
     Some(b"world".as_slice())
 );
 assert!(!cached.check_stale().await.unwrap());
-# }
-# }
 ```
 
 ## WASM Bindings
@@ -759,11 +755,11 @@ cover `btree_mem`, `oxkv_mem` (LSM over in-memory `MemStorage` with `skip_probe(
 cargo bench --features btree,oxkv --bench kv_bench     # btree + LSM groups (tuned to minutes)
 cargo bench --features btree,oxkv --bench kv_bench 1000  # quick sweep of the 1k groups
 cargo bench --features btree,oxkv --bench kv_bench point_update  # just the changes matrix
-cargo bench --features cached --bench kv_bench random_get/cached_mem/1000/get  # one cached cell
+cargo bench --features btree,oxkv --bench kv_bench random_get/cached_mem/1000/get  # one cached cell
 ```
 
-The `kv_bench` target needs `btree` and `oxkv`. The `cached_mem` groups need
-`cached`. The `cache_bench` target needs `oxkv`.
+The `kv_bench` target needs `btree` and `oxkv`. The `cached_mem` groups use
+the `oxkv-cached` dev-dependency. The `cache_bench` target needs `oxkv`.
 
 Query-engine benchmarks live in
 [`crates/oxkv-query/benches/query_bench.rs`](crates/oxkv-query/benches/query_bench.rs)
@@ -865,12 +861,12 @@ wasm-pack build crates/oxkv-wasm --target web --out-name oxkv   # or nodejs, bun
 - `crates/oxkv-s3/` — `ObjectStoreStorage` adapter for S3, GCS, Azure, and local files
 - `crates/oxkv-opfs/` — `OpfsStorage` browser backend and its Web Lock bridge
 - `crates/oxkv-query/` — Lucene-style parser, JSON matcher, `QueryExt`, and `QueryViewExt`
+- `crates/oxkv-cached/` — `CachedOxKvStore`/`CachedTx` write-through RAM mirror and `BuildCachedExt`
 - `src/store/mod.rs` — core traits (`GetSet`, `Transaction`, `Store`, `GetSetExt`, `StoreExt`), error types (`StoreError::Fenced`, `StoreError::CasConflict`, `StoreError::NotModified`), and the `lock_ignore_poison` policy helper
 - `src/store/btree.rs` — in-memory B-tree backend (`btree`, test/bench + WASM baseline)
-- `src/store/lsm/mod.rs` — LSM facade (`oxkv`, native + wasm): re-exports `OxKvStore`/`OxKvTx`/`OxKvReader`/`CachedOxKvStore`/`CachedTx`/`WarmMode`/`SstFile`, shared `MemTable` types + WAL/GC tuning constants
+- `src/store/lsm/mod.rs` — LSM facade (`oxkv`, native + wasm): re-exports `OxKvStore`/`OxKvTx`/`OxKvReader`/`SstFile`, shared `MemTable` types + WAL/GC tuning constants, and hidden internals for `oxkv-cached`
 - `src/store/lsm/store.rs` — single-writer `OxKvStore`/`OxKvStoreBuilder`: probe + epoch fencing, WAL gate + group commit, flush/GC/compaction
 - `src/store/lsm/tx.rs` — `OxKvTx` staged-overlay transactions (read-your-writes, durable only on commit)
-- `src/store/lsm/cached.rs` — `CachedOxKvStore`/`CachedTx` write-through RAM mirror (`Eager`/`Background`/`Lazy` fill, read-through misses, TTL-checked reads, fencing poison)
 - `src/store/lsm/reader.rs` — read-only `OxKvReader`/`OxKvRoTx` followers (no epoch CAS, WAL-following reads, stale-SST retry)
 - `src/store/lsm/read.rs` — shared point/scan lookup engine (manifest load, SST fetch, blob deref, newest-wins)
 - `src/store/lsm/merge.rs` — newest-wins merge algebra (dedup + tombstone suppression, lazy pull-merge scans)

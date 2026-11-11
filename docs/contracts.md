@@ -389,13 +389,13 @@ Use it only when one writer owns the prefix. The default is `false`.
 `check_stale` is a method on `CachedOxKvStore`, not on `OxKvStore`. It polls
 the manifest with a zero TTL. It compares the manifest version and the SST id
 set with the mirror state. It does not read `ownership.json`. A poisoned
-mirror reports stale. See `src/store/lsm/cached.rs`,
+mirror reports stale. See `crates/oxkv-cached/src/lib.rs`,
 `CachedOxKvStore::check_stale`.
 
 `CachedOxKvStore::refresh` performs the catch-up. A new epoch or an SST set
 change rebuilds the mirror from a scan. A WAL append replays incrementally.
 A write that returns `Fenced` poisons the mirror. Reads then fail with the same
-`Fenced` error until `refresh` succeeds. See `src/store/lsm/cached.rs`,
+`Fenced` error until `refresh` succeeds. See `crates/oxkv-cached/src/lib.rs`,
 `CachedOxKvStore::refresh`, `is_poisoned`, and `note_fenced`.
 
 ### 4.5 Readers
