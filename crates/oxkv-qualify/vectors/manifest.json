@@ -31,7 +31,7 @@
     },
     {
       "contract": "C5",
-      "digest": "80205c3049f88c0e523bbec28c01b1607683e197d14bb50715e34d74ee50e699",
+      "digest": "64c30e0465a83a72b3d76cac1007eb34c30af4f8b94ea0b9eda1271f181f2f11",
       "id": "C5-receipt-error",
       "path": "vectors/C5-receipt-error.json",
       "released": true

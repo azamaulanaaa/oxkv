@@ -879,6 +879,8 @@ error_registry!(
         Some(ReceiptState::Rejected),
         Never
     ),
+    ("replication.journal_corrupt", Replication, None, Never),
+    ("replication.journal_io", Replication, None, Backoff),
     ("event.unknown_version", Event, None, Never),
     ("event.retention_gap", Event, None, SnapshotBackfill),
     ("event.poison", Event, None, DeadLetter),
@@ -1003,7 +1005,7 @@ mod tests {
 
     #[test]
     fn the_registry_has_one_row_per_code() {
-        assert_eq!(ERROR_REGISTRY.len(), 153);
+        assert_eq!(ERROR_REGISTRY.len(), 155);
         assert_eq!(find_duplicate_code(ERROR_REGISTRY), None);
     }
 

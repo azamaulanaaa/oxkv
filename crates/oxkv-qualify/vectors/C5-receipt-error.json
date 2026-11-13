@@ -61,6 +61,26 @@
         "code": "write.version_conflict"
       },
       "kind": "error"
+    },
+    {
+      "expected": {
+        "bytes_hex": "7265706c69636174696f6e2e6a6f75726e616c5f636f72727570747c7265706c69636174696f6e7c6e6f6e657c4e657665727c74727565"
+      },
+      "id": "C5/journal-corrupt-error",
+      "input": {
+        "code": "replication.journal_corrupt"
+      },
+      "kind": "error"
+    },
+    {
+      "expected": {
+        "bytes_hex": "7265706c69636174696f6e2e6a6f75726e616c5f696f7c7265706c69636174696f6e7c6e6f6e657c4261636b6f66667c74727565"
+      },
+      "id": "C5/journal-io-error",
+      "input": {
+        "code": "replication.journal_io"
+      },
+      "kind": "error"
     }
   ],
   "contract": "C5",

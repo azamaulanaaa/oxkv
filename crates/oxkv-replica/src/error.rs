@@ -209,11 +209,11 @@ impl ReplicaError {
             Self::HydrationBudgetExceeded { .. } => "scope.hydration_budget_exceeded",
             Self::ResourceExhausted { .. } => "internal.resource_exhausted",
             Self::LocalMutationRejected => "projection.client_write_rejected",
-            Self::VersionRegression
-            | Self::HydrationInProgress
-            | Self::HydrationNotStarted
-            | Self::JournalCorrupt { .. }
-            | Self::JournalIo { .. } => "internal.invariant_violation",
+            Self::VersionRegression | Self::HydrationInProgress | Self::HydrationNotStarted => {
+                "internal.invariant_violation"
+            }
+            Self::JournalCorrupt { .. } => "replication.journal_corrupt",
+            Self::JournalIo { .. } => "replication.journal_io",
             Self::DiffGap { .. } => "sync.gap_too_large",
             Self::PartialGeneration { .. } => "format.truncated_snapshot",
             Self::TabLeaseHeld => "replication.lease_held",
@@ -236,6 +236,7 @@ impl ReplicaError {
                 | Self::PartialGeneration { .. }
                 | Self::ResourceExhausted { .. }
                 | Self::TabLeaseHeld
+                | Self::JournalIo { .. }
         )
     }
 }
@@ -338,5 +339,18 @@ mod tests {
         for error in every_error() {
             assert_ne!(error.to_string(), "");
         }
+    }
+
+    #[test]
+    fn the_journal_errors_use_their_own_codes() {
+        let corrupt = ReplicaError::JournalCorrupt {
+            reason: "the journal digest does not match",
+        };
+        assert_eq!(corrupt.code(), "replication.journal_corrupt");
+        assert!(!corrupt.is_retryable());
+
+        let io = ReplicaError::JournalIo { operation: "load" };
+        assert_eq!(io.code(), "replication.journal_io");
+        assert!(io.is_retryable());
     }
 }

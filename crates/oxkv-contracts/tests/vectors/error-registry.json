@@ -1127,6 +1127,24 @@
     },
     {
       "expected": {
+        "kind": "replication",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "replication.journal_corrupt"
+    },
+    {
+      "expected": {
+        "kind": "replication",
+        "receipt": null,
+        "retry": "Backoff",
+        "terminal": true
+      },
+      "name": "replication.journal_io"
+    },
+    {
+      "expected": {
         "kind": "event",
         "receipt": null,
         "retry": "Never",

@@ -126,9 +126,25 @@ fn a_corrupt_journal_fails_closed() {
 
     let error = store.load_journal().expect_err("the journal is corrupt");
     assert!(matches!(error, ReplicaError::JournalCorrupt { .. }));
-    assert_eq!(error.code(), "internal.invariant_violation");
+    assert_eq!(error.code(), "replication.journal_corrupt");
+    assert_ne!(error.code(), "internal.invariant_violation");
+    assert!(!error.is_retryable());
 
     let error = Replica::resume(config(budget(), budget()), scope(), &store)
         .expect_err("the resume fails closed");
     assert!(matches!(error, ReplicaError::JournalCorrupt { .. }));
+    assert_eq!(error.code(), "replication.journal_corrupt");
+}
+
+#[test]
+fn a_journal_io_failure_returns_the_named_code() {
+    let directory = TempDir::new();
+    let store = FileJournalStore::new(directory.path.clone());
+
+    let error = store
+        .load_journal()
+        .expect_err("the directory is not a journal");
+    assert!(matches!(error, ReplicaError::JournalIo { .. }));
+    assert_eq!(error.code(), "replication.journal_io");
+    assert!(error.is_retryable());
 }

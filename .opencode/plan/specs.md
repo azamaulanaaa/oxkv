@@ -1711,6 +1711,8 @@ The receipt state column applies when the error occurs in an admitted write requ
 | `replication.tier_unavailable` | Replication | None | Backoff |
 | `replication.warmup_budget_exceeded` | Replication | None | Continue with cursor |
 | `replication.placement_violation` | Replication | Rejected | Never |
+| `replication.journal_corrupt` | Replication | None | Never |
+| `replication.journal_io` | Replication | None | Backoff |
 | `event.unknown_version` | Event | None | Never |
 | `event.retention_gap` | Event | None | Snapshot backfill |
 | `event.poison` | Event | None | Dead-letter |

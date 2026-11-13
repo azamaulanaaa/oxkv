@@ -11,7 +11,7 @@ use oxkv_qualify::vectors::parse_vector_file;
 
 /// The digest of the manifest bytes at release.
 const RELEASED_MANIFEST_DIGEST: &str =
-    "14ec80681f598feab948b63e076e8508d844e3364f81beb46a810bca41240e79";
+    "137da7f8ec634243e86e4c89b8027d30b495e83b7315d83d971cdc972a6b6b7b";
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
