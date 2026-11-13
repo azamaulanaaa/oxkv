@@ -1,0 +1,15 @@
+{
+  "contract": "snapshot-page/v1",
+  "cases": [
+    {
+      "name": "one-byte-page-corruption",
+      "input": {
+        "page_index": 0,
+        "byte_from_end": 5
+      },
+      "expected": {
+        "code": "format.corrupt_page"
+      }
+    }
+  ]
+}

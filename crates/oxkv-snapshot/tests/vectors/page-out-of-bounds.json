@@ -1,0 +1,15 @@
+{
+  "contract": "snapshot-page/v1",
+  "cases": [
+    {
+      "name": "page-out-of-bounds",
+      "input": {
+        "field": "prefix_upper",
+        "value_hex": "61"
+      },
+      "expected": {
+        "code": "format.page_out_of_bounds"
+      }
+    }
+  ]
+}

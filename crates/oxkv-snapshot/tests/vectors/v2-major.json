@@ -1,0 +1,15 @@
+{
+  "contract": "snapshot-page/v1",
+  "cases": [
+    {
+      "name": "v2-major",
+      "input": {
+        "first_line": "oxkv-snapshot/v2",
+        "format_version": "00002.00000"
+      },
+      "expected": {
+        "code": "format.unsupported_version"
+      }
+    }
+  ]
+}

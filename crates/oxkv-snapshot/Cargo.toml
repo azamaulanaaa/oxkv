@@ -1,0 +1,22 @@
+[package]
+name = "oxkv-snapshot"
+version = "0.11.0"
+edition = "2024"
+description = "The v1 ShardSnapshot and ScopeSnapshot byte contract for oxkv."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/azamaulanaaa/oxkv"
+readme = "../../README.md"
+keywords = ["snapshot", "keyvalue", "database", "format"]
+categories = ["database"]
+
+[dependencies]
+blake3 = "1.8"
+crc32fast = "1"
+oxkv-contracts = { path = "../oxkv-contracts", version = "0.11.0" }
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

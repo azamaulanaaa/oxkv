@@ -1,0 +1,16 @@
+{
+  "contract": "snapshot-page/v1",
+  "cases": [
+    {
+      "name": "unknown-required-feature",
+      "input": {
+        "field": "required_features",
+        "value": "8000000000000007"
+      },
+      "expected": {
+        "code": "format.missing_required_feature",
+        "bit": 63
+      }
+    }
+  ]
+}

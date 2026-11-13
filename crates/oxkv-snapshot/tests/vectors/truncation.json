@@ -1,0 +1,13 @@
+{
+  "contract": "snapshot-page/v1",
+  "cases": [
+    {
+      "name": "truncation",
+      "input": {},
+      "expected": {
+        "code": "format.truncated_snapshot",
+        "offsets": [0, 1, 2, 3, 4, 10, 63, 64, 100, 255, 511, 767]
+      }
+    }
+  ]
+}

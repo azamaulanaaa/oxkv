@@ -1,0 +1,16 @@
+{
+  "contract": "snapshot-page/v1",
+  "cases": [
+    {
+      "name": "lease-change",
+      "input": {
+        "old_lease_term": 3,
+        "new_lease_term": 4
+      },
+      "expected": {
+        "same_content_digest": true,
+        "readable": true
+      }
+    }
+  ]
+}
