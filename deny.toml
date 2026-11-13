@@ -28,26 +28,10 @@ allow = [
     # unicode-ident, reached through proc-macro2, syn and wasm-bindgen-shared.
     # The ICU crates (icu_*, zerovec, yoke) reach it through `url` and `idna`.
     "Unicode-3.0",
-    # wasi, wasip2 and wit-bindgen, reached through the wasm32 target support.
-    "Apache-2.0 WITH LLVM-exception",
     # memchr and aho-corasick, reached through `regex` and `pest`.
     # walkdir, same-file and winapi-util, reached through `criterion`,
     # `minicov` and `object_store`.
     "Unlicense",
-    # tinyvec, reached through quinn-proto. lru-slab, reached through
-    # quinn-proto as well. quinn arrives through `reqwest` and `object_store`.
-    "Zlib",
-    # ring, rustls-webpki and untrusted, reached through rustls. object_store
-    # enables rustls for S3, GCS and Azure.
-    "ISC",
-    # zerocopy and zerocopy-derive, reached through `half` and `ppv-lite86`.
-    "BSD-2-Clause",
-    # subtle, reached through rustls.
-    "BSD-3-Clause",
-    # ryu, reached through serde_urlencoded and `reqwest`. ryu offers
-    # Apache-2.0 as another alternative, so the entry is not required. It
-    # stays here to show that the licence was reviewed.
-    "BSL-1.0",
 ]
 # A crate can ship licence text without an SPDX expression. A low confidence
 # value would accept a guess. 0.9 asks for a second look at a file this tool
@@ -69,24 +53,6 @@ version = 2
 # Deny a yanked release. A yanked release is one that its author asked users
 # not to use.
 yanked = "deny"
-# These three ignores are scoped to `object_store 0.12.5`. Delete an entry when
-# `object_store` moves to a fixed `quick-xml` or drops `rustls-pemfile`.
-#
-# RUSTSEC-2026-0194 and RUSTSEC-2026-0195: quick-xml 0.38.4.
-# `object_store 0.12.5` pins `quick-xml ^0.38.0`, and 0.12.5 is the latest
-# release. The code is reached only through the `oxkv-s3` crate and the GCS XML
-# parser. The input comes from the configured object-store endpoint
-# over TLS. Both fixes need `quick-xml >= 0.41.0`.
-#
-# RUSTSEC-2025-0134: rustls-pemfile 2.2.0.
-# The crate is unmaintained. It has no known vulnerability. `object_store
-# 0.12.5` pins `rustls-pemfile ^2.0`. The crate is a thin wrapper over
-# `rustls-pki-types`. Delete this ignore when `object_store` drops the crate.
-ignore = [
-    { id = "RUSTSEC-2026-0194", reason = "object_store 0.12.5 pins quick-xml ^0.38.0. Reached only through the optional oxkv-s3 GCS parser." },
-    { id = "RUSTSEC-2026-0195", reason = "object_store 0.12.5 pins quick-xml ^0.38.0. Reached only through the optional oxkv-s3 GCS parser." },
-    { id = "RUSTSEC-2025-0134", reason = "object_store 0.12.5 pins rustls-pemfile ^2.0. The crate is unmaintained, not a vulnerability." },
-]
 
 [sources]
 # Deny an unexpected source. The lockfile makes a build reproducible, so a
