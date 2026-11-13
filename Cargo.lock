@@ -1388,6 +1388,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxkv-readpin"
+version = "0.11.0"
+dependencies = [
+ "oxkv-contracts",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "oxkv-repl"
 version = "0.11.0"
 dependencies = [

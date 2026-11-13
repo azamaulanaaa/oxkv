@@ -1,0 +1,136 @@
+{
+  "contract": "read-pin/v1",
+  "cases": [
+    {
+      "name": "24-hour offline read",
+      "input": {
+        "applied": { "01": 18 },
+        "last_contact_ms": 1000,
+        "now_ms": 86401000
+      },
+      "expected": {
+        "outcome": "served",
+        "served": { "01": 18 },
+        "version_lag": 0,
+        "silence_ms": 86400000
+      }
+    },
+    {
+      "name": "7-day resume",
+      "input": {
+        "issued_ms": 1000,
+        "now_ms": 604801000,
+        "diff_retention_ms": 691200000,
+        "floor": { "01": 4 }
+      },
+      "expected": {
+        "outcome": "resume",
+        "error": null,
+        "snapshot_offered": false
+      }
+    },
+    {
+      "name": "expired authority pin",
+      "input": {
+        "issued_ms": 1000,
+        "now_ms": 7201000,
+        "retention_ms": 3600000,
+        "pin": { "01": 18 }
+      },
+      "expected": {
+        "error": "read.pin_expired"
+      }
+    },
+    {
+      "name": "expired sync cursor offers a snapshot",
+      "input": {
+        "issued_ms": 1000,
+        "now_ms": 604801000,
+        "diff_retention_ms": 604800000,
+        "floor": { "01": 4 }
+      },
+      "expected": {
+        "outcome": "snapshot",
+        "error": "sync.cursor_expired",
+        "snapshot_offered": true
+      }
+    },
+    {
+      "name": "session vector minimum across replicas",
+      "input": {
+        "commit_shard": "01",
+        "commit_version": 5
+      },
+      "expected": {
+        "before": "read.behind_commit",
+        "after": { "01": 5 }
+      }
+    },
+    {
+      "name": "read-your-writes blocks or returns read.behind_commit",
+      "input": {
+        "minimum": { "01": 5 },
+        "applied": { "01": 4 }
+      },
+      "expected": {
+        "blocked": "read.behind_commit",
+        "error": "read.behind_commit"
+      }
+    },
+    {
+      "name": "read over its staleness bound returns read.stale and no data",
+      "input": {
+        "watermark": { "01": 28 },
+        "applied": { "01": 18 },
+        "max_version_lag": 5
+      },
+      "expected": {
+        "error": "read.stale",
+        "data": false,
+        "version_lag": 10
+      }
+    },
+    {
+      "name": "read at an exact pin returns that pin",
+      "input": {
+        "pin": { "01": 18 },
+        "applied": { "01": 18 }
+      },
+      "expected": {
+        "outcome": "served",
+        "served": { "01": 18 },
+        "pin_mode": "Exactly"
+      }
+    },
+    {
+      "name": "read at an exact pin returns a named error",
+      "input": {
+        "pin": { "01": 18 },
+        "applied": { "01": 18 },
+        "resident": false
+      },
+      "expected": {
+        "error": "read.not_resident"
+      }
+    },
+    {
+      "name": "scalar session minimum cannot be constructed",
+      "input": {
+        "scalar": 7
+      },
+      "expected": {
+        "constructible": false,
+        "doctest": "compile_fail"
+      }
+    },
+    {
+      "name": "session token bytes are canonical",
+      "input": {
+        "minimum": { "01": 5, "02": 9 }
+      },
+      "expected": {
+        "hex": "535456310000000200000000000000010100000000000000050000000000000001020000000000000009"
+      }
+    }
+  ]
+}
