@@ -1,8 +1,8 @@
 //! The canonical error and receipt registry.
 //!
 //! Every error code in the 1.0 contract appears once in [`ERROR_REGISTRY`].
-//! Each entry names one kind, one receipt state, one retry class, and one
-//! terminal flag.
+//! Each entry names one kind, one receipt state, one retry class, one terminal
+//! flag, and one wire shape.
 //!
 //! A code with no receipt is terminal for the call. A code with a `Queued`
 //! receipt is live. A code with a terminal receipt is terminal.
@@ -275,28 +275,36 @@ impl fmt::Display for RetryClass {
 }
 
 /// The wire shape of one error code.
+///
+/// The shape states what a client receives for one code. A code with no data
+/// beyond the code text uses [`WireShape::Code`]. A code with a reason, a
+/// field, an operation, or a retry hint uses [`WireShape::CodeDetail`]. A fixed
+/// human-readable message is not a detail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum WireShape {
     /// The wire value is the code text only.
     Code,
-    /// The wire value is the code text and a fixed message.
-    CodeMessage,
     /// The wire value is the code text and a structured detail.
     CodeDetail,
 }
 
 impl WireShape {
     /// Every wire shape.
-    pub const ALL: &'static [Self] = &[Self::Code, Self::CodeMessage, Self::CodeDetail];
+    pub const ALL: &'static [Self] = &[Self::Code, Self::CodeDetail];
 
     /// Returns the canonical shape name.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
             Self::Code => "code",
-            Self::CodeMessage => "code_message",
             Self::CodeDetail => "code_detail",
         }
+    }
+}
+
+impl fmt::Display for WireShape {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.name())
     }
 }
 
@@ -328,13 +336,14 @@ impl ErrorSpec {
     #[must_use]
     pub fn describe(&self) -> String {
         format!(
-            "{} kind={} receipt={} retry={} terminal={}",
+            "{} kind={} receipt={} retry={} terminal={} wire_shape={}",
             self.code,
             self.kind,
             self.receipt
                 .map_or_else(|| "none".to_owned(), |state| state.name().to_owned()),
             self.retry,
-            self.terminal
+            self.terminal,
+            self.wire_shape
         )
     }
 }
@@ -552,7 +561,7 @@ const fn assert_registry(table: &[ErrorSpec]) {
 }
 
 macro_rules! error_registry {
-    ($(($code:literal, $kind:ident, $receipt:expr, $retry:ident)),* $(,)?) => {
+    ($(($code:literal, $kind:ident, $receipt:expr, $retry:ident, $shape:ident)),* $(,)?) => {
         /// The canonical error registry.
         ///
         /// The table has one row per code. The rows follow section 8.3 of the
@@ -564,7 +573,7 @@ macro_rules! error_registry {
                 receipt: $receipt,
                 retry: RetryClass::$retry,
                 terminal: terminal_for($receipt),
-                wire_shape: WireShape::Code,
+                wire_shape: WireShape::$shape,
                 conflict_key_version_field: conflict_field_for($receipt),
                 idempotency_consumed: idempotency_for($receipt),
                 queued_deadline: deadline_for($receipt),
@@ -578,456 +587,896 @@ error_registry!(
         "key.unknown_version",
         Key,
         Some(ReceiptState::Rejected),
-        Never
+        Never,
+        CodeDetail
     ),
-    ("key.malformed", Key, Some(ReceiptState::Rejected), Never),
+    (
+        "key.malformed",
+        Key,
+        Some(ReceiptState::Rejected),
+        Never,
+        CodeDetail
+    ),
     (
         "key.non_canonical",
         Key,
         Some(ReceiptState::Rejected),
-        Never
+        Never,
+        CodeDetail
     ),
     (
         "key.outside_table",
         Key,
         Some(ReceiptState::Rejected),
-        Never
+        Never,
+        CodeDetail
     ),
-    ("key.invalid_utf8", Key, Some(ReceiptState::Rejected), Never),
-    ("key.too_large", Key, Some(ReceiptState::Rejected), Never),
-    ("key.not_found", Key, None, Never),
+    (
+        "key.invalid_utf8",
+        Key,
+        Some(ReceiptState::Rejected),
+        Never,
+        CodeDetail
+    ),
+    (
+        "key.too_large",
+        Key,
+        Some(ReceiptState::Rejected),
+        Never,
+        CodeDetail
+    ),
+    ("key.not_found", Key, None, Never, CodeDetail),
     (
         "key.reserved_system_marker",
         Key,
         Some(ReceiptState::Rejected),
-        Never
+        Never,
+        CodeDetail
     ),
     (
         "key.unknown_system_id",
         Key,
         Some(ReceiptState::Rejected),
-        Never
+        Never,
+        CodeDetail
     ),
-    ("format.unsupported_version", Format, None, Never),
-    ("format.missing_required_feature", Format, None, Never),
-    ("format.corrupt_page", Format, None, Refetch),
-    ("format.page_out_of_bounds", Format, None, Never),
-    ("format.truncated_snapshot", Format, None, Refetch),
-    ("format.missing_provenance", Format, None, Never),
-    ("format.page_too_large", Format, None, Never),
-    ("manifest.unsupported_schema", Manifest, None, Never),
-    ("manifest.unknown_field", Manifest, None, Never),
-    ("manifest.duplicate_name", Manifest, None, Never),
-    ("manifest.reserved_table_name", Manifest, None, Never),
-    ("manifest.key_schema_missing", Manifest, None, Never),
-    ("manifest.float_not_allowed", Manifest, None, Never),
-    ("manifest.index_unknown_field", Manifest, None, Never),
-    ("manifest.index_scope_unreachable", Manifest, None, Never),
-    ("manifest.rule_unknown_path", Manifest, None, Never),
-    ("manifest.rule_unbounded", Manifest, None, Never),
-    ("manifest.operation_cross_shard", Manifest, None, Never),
-    ("manifest.operation_unknown_field", Manifest, None, Never),
-    ("manifest.artifact_drift", Manifest, None, Regenerate),
-    ("manifest.policy_catalog_missing", Manifest, None, Never),
-    ("manifest.json_syntax", Manifest, None, Never),
-    ("manifest.missing_field", Manifest, None, Never),
-    ("manifest.type_mismatch", Manifest, None, Never),
-    ("manifest.invalid_value", Manifest, None, Never),
-    ("policy.parse_error", Policy, None, Never),
+    (
+        "format.unsupported_version",
+        Format,
+        None,
+        Never,
+        CodeDetail
+    ),
+    (
+        "format.missing_required_feature",
+        Format,
+        None,
+        Never,
+        CodeDetail
+    ),
+    ("format.corrupt_page", Format, None, Refetch, CodeDetail),
+    ("format.page_out_of_bounds", Format, None, Never, CodeDetail),
+    (
+        "format.truncated_snapshot",
+        Format,
+        None,
+        Refetch,
+        CodeDetail
+    ),
+    ("format.missing_provenance", Format, None, Never, CodeDetail),
+    ("format.page_too_large", Format, None, Never, CodeDetail),
+    (
+        "manifest.unsupported_schema",
+        Manifest,
+        None,
+        Never,
+        CodeDetail
+    ),
+    ("manifest.unknown_field", Manifest, None, Never, CodeDetail),
+    ("manifest.duplicate_name", Manifest, None, Never, CodeDetail),
+    (
+        "manifest.reserved_table_name",
+        Manifest,
+        None,
+        Never,
+        CodeDetail
+    ),
+    (
+        "manifest.key_schema_missing",
+        Manifest,
+        None,
+        Never,
+        CodeDetail
+    ),
+    (
+        "manifest.float_not_allowed",
+        Manifest,
+        None,
+        Never,
+        CodeDetail
+    ),
+    (
+        "manifest.index_unknown_field",
+        Manifest,
+        None,
+        Never,
+        CodeDetail
+    ),
+    (
+        "manifest.index_scope_unreachable",
+        Manifest,
+        None,
+        Never,
+        CodeDetail
+    ),
+    (
+        "manifest.rule_unknown_path",
+        Manifest,
+        None,
+        Never,
+        CodeDetail
+    ),
+    ("manifest.rule_unbounded", Manifest, None, Never, CodeDetail),
+    (
+        "manifest.operation_cross_shard",
+        Manifest,
+        None,
+        Never,
+        CodeDetail
+    ),
+    (
+        "manifest.operation_unknown_field",
+        Manifest,
+        None,
+        Never,
+        CodeDetail
+    ),
+    (
+        "manifest.artifact_drift",
+        Manifest,
+        None,
+        Regenerate,
+        CodeDetail
+    ),
+    (
+        "manifest.policy_catalog_missing",
+        Manifest,
+        None,
+        Never,
+        Code
+    ),
+    ("manifest.json_syntax", Manifest, None, Never, CodeDetail),
+    ("manifest.missing_field", Manifest, None, Never, CodeDetail),
+    ("manifest.type_mismatch", Manifest, None, Never, CodeDetail),
+    ("manifest.invalid_value", Manifest, None, Never, CodeDetail),
+    ("policy.parse_error", Policy, None, Never, CodeDetail),
     (
         "policy.unknown_field",
         Policy,
         Some(ReceiptState::Rejected),
-        Never
+        Never,
+        CodeDetail
     ),
     (
         "policy.budget_exhausted",
         Policy,
         Some(ReceiptState::Rejected),
-        Never
+        Never,
+        CodeDetail
     ),
     (
         "policy.not_total",
         Policy,
         Some(ReceiptState::Rejected),
-        Never
+        Never,
+        CodeDetail
     ),
-    ("policy.ast_unsupported", Policy, None, Never),
-    ("policy.regex_not_supported", Policy, None, Never),
+    ("policy.ast_unsupported", Policy, None, Never, CodeDetail),
+    (
+        "policy.regex_not_supported",
+        Policy,
+        None,
+        Never,
+        CodeDetail
+    ),
     (
         "rule.compile_failed",
         Rule,
         Some(ReceiptState::Rejected),
-        AfterFix
+        AfterFix,
+        CodeDetail
     ),
     (
         "rule.dry_run_failed",
         Rule,
         Some(ReceiptState::Rejected),
-        AfterFix
+        AfterFix,
+        CodeDetail
     ),
     (
         "rule.approval_required",
         Rule,
         Some(ReceiptState::Rejected),
-        AfterApproval
+        AfterApproval,
+        CodeDetail
     ),
     (
         "rule.rollout_limit",
         Rule,
         Some(ReceiptState::Rejected),
-        AfterRollout
+        AfterRollout,
+        CodeDetail
     ),
     (
         "rule.rollout_missing",
         Rule,
         Some(ReceiptState::Rejected),
-        AfterRollout
+        AfterRollout,
+        Code
     ),
-    ("write.missing_base_version", Write, None, Never),
+    ("write.missing_base_version", Write, None, Never, CodeDetail),
     (
         "write.stale_base_version",
         Write,
         Some(ReceiptState::Rejected),
-        AfterReRead
+        AfterReRead,
+        Code
     ),
     (
         "write.version_conflict",
         Write,
         Some(ReceiptState::Conflict),
-        AfterRebase
+        AfterRebase,
+        CodeDetail
     ),
-    ("write.idempotency_key_reuse", Write, None, Never),
+    (
+        "write.idempotency_key_reuse",
+        Write,
+        None,
+        Never,
+        CodeDetail
+    ),
     (
         "write.queue_timeout",
         Write,
         Some(ReceiptState::Rejected),
-        AfterReRead
+        AfterReRead,
+        Code
     ),
     (
         "write.operation_unknown",
         Write,
         Some(ReceiptState::Rejected),
-        Never
+        Never,
+        CodeDetail
     ),
     (
         "write.batch_too_large",
         Write,
         Some(ReceiptState::Rejected),
-        Never
+        Never,
+        CodeDetail
     ),
     (
         "write.value_too_large",
         Write,
         Some(ReceiptState::Rejected),
-        Never
+        Never,
+        CodeDetail
     ),
     (
         "shard.cross_mutation_rejected",
         Shard,
         Some(ReceiptState::Rejected),
-        Never
+        Never,
+        CodeDetail
     ),
-    ("receipt.expired", Receipt, None, AfterReRead),
-    ("receipt.not_found", Receipt, None, Resubmit),
-    ("receipt.state_invalid", Receipt, None, Never),
-    ("outbox.full", Outbox, None, AfterDrain),
-    ("outbox.dependency_cycle", Outbox, None, Never),
-    ("outbox.cross_shard_edge", Outbox, None, Never),
-    ("outbox.forward_reference", Outbox, None, Never),
-    ("outbox.fan_in_exceeded", Outbox, None, Never),
-    ("outbox.duplicate_request", Outbox, None, Never),
+    ("receipt.expired", Receipt, None, AfterReRead, CodeDetail),
+    ("receipt.not_found", Receipt, None, Resubmit, CodeDetail),
+    ("receipt.state_invalid", Receipt, None, Never, CodeDetail),
+    ("outbox.full", Outbox, None, AfterDrain, Code),
+    ("outbox.dependency_cycle", Outbox, None, Never, CodeDetail),
+    ("outbox.cross_shard_edge", Outbox, None, Never, CodeDetail),
+    ("outbox.forward_reference", Outbox, None, Never, CodeDetail),
+    ("outbox.fan_in_exceeded", Outbox, None, Never, CodeDetail),
+    ("outbox.duplicate_request", Outbox, None, Never, CodeDetail),
     (
         "projection.lagging",
         Projection,
         Some(ReceiptState::Queued),
-        Backoff
+        Backoff,
+        CodeDetail
     ),
     (
         "projection.epoch_invalid",
         Projection,
         Some(ReceiptState::Rejected),
-        AfterRebuild
+        AfterRebuild,
+        Code
     ),
     (
         "projection.watermark_regression",
         Projection,
         Some(ReceiptState::Rejected),
-        AfterRebuild
+        AfterRebuild,
+        CodeDetail
     ),
     (
         "projection.checksum_failed",
         Projection,
         Some(ReceiptState::Rejected),
-        AfterRebuild
+        AfterRebuild,
+        Code
     ),
     (
         "projection.client_write_rejected",
         Projection,
         Some(ReceiptState::Rejected),
-        Never
+        Never,
+        Code
     ),
     (
         "projection.fan_in_exceeded",
         Projection,
         Some(ReceiptState::Rejected),
-        Never
+        Never,
+        CodeDetail
     ),
     (
         "projection.read_set_exceeded",
         Projection,
         Some(ReceiptState::Rejected),
-        Never
+        Never,
+        CodeDetail
     ),
     (
         "projection.fact_set_mismatch",
         Projection,
         None,
-        AfterRebuild
+        AfterRebuild,
+        Code
     ),
     (
         "projection.fact_type_mismatch",
         Projection,
         None,
-        AfterRebuild
+        AfterRebuild,
+        CodeDetail
     ),
     (
         "projection.feed_sequence_invalid",
         Projection,
         None,
-        AfterRebuild
+        AfterRebuild,
+        CodeDetail
     ),
     (
         "authorization.stale_facts",
         Policy,
         Some(ReceiptState::Rejected),
-        AfterCatchUp
+        AfterCatchUp,
+        Code
     ),
-    ("scope.over_limit", Scope, None, Never),
-    ("scope.device_budget_exceeded", Scope, None, Never),
-    ("scope.hydration_budget_exceeded", Scope, None, Never),
-    ("scope.identity_mismatch", Scope, None, Never),
-    ("scope.policy_version_unknown", Scope, None, AfterPolicySync),
-    ("scope.shard_unreachable", Scope, None, Backoff),
-    ("scope.system_key_rejected", Scope, None, Never),
-    ("scope.remove_unknown_member", Scope, None, Never),
-    ("scope.unknown_shard", Scope, None, Never),
-    ("scope.missing_pin_shard", Scope, None, Never),
-    ("sync.unsupported_version", Sync, None, Never),
-    ("sync.unknown_capability", Sync, None, Never),
-    ("sync.scope_rejected", Sync, None, AfterChange),
-    ("sync.cursor_expired", Sync, None, SnapshotFallback),
-    ("sync.cursor_invalid", Sync, None, NewCursor),
-    ("sync.cursor_type_mismatch", Sync, None, NewCursor),
-    ("sync.gap_too_large", Sync, None, SnapshotFallback),
-    ("sync.snapshot_unavailable", Sync, None, Backoff),
-    ("sync.rate_limited", Sync, None, Backoff),
-    ("sync.unauthorized", Sync, None, AfterAuth),
-    ("sync.shard_unavailable", Sync, None, Backoff),
-    ("sync.negotiation_required", Sync, None, Never),
-    ("sync.incompatible_manifest", Sync, None, Never),
-    ("read.pin_expired", Read, None, NewPin),
-    ("read.pin_unreadable", Read, None, NewPin),
-    ("read.behind_commit", Read, None, Backoff),
-    ("read.not_hydrated", Read, None, Backoff),
-    ("read.not_resident", Read, None, Backoff),
-    ("read.stale", Read, None, Backoff),
-    ("search.pin_expired", Search, None, NewPin),
-    ("search.cursor_invalid", Search, None, NewQuery),
-    ("search.fanout_exceeded", Search, None, NarrowQuery),
-    ("search.index_mismatch", Search, None, Rebuild),
-    ("search.tokenizer_mismatch", Search, None, Rebuild),
-    ("search.tokenizer_unknown", Search, None, Never),
-    ("search.token_budget_exceeded", Search, None, NarrowQuery),
+    ("scope.over_limit", Scope, None, Never, CodeDetail),
+    (
+        "scope.device_budget_exceeded",
+        Scope,
+        None,
+        Never,
+        CodeDetail
+    ),
+    (
+        "scope.hydration_budget_exceeded",
+        Scope,
+        None,
+        Never,
+        CodeDetail
+    ),
+    ("scope.identity_mismatch", Scope, None, Never, CodeDetail),
+    (
+        "scope.policy_version_unknown",
+        Scope,
+        None,
+        AfterPolicySync,
+        CodeDetail
+    ),
+    ("scope.shard_unreachable", Scope, None, Backoff, CodeDetail),
+    ("scope.system_key_rejected", Scope, None, Never, CodeDetail),
+    (
+        "scope.remove_unknown_member",
+        Scope,
+        None,
+        Never,
+        CodeDetail
+    ),
+    ("scope.unknown_shard", Scope, None, Never, CodeDetail),
+    ("scope.missing_pin_shard", Scope, None, Never, CodeDetail),
+    ("sync.unsupported_version", Sync, None, Never, CodeDetail),
+    ("sync.unknown_capability", Sync, None, Never, Code),
+    ("sync.scope_rejected", Sync, None, AfterChange, Code),
+    (
+        "sync.cursor_expired",
+        Sync,
+        None,
+        SnapshotFallback,
+        CodeDetail
+    ),
+    ("sync.cursor_invalid", Sync, None, NewCursor, Code),
+    (
+        "sync.cursor_type_mismatch",
+        Sync,
+        None,
+        NewCursor,
+        CodeDetail
+    ),
+    (
+        "sync.gap_too_large",
+        Sync,
+        None,
+        SnapshotFallback,
+        CodeDetail
+    ),
+    ("sync.snapshot_unavailable", Sync, None, Backoff, Code),
+    ("sync.rate_limited", Sync, None, Backoff, Code),
+    ("sync.unauthorized", Sync, None, AfterAuth, Code),
+    ("sync.shard_unavailable", Sync, None, Backoff, CodeDetail),
+    ("sync.negotiation_required", Sync, None, Never, Code),
+    ("sync.incompatible_manifest", Sync, None, Never, CodeDetail),
+    ("read.pin_expired", Read, None, NewPin, CodeDetail),
+    ("read.pin_unreadable", Read, None, NewPin, CodeDetail),
+    ("read.behind_commit", Read, None, Backoff, CodeDetail),
+    ("read.not_hydrated", Read, None, Backoff, CodeDetail),
+    ("read.not_resident", Read, None, Backoff, Code),
+    ("read.stale", Read, None, Backoff, CodeDetail),
+    ("search.pin_expired", Search, None, NewPin, CodeDetail),
+    ("search.cursor_invalid", Search, None, NewQuery, CodeDetail),
+    (
+        "search.fanout_exceeded",
+        Search,
+        None,
+        NarrowQuery,
+        CodeDetail
+    ),
+    ("search.index_mismatch", Search, None, Rebuild, CodeDetail),
+    (
+        "search.tokenizer_mismatch",
+        Search,
+        None,
+        Rebuild,
+        CodeDetail
+    ),
+    ("search.tokenizer_unknown", Search, None, Never, CodeDetail),
+    (
+        "search.token_budget_exceeded",
+        Search,
+        None,
+        NarrowQuery,
+        CodeDetail
+    ),
     (
         "index.overhead_exceeded",
         Search,
         Some(ReceiptState::Rejected),
-        Never
+        Never,
+        CodeDetail
     ),
-    ("query.budget_exceeded", Query, None, NarrowQuery),
-    ("map.unknown_version", Map, None, Never),
-    ("map.overlap", Map, None, Never),
-    ("map.gap", Map, None, Never),
-    ("map.duplicate_id", Map, None, Never),
-    ("map.empty_range", Map, None, Never),
-    ("map.table_unmapped", Map, None, Never),
-    ("map.table_split_unsupported", Map, None, Never),
+    (
+        "query.budget_exceeded",
+        Query,
+        None,
+        NarrowQuery,
+        CodeDetail
+    ),
+    ("map.unknown_version", Map, None, Never, CodeDetail),
+    ("map.overlap", Map, None, Never, CodeDetail),
+    ("map.gap", Map, None, Never, CodeDetail),
+    ("map.duplicate_id", Map, None, Never, CodeDetail),
+    ("map.empty_range", Map, None, Never, CodeDetail),
+    ("map.table_unmapped", Map, None, Never, CodeDetail),
+    ("map.table_split_unsupported", Map, None, Never, CodeDetail),
     (
         "replication.stale_epoch",
         Replication,
         Some(ReceiptState::Rejected),
-        AfterReAcquire
+        AfterReAcquire,
+        CodeDetail
     ),
     (
         "replication.lease_expired",
         Replication,
         Some(ReceiptState::Rejected),
-        AfterReAcquire
+        AfterReAcquire,
+        CodeDetail
     ),
-    ("replication.lease_held", Replication, None, AfterHint),
+    (
+        "replication.lease_held",
+        Replication,
+        None,
+        AfterHint,
+        CodeDetail
+    ),
     (
         "replication.only_copy_eviction",
         Replication,
         None,
-        OperatorAction
+        OperatorAction,
+        Code
     ),
-    ("replication.tier_unavailable", Replication, None, Backoff),
+    (
+        "replication.tier_unavailable",
+        Replication,
+        None,
+        Backoff,
+        CodeDetail
+    ),
     (
         "replication.warmup_budget_exceeded",
         Replication,
         None,
-        ContinueWithCursor
+        ContinueWithCursor,
+        CodeDetail
     ),
     (
         "replication.placement_violation",
         Replication,
         Some(ReceiptState::Rejected),
-        Never
+        Never,
+        CodeDetail
     ),
-    ("replication.journal_corrupt", Replication, None, Never),
-    ("replication.journal_io", Replication, None, Backoff),
-    ("event.unknown_version", Event, None, Never),
-    ("event.retention_gap", Event, None, SnapshotBackfill),
-    ("event.poison", Event, None, DeadLetter),
-    ("event.payload_too_large", Event, None, Never),
-    ("consumer.too_slow", Consumer, None, Backoff),
-    ("consumer.handler_failed", Consumer, None, Backoff),
-    ("consumer.dead_lettered", Consumer, None, OperatorAction),
-    ("consumer.cursor_expired", Consumer, None, SnapshotBackfill),
-    ("auth.unauthenticated", Auth, None, AfterAuth),
-    ("auth.stale_credentials", Auth, None, AfterRefresh),
-    ("auth.forbidden", Auth, Some(ReceiptState::Rejected), Never),
-    ("auth.replayed_request", Auth, None, Never),
-    ("audit.unavailable", Audit, None, Backoff),
-    ("audit.chain_invalid", Audit, None, OperatorAction),
-    ("audit.export_denied", Audit, None, AfterAuth),
+    (
+        "replication.journal_corrupt",
+        Replication,
+        None,
+        Never,
+        CodeDetail
+    ),
+    (
+        "replication.journal_io",
+        Replication,
+        None,
+        Backoff,
+        CodeDetail
+    ),
+    ("event.unknown_version", Event, None, Never, CodeDetail),
+    (
+        "event.retention_gap",
+        Event,
+        None,
+        SnapshotBackfill,
+        CodeDetail
+    ),
+    ("event.poison", Event, None, DeadLetter, CodeDetail),
+    ("event.payload_too_large", Event, None, Never, CodeDetail),
+    ("consumer.too_slow", Consumer, None, Backoff, CodeDetail),
+    (
+        "consumer.handler_failed",
+        Consumer,
+        None,
+        Backoff,
+        CodeDetail
+    ),
+    (
+        "consumer.dead_lettered",
+        Consumer,
+        None,
+        OperatorAction,
+        CodeDetail
+    ),
+    (
+        "consumer.cursor_expired",
+        Consumer,
+        None,
+        SnapshotBackfill,
+        CodeDetail
+    ),
+    ("auth.unauthenticated", Auth, None, AfterAuth, Code),
+    ("auth.stale_credentials", Auth, None, AfterRefresh, Code),
+    (
+        "auth.forbidden",
+        Auth,
+        Some(ReceiptState::Rejected),
+        Never,
+        Code
+    ),
+    ("auth.replayed_request", Auth, None, Never, Code),
+    ("audit.unavailable", Audit, None, Backoff, Code),
+    (
+        "audit.chain_invalid",
+        Audit,
+        None,
+        OperatorAction,
+        CodeDetail
+    ),
+    ("audit.export_denied", Audit, None, AfterAuth, Code),
     (
         "shard.frozen_for_maintenance",
         Operations,
         Some(ReceiptState::Rejected),
-        AfterMaintenance
+        AfterMaintenance,
+        CodeDetail
     ),
-    ("ops.backup_pin_lost", Operations, None, RestartBackup),
+    (
+        "ops.backup_pin_lost",
+        Operations,
+        None,
+        RestartBackup,
+        CodeDetail
+    ),
     (
         "ops.restore_checksum_mismatch",
         Operations,
         None,
-        RestartRestore
+        RestartRestore,
+        CodeDetail
     ),
     (
         "ops.migration_incomplete",
         Operations,
         None,
-        ResumeMigration
+        ResumeMigration,
+        CodeDetail
     ),
-    ("ops.downgrade_not_allowed", Operations, None, Never),
-    ("ops.client_outbox_stale", Operations, None, AfterRebase),
+    ("ops.downgrade_not_allowed", Operations, None, Never, Code),
+    (
+        "ops.client_outbox_stale",
+        Operations,
+        None,
+        AfterRebase,
+        CodeDetail
+    ),
     (
         "ops.quota_exceeded",
         Operations,
         Some(ReceiptState::Rejected),
-        AfterQuota
+        AfterQuota,
+        CodeDetail
     ),
-    ("ops.rate_limited", Operations, None, Backoff),
-    ("rpc.unknown_method", Rpc, None, Never),
-    ("rpc.descriptor_mismatch", Rpc, None, RegenerateClient),
-    ("rpc.codec_unsupported", Rpc, None, Reconnect),
-    ("internal.invariant_violation", Internal, None, Never),
+    ("ops.rate_limited", Operations, None, Backoff, CodeDetail),
+    ("rpc.unknown_method", Rpc, None, Never, CodeDetail),
+    (
+        "rpc.descriptor_mismatch",
+        Rpc,
+        None,
+        RegenerateClient,
+        CodeDetail
+    ),
+    ("rpc.codec_unsupported", Rpc, None, Reconnect, CodeDetail),
+    ("internal.invariant_violation", Internal, None, Never, Code),
     (
         "internal.resource_exhausted",
         Internal,
         Some(ReceiptState::Rejected),
-        Backoff
+        Backoff,
+        CodeDetail
     ),
-    ("projection.unknown_fact", Projection, None, Never),
-    ("projection.duplicate_fact", Projection, None, Never),
-    ("projection.fact_unavailable", Projection, None, Backoff),
-    ("projection.epoch_overflow", Projection, None, AfterRebuild),
-    ("scope.empty_scope", Scope, None, Never),
-    ("scope.invalid_table_name", Scope, None, Never),
-    ("scope.invalid_rule_set_selector", Scope, None, Never),
-    ("scope.invalid_field_name", Scope, None, Never),
-    ("scope.byte_count_overflow", Scope, None, Never),
-    ("scope.shard_not_at_pin", Scope, None, Backoff),
-    ("scope.duplicate_response", Scope, None, Never),
-    ("scope.duplicate_row", Scope, None, Never),
-    ("scope.unsupported_diff_version", Scope, None, Never),
-    ("scope.duplicate_diff_record", Scope, None, Never),
-    ("scope.version_regression", Scope, None, Never),
-    ("scope.diff_sequence_invalid", Scope, None, Never),
-    ("scope.base_version_mismatch", Scope, None, Never),
-    ("scope.malformed_diff", Scope, None, Never),
-    ("scope.duplicate_table_assignment", Scope, None, Never),
-    ("scope.page_not_found", Scope, None, Never),
-    ("scope.in_scope_member", Scope, None, Never),
-    ("scope.not_evictable", Scope, None, Never),
-    ("scope.shard_not_pinned", Scope, None, Never),
-    ("manifest.duplicate_key", Manifest, None, Never),
-    ("manifest.unsupported_value", Manifest, None, Never),
-    ("kv.malformed_range", Key, None, Never),
-    ("kv.malformed_cursor", Key, None, Never),
-    ("kv.malformed_batch", Key, None, Never),
-    ("kv.malformed_page", Key, None, Never),
-    ("map.malformed_key", Map, None, Never),
-    ("map.invalid_table", Map, None, Never),
-    ("map.malformed_canonical", Map, None, Never),
-    ("index.field_not_searchable", Search, None, Never),
-    ("index.unknown_flag", Search, None, Never),
-    ("index.malformed_document", Search, None, Never),
-    ("index.version_not_monotonic", Search, None, Never),
-    ("index.empty_write", Search, None, Never),
-    ("index.invalid_manifest", Search, None, Never),
-    ("index.invalid_scorer", Search, None, Never),
-    ("hydrate.unsupported_signature", Format, None, Never),
-    ("hydrate.storage_failed", Internal, None, Backoff),
-    ("hydrate.not_started", Internal, None, Never),
-    ("hydrate.already_published", Internal, None, Never),
-    ("replica.content_digest_mismatch", Format, None, Refetch),
-    ("replica.scope_violation", Scope, None, Never),
-    ("replica.scope_pin_mismatch", Scope, None, Never),
-    ("replica.local_mutation_rejected", Write, None, Never),
-    ("replica.version_regression", Replication, None, Never),
-    ("replica.hydration_in_progress", Replication, None, Never),
-    ("replica.hydration_not_started", Replication, None, Never),
-    ("replica.partial_generation", Format, None, Refetch),
-    ("replica.tab_lease_held", Replication, None, AfterHint),
-    ("replica.stale_tab_lease", Replication, None, AfterReAcquire),
-    ("query.duplicate_shard", Query, None, Never),
-    ("query.duplicate_key", Query, None, Never),
-    ("query.counter_overflow", Query, None, Never),
-    ("search.pin_missing_shard", Search, None, NewPin),
-    ("search.unordered_shard", Search, None, Rebuild),
-    ("search.duplicate_hit", Search, None, Rebuild),
-    ("sync.map_mismatch", Sync, None, Never),
-    ("rpc.already_negotiated", Rpc, None, Never),
-    ("rpc.handler_violation", Rpc, None, Never),
-    ("rpc.invalid_envelope", Rpc, None, Never),
-    ("rpc.unknown_remote_code", Rpc, None, Never),
-    ("sync.corrupt_frame", Sync, None, Refetch),
-    ("sync.protocol_error", Sync, None, Reconnect),
-    ("format.malformed_header", Format, None, Never),
-    ("format.duplicate_record_key", Format, None, Never),
-    ("format.forbidden_namespace", Format, None, Never),
-    ("format.system_key_not_allowed", Format, None, Never),
-    ("format.not_projection_fact", Format, None, Never),
-    ("format.out_of_scope_record", Format, None, Never),
-    ("replication.artifact_missing", Replication, None, Backoff),
+    (
+        "projection.unknown_fact",
+        Projection,
+        None,
+        Never,
+        CodeDetail
+    ),
+    (
+        "projection.duplicate_fact",
+        Projection,
+        None,
+        Never,
+        CodeDetail
+    ),
+    (
+        "projection.fact_unavailable",
+        Projection,
+        None,
+        Backoff,
+        CodeDetail
+    ),
+    (
+        "projection.epoch_overflow",
+        Projection,
+        None,
+        AfterRebuild,
+        Code
+    ),
+    ("scope.empty_scope", Scope, None, Never, Code),
+    ("scope.invalid_table_name", Scope, None, Never, CodeDetail),
+    (
+        "scope.invalid_rule_set_selector",
+        Scope,
+        None,
+        Never,
+        CodeDetail
+    ),
+    ("scope.invalid_field_name", Scope, None, Never, CodeDetail),
+    ("scope.byte_count_overflow", Scope, None, Never, Code),
+    ("scope.shard_not_at_pin", Scope, None, Backoff, CodeDetail),
+    ("scope.duplicate_response", Scope, None, Never, CodeDetail),
+    ("scope.duplicate_row", Scope, None, Never, CodeDetail),
+    (
+        "scope.unsupported_diff_version",
+        Scope,
+        None,
+        Never,
+        CodeDetail
+    ),
+    (
+        "scope.duplicate_diff_record",
+        Scope,
+        None,
+        Never,
+        CodeDetail
+    ),
+    ("scope.version_regression", Scope, None, Never, CodeDetail),
+    (
+        "scope.diff_sequence_invalid",
+        Scope,
+        None,
+        Never,
+        CodeDetail
+    ),
+    ("scope.base_version_mismatch", Scope, None, Never, Code),
+    ("scope.malformed_diff", Scope, None, Never, Code),
+    (
+        "scope.duplicate_table_assignment",
+        Scope,
+        None,
+        Never,
+        CodeDetail
+    ),
+    ("scope.page_not_found", Scope, None, Never, CodeDetail),
+    ("scope.in_scope_member", Scope, None, Never, CodeDetail),
+    ("scope.not_evictable", Scope, None, Never, CodeDetail),
+    ("scope.shard_not_pinned", Scope, None, Never, CodeDetail),
+    ("manifest.duplicate_key", Manifest, None, Never, CodeDetail),
+    ("manifest.unsupported_value", Manifest, None, Never, Code),
+    ("kv.malformed_range", Key, None, Never, Code),
+    ("kv.malformed_cursor", Key, None, Never, Code),
+    ("kv.malformed_batch", Key, None, Never, Code),
+    ("kv.malformed_page", Key, None, Never, Code),
+    ("map.malformed_key", Map, None, Never, CodeDetail),
+    ("map.invalid_table", Map, None, Never, CodeDetail),
+    ("map.malformed_canonical", Map, None, Never, CodeDetail),
+    (
+        "index.field_not_searchable",
+        Search,
+        None,
+        Never,
+        CodeDetail
+    ),
+    ("index.unknown_flag", Search, None, Never, CodeDetail),
+    ("index.malformed_document", Search, None, Never, CodeDetail),
+    (
+        "index.version_not_monotonic",
+        Search,
+        None,
+        Never,
+        CodeDetail
+    ),
+    ("index.empty_write", Search, None, Never, Code),
+    ("index.invalid_manifest", Search, None, Never, CodeDetail),
+    ("index.invalid_scorer", Search, None, Never, CodeDetail),
+    ("hydrate.unsupported_signature", Format, None, Never, Code),
+    (
+        "hydrate.storage_failed",
+        Internal,
+        None,
+        Backoff,
+        CodeDetail
+    ),
+    ("hydrate.not_started", Internal, None, Never, Code),
+    ("hydrate.already_published", Internal, None, Never, Code),
+    (
+        "replica.content_digest_mismatch",
+        Format,
+        None,
+        Refetch,
+        CodeDetail
+    ),
+    ("replica.scope_violation", Scope, None, Never, CodeDetail),
+    ("replica.scope_pin_mismatch", Scope, None, Never, Code),
+    ("replica.local_mutation_rejected", Write, None, Never, Code),
+    ("replica.version_regression", Replication, None, Never, Code),
+    (
+        "replica.hydration_in_progress",
+        Replication,
+        None,
+        Never,
+        Code
+    ),
+    (
+        "replica.hydration_not_started",
+        Replication,
+        None,
+        Never,
+        Code
+    ),
+    (
+        "replica.partial_generation",
+        Format,
+        None,
+        Refetch,
+        CodeDetail
+    ),
+    ("replica.tab_lease_held", Replication, None, AfterHint, Code),
+    (
+        "replica.stale_tab_lease",
+        Replication,
+        None,
+        AfterReAcquire,
+        CodeDetail
+    ),
+    ("query.duplicate_shard", Query, None, Never, CodeDetail),
+    ("query.duplicate_key", Query, None, Never, CodeDetail),
+    ("query.counter_overflow", Query, None, Never, CodeDetail),
+    ("search.pin_missing_shard", Search, None, NewPin, CodeDetail),
+    ("search.unordered_shard", Search, None, Rebuild, CodeDetail),
+    ("search.duplicate_hit", Search, None, Rebuild, CodeDetail),
+    ("sync.map_mismatch", Sync, None, Never, CodeDetail),
+    ("rpc.already_negotiated", Rpc, None, Never, Code),
+    ("rpc.handler_violation", Rpc, None, Never, CodeDetail),
+    ("rpc.invalid_envelope", Rpc, None, Never, Code),
+    ("rpc.unknown_remote_code", Rpc, None, Never, CodeDetail),
+    ("sync.corrupt_frame", Sync, None, Refetch, Code),
+    ("sync.protocol_error", Sync, None, Reconnect, Code),
+    ("format.malformed_header", Format, None, Never, CodeDetail),
+    (
+        "format.duplicate_record_key",
+        Format,
+        None,
+        Never,
+        CodeDetail
+    ),
+    (
+        "format.forbidden_namespace",
+        Format,
+        None,
+        Never,
+        CodeDetail
+    ),
+    (
+        "format.system_key_not_allowed",
+        Format,
+        None,
+        Never,
+        CodeDetail
+    ),
+    (
+        "format.not_projection_fact",
+        Format,
+        None,
+        Never,
+        CodeDetail
+    ),
+    (
+        "format.out_of_scope_record",
+        Format,
+        None,
+        Never,
+        CodeDetail
+    ),
+    (
+        "replication.artifact_missing",
+        Replication,
+        None,
+        Backoff,
+        Code
+    ),
     (
         "replication.replica_authority_lease",
         Replication,
         None,
-        Never
+        Never,
+        Code
     ),
     (
         "replication.term_exhausted",
         Replication,
         None,
-        OperatorAction
+        OperatorAction,
+        Code
     ),
-    ("receipt.terminal_entry", Receipt, None, Never),
-    ("receipt.missing_outcome", Receipt, None, Never),
-    ("receipt.not_terminal", Receipt, None, Never),
+    ("receipt.terminal_entry", Receipt, None, Never, CodeDetail),
+    ("receipt.missing_outcome", Receipt, None, Never, CodeDetail),
+    ("receipt.not_terminal", Receipt, None, Never, CodeDetail),
 );
 
 const _: () = assert_registry(ERROR_REGISTRY);
@@ -1239,104 +1688,116 @@ mod tests {
         );
     }
 
+    const DISTINCT_CAUSE_CODES: [(&str, ErrorKind, Option<ReceiptState>, RetryClass, WireShape);
+        14] = [
+        (
+            "scope.system_key_rejected",
+            ErrorKind::Scope,
+            None,
+            RetryClass::Never,
+            WireShape::CodeDetail,
+        ),
+        (
+            "scope.remove_unknown_member",
+            ErrorKind::Scope,
+            None,
+            RetryClass::Never,
+            WireShape::CodeDetail,
+        ),
+        (
+            "scope.unknown_shard",
+            ErrorKind::Scope,
+            None,
+            RetryClass::Never,
+            WireShape::CodeDetail,
+        ),
+        (
+            "scope.missing_pin_shard",
+            ErrorKind::Scope,
+            None,
+            RetryClass::Never,
+            WireShape::CodeDetail,
+        ),
+        (
+            "projection.fact_set_mismatch",
+            ErrorKind::Projection,
+            None,
+            RetryClass::AfterRebuild,
+            WireShape::Code,
+        ),
+        (
+            "projection.fact_type_mismatch",
+            ErrorKind::Projection,
+            None,
+            RetryClass::AfterRebuild,
+            WireShape::CodeDetail,
+        ),
+        (
+            "projection.feed_sequence_invalid",
+            ErrorKind::Projection,
+            None,
+            RetryClass::AfterRebuild,
+            WireShape::CodeDetail,
+        ),
+        (
+            "manifest.json_syntax",
+            ErrorKind::Manifest,
+            None,
+            RetryClass::Never,
+            WireShape::CodeDetail,
+        ),
+        (
+            "manifest.missing_field",
+            ErrorKind::Manifest,
+            None,
+            RetryClass::Never,
+            WireShape::CodeDetail,
+        ),
+        (
+            "manifest.type_mismatch",
+            ErrorKind::Manifest,
+            None,
+            RetryClass::Never,
+            WireShape::CodeDetail,
+        ),
+        (
+            "manifest.invalid_value",
+            ErrorKind::Manifest,
+            None,
+            RetryClass::Never,
+            WireShape::CodeDetail,
+        ),
+        (
+            "outbox.forward_reference",
+            ErrorKind::Outbox,
+            None,
+            RetryClass::Never,
+            WireShape::CodeDetail,
+        ),
+        (
+            "outbox.fan_in_exceeded",
+            ErrorKind::Outbox,
+            None,
+            RetryClass::Never,
+            WireShape::CodeDetail,
+        ),
+        (
+            "outbox.duplicate_request",
+            ErrorKind::Outbox,
+            None,
+            RetryClass::Never,
+            WireShape::CodeDetail,
+        ),
+    ];
+
     #[test]
     fn the_distinct_cause_codes_are_pinned() {
-        let cases = [
-            (
-                "scope.system_key_rejected",
-                ErrorKind::Scope,
-                None,
-                RetryClass::Never,
-            ),
-            (
-                "scope.remove_unknown_member",
-                ErrorKind::Scope,
-                None,
-                RetryClass::Never,
-            ),
-            (
-                "scope.unknown_shard",
-                ErrorKind::Scope,
-                None,
-                RetryClass::Never,
-            ),
-            (
-                "scope.missing_pin_shard",
-                ErrorKind::Scope,
-                None,
-                RetryClass::Never,
-            ),
-            (
-                "projection.fact_set_mismatch",
-                ErrorKind::Projection,
-                None,
-                RetryClass::AfterRebuild,
-            ),
-            (
-                "projection.fact_type_mismatch",
-                ErrorKind::Projection,
-                None,
-                RetryClass::AfterRebuild,
-            ),
-            (
-                "projection.feed_sequence_invalid",
-                ErrorKind::Projection,
-                None,
-                RetryClass::AfterRebuild,
-            ),
-            (
-                "manifest.json_syntax",
-                ErrorKind::Manifest,
-                None,
-                RetryClass::Never,
-            ),
-            (
-                "manifest.missing_field",
-                ErrorKind::Manifest,
-                None,
-                RetryClass::Never,
-            ),
-            (
-                "manifest.type_mismatch",
-                ErrorKind::Manifest,
-                None,
-                RetryClass::Never,
-            ),
-            (
-                "manifest.invalid_value",
-                ErrorKind::Manifest,
-                None,
-                RetryClass::Never,
-            ),
-            (
-                "outbox.forward_reference",
-                ErrorKind::Outbox,
-                None,
-                RetryClass::Never,
-            ),
-            (
-                "outbox.fan_in_exceeded",
-                ErrorKind::Outbox,
-                None,
-                RetryClass::Never,
-            ),
-            (
-                "outbox.duplicate_request",
-                ErrorKind::Outbox,
-                None,
-                RetryClass::Never,
-            ),
-        ];
-        for (code, kind, receipt, retry) in cases {
+        for (code, kind, receipt, retry, shape) in DISTINCT_CAUSE_CODES {
             let spec = lookup(code).unwrap_or_else(|| panic!("the code {code} is not registered"));
             assert_eq!(spec.kind, kind, "the kind is wrong for {code}");
             assert_eq!(spec.receipt, receipt, "the receipt is wrong for {code}");
             assert_eq!(spec.retry, retry, "the retry class is wrong for {code}");
-            assert_eq!(
-                spec.wire_shape,
-                WireShape::Code,
-                "the shape is wrong for {code}"
-            );
+            assert_eq!(spec.wire_shape, shape, "the shape is wrong for {code}");
         }
     }
 

@@ -6,7 +6,9 @@
 mod support;
 
 use oxkv_contracts::cursor::{CursorExpiry, CursorToken, CursorType};
-use oxkv_contracts::error::{ERROR_REGISTRY, find_duplicate_code, is_valid_code_shape, lookup};
+use oxkv_contracts::error::{
+    ERROR_REGISTRY, WireShape, find_duplicate_code, is_valid_code_shape, lookup,
+};
 use oxkv_contracts::keyspace::SYSTEM_NAMESPACES;
 use oxkv_contracts::receipt::ReceiptState;
 use oxkv_contracts::version::{ArtifactKind, VersionAxis};
@@ -48,6 +50,50 @@ fn error_registry_golden_vector_is_pinned() {
         );
         assert_eq!(expected_str(case, "retry"), spec.retry.name());
         assert_eq!(expected_bool(case, "terminal"), spec.terminal);
+        assert_eq!(expected_str(case, "wire_shape"), spec.wire_shape.name());
+    }
+}
+
+#[test]
+fn every_code_has_one_wire_shape_and_the_golden_vector_pins_it() {
+    let file = support::load(include_str!("vectors/error-registry.json"));
+    assert_contract(&file, "receipt-error/v1");
+    assert_eq!(file.cases.len(), ERROR_REGISTRY.len());
+
+    // Each code has exactly one shape, and the shape is a known shape.
+    for spec in ERROR_REGISTRY {
+        assert!(
+            WireShape::ALL.contains(&spec.wire_shape),
+            "the code {} has no wire shape",
+            spec.code
+        );
+    }
+
+    // Both shapes occur. The column therefore separates real codes.
+    for shape in WireShape::ALL {
+        assert!(
+            ERROR_REGISTRY.iter().any(|spec| spec.wire_shape == *shape),
+            "no code uses the wire shape {shape}"
+        );
+    }
+
+    // The golden vector pins the shape of every code one time.
+    for spec in ERROR_REGISTRY {
+        assert!(
+            file.cases.iter().any(|case| case.name == spec.code),
+            "the golden vector does not pin the code {}",
+            spec.code
+        );
+    }
+    for case in &file.cases {
+        let spec = lookup(&case.name)
+            .unwrap_or_else(|| panic!("the golden code {} is not registered", case.name));
+        assert_eq!(
+            expected_str(case, "wire_shape"),
+            spec.wire_shape.name(),
+            "the wire shape changed for {}",
+            case.name
+        );
     }
 }
 

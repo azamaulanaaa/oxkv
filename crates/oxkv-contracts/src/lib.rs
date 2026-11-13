@@ -42,7 +42,8 @@ pub use cursor::{
     SortValue, SyncCursor,
 };
 pub use error::{
-    ERROR_REGISTRY, ErrorCode, ErrorKind, ErrorRegistryError, ErrorSpec, RetryClass, lookup,
+    ERROR_REGISTRY, ErrorCode, ErrorKind, ErrorRegistryError, ErrorSpec, RetryClass, WireShape,
+    lookup,
 };
 pub use internal::InternalDiagnostic;
 pub use keyspace::{

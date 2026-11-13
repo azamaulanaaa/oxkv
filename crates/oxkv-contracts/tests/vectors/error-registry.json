@@ -5,7 +5,8 @@
         "kind": "key",
         "receipt": "Rejected",
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "key.unknown_version"
     },
@@ -14,7 +15,8 @@
         "kind": "key",
         "receipt": "Rejected",
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "key.malformed"
     },
@@ -23,7 +25,8 @@
         "kind": "key",
         "receipt": "Rejected",
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "key.non_canonical"
     },
@@ -32,7 +35,8 @@
         "kind": "key",
         "receipt": "Rejected",
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "key.outside_table"
     },
@@ -41,7 +45,8 @@
         "kind": "key",
         "receipt": "Rejected",
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "key.invalid_utf8"
     },
@@ -50,7 +55,8 @@
         "kind": "key",
         "receipt": "Rejected",
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "key.too_large"
     },
@@ -59,7 +65,8 @@
         "kind": "key",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "key.not_found"
     },
@@ -68,7 +75,8 @@
         "kind": "key",
         "receipt": "Rejected",
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "key.reserved_system_marker"
     },
@@ -77,7 +85,8 @@
         "kind": "key",
         "receipt": "Rejected",
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "key.unknown_system_id"
     },
@@ -86,7 +95,8 @@
         "kind": "format",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "format.unsupported_version"
     },
@@ -95,7 +105,8 @@
         "kind": "format",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "format.missing_required_feature"
     },
@@ -104,7 +115,8 @@
         "kind": "format",
         "receipt": null,
         "retry": "Refetch",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "format.corrupt_page"
     },
@@ -113,7 +125,8 @@
         "kind": "format",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "format.page_out_of_bounds"
     },
@@ -122,7 +135,8 @@
         "kind": "format",
         "receipt": null,
         "retry": "Refetch",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "format.truncated_snapshot"
     },
@@ -131,7 +145,8 @@
         "kind": "format",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "format.missing_provenance"
     },
@@ -140,7 +155,8 @@
         "kind": "format",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "format.page_too_large"
     },
@@ -149,7 +165,8 @@
         "kind": "manifest",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "manifest.unsupported_schema"
     },
@@ -158,7 +175,8 @@
         "kind": "manifest",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "manifest.unknown_field"
     },
@@ -167,7 +185,8 @@
         "kind": "manifest",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "manifest.duplicate_name"
     },
@@ -176,7 +195,8 @@
         "kind": "manifest",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "manifest.reserved_table_name"
     },
@@ -185,7 +205,8 @@
         "kind": "manifest",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "manifest.key_schema_missing"
     },
@@ -194,7 +215,8 @@
         "kind": "manifest",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "manifest.float_not_allowed"
     },
@@ -203,7 +225,8 @@
         "kind": "manifest",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "manifest.index_unknown_field"
     },
@@ -212,7 +235,8 @@
         "kind": "manifest",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "manifest.index_scope_unreachable"
     },
@@ -221,7 +245,8 @@
         "kind": "manifest",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "manifest.rule_unknown_path"
     },
@@ -230,7 +255,8 @@
         "kind": "manifest",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "manifest.rule_unbounded"
     },
@@ -239,7 +265,8 @@
         "kind": "manifest",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "manifest.operation_cross_shard"
     },
@@ -248,7 +275,8 @@
         "kind": "manifest",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "manifest.operation_unknown_field"
     },
@@ -257,7 +285,8 @@
         "kind": "manifest",
         "receipt": null,
         "retry": "Regenerate",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "manifest.artifact_drift"
     },
@@ -266,7 +295,8 @@
         "kind": "manifest",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "manifest.policy_catalog_missing"
     },
@@ -275,7 +305,8 @@
         "kind": "manifest",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "manifest.json_syntax"
     },
@@ -284,7 +315,8 @@
         "kind": "manifest",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "manifest.missing_field"
     },
@@ -293,7 +325,8 @@
         "kind": "manifest",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "manifest.type_mismatch"
     },
@@ -302,7 +335,8 @@
         "kind": "manifest",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "manifest.invalid_value"
     },
@@ -311,7 +345,8 @@
         "kind": "policy",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "policy.parse_error"
     },
@@ -320,7 +355,8 @@
         "kind": "policy",
         "receipt": "Rejected",
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "policy.unknown_field"
     },
@@ -329,7 +365,8 @@
         "kind": "policy",
         "receipt": "Rejected",
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "policy.budget_exhausted"
     },
@@ -338,7 +375,8 @@
         "kind": "policy",
         "receipt": "Rejected",
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "policy.not_total"
     },
@@ -347,7 +385,8 @@
         "kind": "policy",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "policy.ast_unsupported"
     },
@@ -356,7 +395,8 @@
         "kind": "policy",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "policy.regex_not_supported"
     },
@@ -365,7 +405,8 @@
         "kind": "rule",
         "receipt": "Rejected",
         "retry": "After fix",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "rule.compile_failed"
     },
@@ -374,7 +415,8 @@
         "kind": "rule",
         "receipt": "Rejected",
         "retry": "After fix",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "rule.dry_run_failed"
     },
@@ -383,7 +425,8 @@
         "kind": "rule",
         "receipt": "Rejected",
         "retry": "After approval",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "rule.approval_required"
     },
@@ -392,7 +435,8 @@
         "kind": "rule",
         "receipt": "Rejected",
         "retry": "After rollout",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "rule.rollout_limit"
     },
@@ -401,7 +445,8 @@
         "kind": "rule",
         "receipt": "Rejected",
         "retry": "After rollout",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "rule.rollout_missing"
     },
@@ -410,7 +455,8 @@
         "kind": "write",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "write.missing_base_version"
     },
@@ -419,7 +465,8 @@
         "kind": "write",
         "receipt": "Rejected",
         "retry": "After re-read",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "write.stale_base_version"
     },
@@ -428,7 +475,8 @@
         "kind": "write",
         "receipt": "Conflict",
         "retry": "After rebase",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "write.version_conflict"
     },
@@ -437,7 +485,8 @@
         "kind": "write",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "write.idempotency_key_reuse"
     },
@@ -446,7 +495,8 @@
         "kind": "write",
         "receipt": "Rejected",
         "retry": "After re-read",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "write.queue_timeout"
     },
@@ -455,7 +505,8 @@
         "kind": "write",
         "receipt": "Rejected",
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "write.operation_unknown"
     },
@@ -464,7 +515,8 @@
         "kind": "write",
         "receipt": "Rejected",
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "write.batch_too_large"
     },
@@ -473,7 +525,8 @@
         "kind": "write",
         "receipt": "Rejected",
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "write.value_too_large"
     },
@@ -482,7 +535,8 @@
         "kind": "shard",
         "receipt": "Rejected",
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "shard.cross_mutation_rejected"
     },
@@ -491,7 +545,8 @@
         "kind": "receipt",
         "receipt": null,
         "retry": "After re-read",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "receipt.expired"
     },
@@ -500,7 +555,8 @@
         "kind": "receipt",
         "receipt": null,
         "retry": "Resubmit",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "receipt.not_found"
     },
@@ -509,7 +565,8 @@
         "kind": "receipt",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "receipt.state_invalid"
     },
@@ -518,7 +575,8 @@
         "kind": "outbox",
         "receipt": null,
         "retry": "After drain",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "outbox.full"
     },
@@ -527,7 +585,8 @@
         "kind": "outbox",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "outbox.dependency_cycle"
     },
@@ -536,7 +595,8 @@
         "kind": "outbox",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "outbox.cross_shard_edge"
     },
@@ -545,7 +605,8 @@
         "kind": "outbox",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "outbox.forward_reference"
     },
@@ -554,7 +615,8 @@
         "kind": "outbox",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "outbox.fan_in_exceeded"
     },
@@ -563,7 +625,8 @@
         "kind": "outbox",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "outbox.duplicate_request"
     },
@@ -572,7 +635,8 @@
         "kind": "projection",
         "receipt": "Queued",
         "retry": "Backoff",
-        "terminal": false
+        "terminal": false,
+        "wire_shape": "code_detail"
       },
       "name": "projection.lagging"
     },
@@ -581,7 +645,8 @@
         "kind": "projection",
         "receipt": "Rejected",
         "retry": "After rebuild",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "projection.epoch_invalid"
     },
@@ -590,7 +655,8 @@
         "kind": "projection",
         "receipt": "Rejected",
         "retry": "After rebuild",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "projection.watermark_regression"
     },
@@ -599,7 +665,8 @@
         "kind": "projection",
         "receipt": "Rejected",
         "retry": "After rebuild",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "projection.checksum_failed"
     },
@@ -608,7 +675,8 @@
         "kind": "projection",
         "receipt": "Rejected",
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "projection.client_write_rejected"
     },
@@ -617,7 +685,8 @@
         "kind": "projection",
         "receipt": "Rejected",
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "projection.fan_in_exceeded"
     },
@@ -626,7 +695,8 @@
         "kind": "projection",
         "receipt": "Rejected",
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "projection.read_set_exceeded"
     },
@@ -635,7 +705,8 @@
         "kind": "projection",
         "receipt": null,
         "retry": "After rebuild",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "projection.fact_set_mismatch"
     },
@@ -644,7 +715,8 @@
         "kind": "projection",
         "receipt": null,
         "retry": "After rebuild",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "projection.fact_type_mismatch"
     },
@@ -653,7 +725,8 @@
         "kind": "projection",
         "receipt": null,
         "retry": "After rebuild",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "projection.feed_sequence_invalid"
     },
@@ -662,7 +735,8 @@
         "kind": "policy",
         "receipt": "Rejected",
         "retry": "After catch-up",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "authorization.stale_facts"
     },
@@ -671,7 +745,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "scope.over_limit"
     },
@@ -680,7 +755,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "scope.device_budget_exceeded"
     },
@@ -689,7 +765,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "scope.hydration_budget_exceeded"
     },
@@ -698,7 +775,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "scope.identity_mismatch"
     },
@@ -707,7 +785,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "After policy sync",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "scope.policy_version_unknown"
     },
@@ -716,7 +795,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Backoff",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "scope.shard_unreachable"
     },
@@ -725,7 +805,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "scope.system_key_rejected"
     },
@@ -734,7 +815,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "scope.remove_unknown_member"
     },
@@ -743,7 +825,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "scope.unknown_shard"
     },
@@ -752,7 +835,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "scope.missing_pin_shard"
     },
@@ -761,7 +845,8 @@
         "kind": "sync",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "sync.unsupported_version"
     },
@@ -770,7 +855,8 @@
         "kind": "sync",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "sync.unknown_capability"
     },
@@ -779,7 +865,8 @@
         "kind": "sync",
         "receipt": null,
         "retry": "After change",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "sync.scope_rejected"
     },
@@ -788,7 +875,8 @@
         "kind": "sync",
         "receipt": null,
         "retry": "Snapshot fallback",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "sync.cursor_expired"
     },
@@ -797,7 +885,8 @@
         "kind": "sync",
         "receipt": null,
         "retry": "New cursor",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "sync.cursor_invalid"
     },
@@ -806,7 +895,8 @@
         "kind": "sync",
         "receipt": null,
         "retry": "New cursor",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "sync.cursor_type_mismatch"
     },
@@ -815,7 +905,8 @@
         "kind": "sync",
         "receipt": null,
         "retry": "Snapshot fallback",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "sync.gap_too_large"
     },
@@ -824,7 +915,8 @@
         "kind": "sync",
         "receipt": null,
         "retry": "Backoff",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "sync.snapshot_unavailable"
     },
@@ -833,7 +925,8 @@
         "kind": "sync",
         "receipt": null,
         "retry": "Backoff",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "sync.rate_limited"
     },
@@ -842,7 +935,8 @@
         "kind": "sync",
         "receipt": null,
         "retry": "After auth",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "sync.unauthorized"
     },
@@ -851,7 +945,8 @@
         "kind": "sync",
         "receipt": null,
         "retry": "Backoff",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "sync.shard_unavailable"
     },
@@ -860,7 +955,8 @@
         "kind": "sync",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "sync.negotiation_required"
     },
@@ -869,7 +965,8 @@
         "kind": "sync",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "sync.incompatible_manifest"
     },
@@ -878,7 +975,8 @@
         "kind": "read",
         "receipt": null,
         "retry": "New pin",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "read.pin_expired"
     },
@@ -887,7 +985,8 @@
         "kind": "read",
         "receipt": null,
         "retry": "New pin",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "read.pin_unreadable"
     },
@@ -896,7 +995,8 @@
         "kind": "read",
         "receipt": null,
         "retry": "Backoff",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "read.behind_commit"
     },
@@ -905,7 +1005,8 @@
         "kind": "read",
         "receipt": null,
         "retry": "Backoff",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "read.not_hydrated"
     },
@@ -914,7 +1015,8 @@
         "kind": "read",
         "receipt": null,
         "retry": "Backoff",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "read.not_resident"
     },
@@ -923,7 +1025,8 @@
         "kind": "read",
         "receipt": null,
         "retry": "Backoff",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "read.stale"
     },
@@ -932,7 +1035,8 @@
         "kind": "search",
         "receipt": null,
         "retry": "New pin",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "search.pin_expired"
     },
@@ -941,7 +1045,8 @@
         "kind": "search",
         "receipt": null,
         "retry": "New query",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "search.cursor_invalid"
     },
@@ -950,7 +1055,8 @@
         "kind": "search",
         "receipt": null,
         "retry": "Narrow query",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "search.fanout_exceeded"
     },
@@ -959,7 +1065,8 @@
         "kind": "search",
         "receipt": null,
         "retry": "Rebuild",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "search.index_mismatch"
     },
@@ -968,7 +1075,8 @@
         "kind": "search",
         "receipt": null,
         "retry": "Rebuild",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "search.tokenizer_mismatch"
     },
@@ -977,7 +1085,8 @@
         "kind": "search",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "search.tokenizer_unknown"
     },
@@ -986,7 +1095,8 @@
         "kind": "search",
         "receipt": null,
         "retry": "Narrow query",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "search.token_budget_exceeded"
     },
@@ -995,7 +1105,8 @@
         "kind": "search",
         "receipt": "Rejected",
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "index.overhead_exceeded"
     },
@@ -1004,7 +1115,8 @@
         "kind": "query",
         "receipt": null,
         "retry": "Narrow query",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "query.budget_exceeded"
     },
@@ -1013,7 +1125,8 @@
         "kind": "map",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "map.unknown_version"
     },
@@ -1022,7 +1135,8 @@
         "kind": "map",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "map.overlap"
     },
@@ -1031,7 +1145,8 @@
         "kind": "map",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "map.gap"
     },
@@ -1040,7 +1155,8 @@
         "kind": "map",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "map.duplicate_id"
     },
@@ -1049,7 +1165,8 @@
         "kind": "map",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "map.empty_range"
     },
@@ -1058,7 +1175,8 @@
         "kind": "map",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "map.table_unmapped"
     },
@@ -1067,7 +1185,8 @@
         "kind": "map",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "map.table_split_unsupported"
     },
@@ -1076,7 +1195,8 @@
         "kind": "replication",
         "receipt": "Rejected",
         "retry": "After re-acquire",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "replication.stale_epoch"
     },
@@ -1085,7 +1205,8 @@
         "kind": "replication",
         "receipt": "Rejected",
         "retry": "After re-acquire",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "replication.lease_expired"
     },
@@ -1094,7 +1215,8 @@
         "kind": "replication",
         "receipt": null,
         "retry": "After hint",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "replication.lease_held"
     },
@@ -1103,7 +1225,8 @@
         "kind": "replication",
         "receipt": null,
         "retry": "Operator action",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "replication.only_copy_eviction"
     },
@@ -1112,7 +1235,8 @@
         "kind": "replication",
         "receipt": null,
         "retry": "Backoff",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "replication.tier_unavailable"
     },
@@ -1121,7 +1245,8 @@
         "kind": "replication",
         "receipt": null,
         "retry": "Continue with cursor",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "replication.warmup_budget_exceeded"
     },
@@ -1130,7 +1255,8 @@
         "kind": "replication",
         "receipt": "Rejected",
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "replication.placement_violation"
     },
@@ -1139,7 +1265,8 @@
         "kind": "replication",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "replication.journal_corrupt"
     },
@@ -1148,7 +1275,8 @@
         "kind": "replication",
         "receipt": null,
         "retry": "Backoff",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "replication.journal_io"
     },
@@ -1157,7 +1285,8 @@
         "kind": "event",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "event.unknown_version"
     },
@@ -1166,7 +1295,8 @@
         "kind": "event",
         "receipt": null,
         "retry": "Snapshot backfill",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "event.retention_gap"
     },
@@ -1175,7 +1305,8 @@
         "kind": "event",
         "receipt": null,
         "retry": "Dead-letter",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "event.poison"
     },
@@ -1184,7 +1315,8 @@
         "kind": "event",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "event.payload_too_large"
     },
@@ -1193,7 +1325,8 @@
         "kind": "consumer",
         "receipt": null,
         "retry": "Backoff",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "consumer.too_slow"
     },
@@ -1202,7 +1335,8 @@
         "kind": "consumer",
         "receipt": null,
         "retry": "Backoff",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "consumer.handler_failed"
     },
@@ -1211,7 +1345,8 @@
         "kind": "consumer",
         "receipt": null,
         "retry": "Operator action",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "consumer.dead_lettered"
     },
@@ -1220,7 +1355,8 @@
         "kind": "consumer",
         "receipt": null,
         "retry": "Snapshot backfill",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "consumer.cursor_expired"
     },
@@ -1229,7 +1365,8 @@
         "kind": "auth",
         "receipt": null,
         "retry": "After auth",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "auth.unauthenticated"
     },
@@ -1238,7 +1375,8 @@
         "kind": "auth",
         "receipt": null,
         "retry": "After refresh",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "auth.stale_credentials"
     },
@@ -1247,7 +1385,8 @@
         "kind": "auth",
         "receipt": "Rejected",
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "auth.forbidden"
     },
@@ -1256,7 +1395,8 @@
         "kind": "auth",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "auth.replayed_request"
     },
@@ -1265,7 +1405,8 @@
         "kind": "audit",
         "receipt": null,
         "retry": "Backoff",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "audit.unavailable"
     },
@@ -1274,7 +1415,8 @@
         "kind": "audit",
         "receipt": null,
         "retry": "Operator action",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "audit.chain_invalid"
     },
@@ -1283,7 +1425,8 @@
         "kind": "audit",
         "receipt": null,
         "retry": "After auth",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "audit.export_denied"
     },
@@ -1292,7 +1435,8 @@
         "kind": "operations",
         "receipt": "Rejected",
         "retry": "After maintenance",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "shard.frozen_for_maintenance"
     },
@@ -1301,7 +1445,8 @@
         "kind": "operations",
         "receipt": null,
         "retry": "Restart backup",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "ops.backup_pin_lost"
     },
@@ -1310,7 +1455,8 @@
         "kind": "operations",
         "receipt": null,
         "retry": "Restart restore",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "ops.restore_checksum_mismatch"
     },
@@ -1319,7 +1465,8 @@
         "kind": "operations",
         "receipt": null,
         "retry": "Resume migration",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "ops.migration_incomplete"
     },
@@ -1328,7 +1475,8 @@
         "kind": "operations",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "ops.downgrade_not_allowed"
     },
@@ -1337,7 +1485,8 @@
         "kind": "operations",
         "receipt": null,
         "retry": "After rebase",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "ops.client_outbox_stale"
     },
@@ -1346,7 +1495,8 @@
         "kind": "operations",
         "receipt": "Rejected",
         "retry": "After quota",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "ops.quota_exceeded"
     },
@@ -1355,7 +1505,8 @@
         "kind": "operations",
         "receipt": null,
         "retry": "Backoff",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "ops.rate_limited"
     },
@@ -1364,7 +1515,8 @@
         "kind": "rpc",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "rpc.unknown_method"
     },
@@ -1373,7 +1525,8 @@
         "kind": "rpc",
         "receipt": null,
         "retry": "Regenerate client",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "rpc.descriptor_mismatch"
     },
@@ -1382,7 +1535,8 @@
         "kind": "rpc",
         "receipt": null,
         "retry": "Reconnect",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "rpc.codec_unsupported"
     },
@@ -1391,7 +1545,8 @@
         "kind": "internal",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       },
       "name": "internal.invariant_violation"
     },
@@ -1400,7 +1555,8 @@
         "kind": "internal",
         "receipt": "Rejected",
         "retry": "Backoff",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       },
       "name": "internal.resource_exhausted"
     },
@@ -1410,7 +1566,8 @@
         "kind": "projection",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1419,7 +1576,8 @@
         "kind": "projection",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1428,7 +1586,8 @@
         "kind": "projection",
         "receipt": null,
         "retry": "Backoff",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1437,7 +1596,8 @@
         "kind": "projection",
         "receipt": null,
         "retry": "After rebuild",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -1446,7 +1606,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -1455,7 +1616,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1464,7 +1626,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1473,7 +1636,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1482,7 +1646,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -1491,7 +1656,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Backoff",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1500,7 +1666,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1509,7 +1676,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1518,7 +1686,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1527,7 +1696,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1536,7 +1706,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1545,7 +1716,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1554,7 +1726,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -1563,7 +1736,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -1572,7 +1746,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1581,7 +1756,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1590,7 +1766,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1599,7 +1776,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1608,7 +1786,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1617,7 +1796,8 @@
         "kind": "manifest",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1626,7 +1806,8 @@
         "kind": "manifest",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -1635,7 +1816,8 @@
         "kind": "key",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -1644,7 +1826,8 @@
         "kind": "key",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -1653,7 +1836,8 @@
         "kind": "key",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -1662,7 +1846,8 @@
         "kind": "key",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -1671,7 +1856,8 @@
         "kind": "map",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1680,7 +1866,8 @@
         "kind": "map",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1689,7 +1876,8 @@
         "kind": "map",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1698,7 +1886,8 @@
         "kind": "search",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1707,7 +1896,8 @@
         "kind": "search",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1716,7 +1906,8 @@
         "kind": "search",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1725,7 +1916,8 @@
         "kind": "search",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1734,7 +1926,8 @@
         "kind": "search",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -1743,7 +1936,8 @@
         "kind": "search",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1752,7 +1946,8 @@
         "kind": "search",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1761,7 +1956,8 @@
         "kind": "format",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -1770,7 +1966,8 @@
         "kind": "internal",
         "receipt": null,
         "retry": "Backoff",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1779,7 +1976,8 @@
         "kind": "internal",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -1788,7 +1986,8 @@
         "kind": "internal",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -1797,7 +1996,8 @@
         "kind": "format",
         "receipt": null,
         "retry": "Refetch",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1806,7 +2006,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1815,7 +2016,8 @@
         "kind": "scope",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -1824,7 +2026,8 @@
         "kind": "write",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -1833,7 +2036,8 @@
         "kind": "replication",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -1842,7 +2046,8 @@
         "kind": "replication",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -1851,7 +2056,8 @@
         "kind": "replication",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -1860,7 +2066,8 @@
         "kind": "format",
         "receipt": null,
         "retry": "Refetch",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1869,7 +2076,8 @@
         "kind": "replication",
         "receipt": null,
         "retry": "After hint",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -1878,7 +2086,8 @@
         "kind": "replication",
         "receipt": null,
         "retry": "After re-acquire",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1887,7 +2096,8 @@
         "kind": "query",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1896,7 +2106,8 @@
         "kind": "query",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1905,7 +2116,8 @@
         "kind": "query",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1914,7 +2126,8 @@
         "kind": "search",
         "receipt": null,
         "retry": "New pin",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1923,7 +2136,8 @@
         "kind": "search",
         "receipt": null,
         "retry": "Rebuild",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1932,7 +2146,8 @@
         "kind": "search",
         "receipt": null,
         "retry": "Rebuild",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1941,7 +2156,8 @@
         "kind": "sync",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1950,7 +2166,8 @@
         "kind": "rpc",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -1959,7 +2176,8 @@
         "kind": "rpc",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1968,7 +2186,8 @@
         "kind": "rpc",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -1977,7 +2196,8 @@
         "kind": "rpc",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -1986,7 +2206,8 @@
         "kind": "sync",
         "receipt": null,
         "retry": "Refetch",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -1995,7 +2216,8 @@
         "kind": "sync",
         "receipt": null,
         "retry": "Reconnect",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -2004,7 +2226,8 @@
         "kind": "format",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -2013,7 +2236,8 @@
         "kind": "format",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -2022,7 +2246,8 @@
         "kind": "format",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -2031,7 +2256,8 @@
         "kind": "format",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -2040,7 +2266,8 @@
         "kind": "format",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -2049,7 +2276,8 @@
         "kind": "format",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -2058,7 +2286,8 @@
         "kind": "replication",
         "receipt": null,
         "retry": "Backoff",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -2067,7 +2296,8 @@
         "kind": "replication",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -2076,7 +2306,8 @@
         "kind": "replication",
         "receipt": null,
         "retry": "Operator action",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code"
       }
     },
     {
@@ -2085,7 +2316,8 @@
         "kind": "receipt",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -2094,7 +2326,8 @@
         "kind": "receipt",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     },
     {
@@ -2103,7 +2336,8 @@
         "kind": "receipt",
         "receipt": null,
         "retry": "Never",
-        "terminal": true
+        "terminal": true,
+        "wire_shape": "code_detail"
       }
     }
   ],
