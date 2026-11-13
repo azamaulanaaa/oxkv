@@ -1,0 +1,191 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "group": "product"
+      },
+      "name": "crate_version"
+    },
+    {
+      "expected": {
+        "group": "contract"
+      },
+      "name": "key_encoding_version"
+    },
+    {
+      "expected": {
+        "group": "contract"
+      },
+      "name": "snapshot_page_version"
+    },
+    {
+      "expected": {
+        "group": "contract"
+      },
+      "name": "sync_wire_version"
+    },
+    {
+      "expected": {
+        "group": "contract"
+      },
+      "name": "manifest_schema_version"
+    },
+    {
+      "expected": {
+        "group": "contract"
+      },
+      "name": "policy_ast_version"
+    },
+    {
+      "expected": {
+        "group": "contract"
+      },
+      "name": "receipt_error_version"
+    },
+    {
+      "expected": {
+        "group": "contract"
+      },
+      "name": "descriptor_version"
+    },
+    {
+      "expected": {
+        "group": "contract"
+      },
+      "name": "map_schema_version"
+    },
+    {
+      "expected": {
+        "group": "contract"
+      },
+      "name": "tokenizer_version"
+    },
+    {
+      "expected": {
+        "group": "contract"
+      },
+      "name": "event_version"
+    },
+    {
+      "expected": {
+        "group": "contract"
+      },
+      "name": "audit_version"
+    },
+    {
+      "expected": {
+        "group": "contract"
+      },
+      "name": "scope_version"
+    },
+    {
+      "expected": {
+        "group": "contract"
+      },
+      "name": "projection_version"
+    },
+    {
+      "expected": {
+        "group": "contract"
+      },
+      "name": "cost_version"
+    },
+    {
+      "expected": {
+        "group": "data"
+      },
+      "name": "commit_version"
+    },
+    {
+      "expected": {
+        "group": "data"
+      },
+      "name": "key_version"
+    },
+    {
+      "expected": {
+        "group": "data"
+      },
+      "name": "snapshot_version"
+    },
+    {
+      "expected": {
+        "group": "data"
+      },
+      "name": "scope_version_vector"
+    },
+    {
+      "expected": {
+        "group": "data"
+      },
+      "name": "projection_epoch"
+    },
+    {
+      "expected": {
+        "group": "data"
+      },
+      "name": "fact_version"
+    },
+    {
+      "expected": {
+        "group": "data"
+      },
+      "name": "statistics_version"
+    },
+    {
+      "expected": {
+        "group": "data"
+      },
+      "name": "map_version"
+    },
+    {
+      "expected": {
+        "group": "identity"
+      },
+      "name": "manifest_revision"
+    },
+    {
+      "expected": {
+        "group": "identity"
+      },
+      "name": "manifest_digest"
+    },
+    {
+      "expected": {
+        "group": "identity"
+      },
+      "name": "policy_version"
+    },
+    {
+      "expected": {
+        "group": "identity"
+      },
+      "name": "map_digest"
+    },
+    {
+      "expected": {
+        "group": "identity"
+      },
+      "name": "descriptor_digest"
+    },
+    {
+      "expected": {
+        "group": "fence"
+      },
+      "name": "lease_term"
+    },
+    {
+      "expected": {
+        "group": "session"
+      },
+      "name": "session_minimum"
+    },
+    {
+      "expected": {
+        "group": "session"
+      },
+      "name": "replica_high_water"
+    }
+  ],
+  "contract": "version-axes/v1"
+}

@@ -1,0 +1,1256 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "kind": "key",
+        "receipt": "Rejected",
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "key.unknown_version"
+    },
+    {
+      "expected": {
+        "kind": "key",
+        "receipt": "Rejected",
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "key.malformed"
+    },
+    {
+      "expected": {
+        "kind": "key",
+        "receipt": "Rejected",
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "key.non_canonical"
+    },
+    {
+      "expected": {
+        "kind": "key",
+        "receipt": "Rejected",
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "key.outside_table"
+    },
+    {
+      "expected": {
+        "kind": "key",
+        "receipt": "Rejected",
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "key.invalid_utf8"
+    },
+    {
+      "expected": {
+        "kind": "key",
+        "receipt": "Rejected",
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "key.too_large"
+    },
+    {
+      "expected": {
+        "kind": "key",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "key.not_found"
+    },
+    {
+      "expected": {
+        "kind": "key",
+        "receipt": "Rejected",
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "key.reserved_system_marker"
+    },
+    {
+      "expected": {
+        "kind": "key",
+        "receipt": "Rejected",
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "key.unknown_system_id"
+    },
+    {
+      "expected": {
+        "kind": "format",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "format.unsupported_version"
+    },
+    {
+      "expected": {
+        "kind": "format",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "format.missing_required_feature"
+    },
+    {
+      "expected": {
+        "kind": "format",
+        "receipt": null,
+        "retry": "Refetch",
+        "terminal": true
+      },
+      "name": "format.corrupt_page"
+    },
+    {
+      "expected": {
+        "kind": "format",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "format.page_out_of_bounds"
+    },
+    {
+      "expected": {
+        "kind": "format",
+        "receipt": null,
+        "retry": "Refetch",
+        "terminal": true
+      },
+      "name": "format.truncated_snapshot"
+    },
+    {
+      "expected": {
+        "kind": "format",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "format.missing_provenance"
+    },
+    {
+      "expected": {
+        "kind": "format",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "format.page_too_large"
+    },
+    {
+      "expected": {
+        "kind": "manifest",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "manifest.unsupported_schema"
+    },
+    {
+      "expected": {
+        "kind": "manifest",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "manifest.unknown_field"
+    },
+    {
+      "expected": {
+        "kind": "manifest",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "manifest.duplicate_name"
+    },
+    {
+      "expected": {
+        "kind": "manifest",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "manifest.reserved_table_name"
+    },
+    {
+      "expected": {
+        "kind": "manifest",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "manifest.key_schema_missing"
+    },
+    {
+      "expected": {
+        "kind": "manifest",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "manifest.float_not_allowed"
+    },
+    {
+      "expected": {
+        "kind": "manifest",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "manifest.index_unknown_field"
+    },
+    {
+      "expected": {
+        "kind": "manifest",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "manifest.index_scope_unreachable"
+    },
+    {
+      "expected": {
+        "kind": "manifest",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "manifest.rule_unknown_path"
+    },
+    {
+      "expected": {
+        "kind": "manifest",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "manifest.rule_unbounded"
+    },
+    {
+      "expected": {
+        "kind": "manifest",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "manifest.operation_cross_shard"
+    },
+    {
+      "expected": {
+        "kind": "manifest",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "manifest.operation_unknown_field"
+    },
+    {
+      "expected": {
+        "kind": "manifest",
+        "receipt": null,
+        "retry": "Regenerate",
+        "terminal": true
+      },
+      "name": "manifest.artifact_drift"
+    },
+    {
+      "expected": {
+        "kind": "manifest",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "manifest.policy_catalog_missing"
+    },
+    {
+      "expected": {
+        "kind": "policy",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "policy.parse_error"
+    },
+    {
+      "expected": {
+        "kind": "policy",
+        "receipt": "Rejected",
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "policy.unknown_field"
+    },
+    {
+      "expected": {
+        "kind": "policy",
+        "receipt": "Rejected",
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "policy.budget_exhausted"
+    },
+    {
+      "expected": {
+        "kind": "policy",
+        "receipt": "Rejected",
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "policy.not_total"
+    },
+    {
+      "expected": {
+        "kind": "policy",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "policy.ast_unsupported"
+    },
+    {
+      "expected": {
+        "kind": "policy",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "policy.regex_not_supported"
+    },
+    {
+      "expected": {
+        "kind": "rule",
+        "receipt": "Rejected",
+        "retry": "After fix",
+        "terminal": true
+      },
+      "name": "rule.compile_failed"
+    },
+    {
+      "expected": {
+        "kind": "rule",
+        "receipt": "Rejected",
+        "retry": "After fix",
+        "terminal": true
+      },
+      "name": "rule.dry_run_failed"
+    },
+    {
+      "expected": {
+        "kind": "rule",
+        "receipt": "Rejected",
+        "retry": "After approval",
+        "terminal": true
+      },
+      "name": "rule.approval_required"
+    },
+    {
+      "expected": {
+        "kind": "rule",
+        "receipt": "Rejected",
+        "retry": "After rollout",
+        "terminal": true
+      },
+      "name": "rule.rollout_limit"
+    },
+    {
+      "expected": {
+        "kind": "write",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "write.missing_base_version"
+    },
+    {
+      "expected": {
+        "kind": "write",
+        "receipt": "Rejected",
+        "retry": "After re-read",
+        "terminal": true
+      },
+      "name": "write.stale_base_version"
+    },
+    {
+      "expected": {
+        "kind": "write",
+        "receipt": "Conflict",
+        "retry": "After rebase",
+        "terminal": true
+      },
+      "name": "write.version_conflict"
+    },
+    {
+      "expected": {
+        "kind": "write",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "write.idempotency_key_reuse"
+    },
+    {
+      "expected": {
+        "kind": "write",
+        "receipt": "Rejected",
+        "retry": "After re-read",
+        "terminal": true
+      },
+      "name": "write.queue_timeout"
+    },
+    {
+      "expected": {
+        "kind": "write",
+        "receipt": "Rejected",
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "write.operation_unknown"
+    },
+    {
+      "expected": {
+        "kind": "write",
+        "receipt": "Rejected",
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "write.batch_too_large"
+    },
+    {
+      "expected": {
+        "kind": "write",
+        "receipt": "Rejected",
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "write.value_too_large"
+    },
+    {
+      "expected": {
+        "kind": "shard",
+        "receipt": "Rejected",
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "shard.cross_mutation_rejected"
+    },
+    {
+      "expected": {
+        "kind": "receipt",
+        "receipt": null,
+        "retry": "After re-read",
+        "terminal": true
+      },
+      "name": "receipt.expired"
+    },
+    {
+      "expected": {
+        "kind": "receipt",
+        "receipt": null,
+        "retry": "Resubmit",
+        "terminal": true
+      },
+      "name": "receipt.not_found"
+    },
+    {
+      "expected": {
+        "kind": "receipt",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "receipt.state_invalid"
+    },
+    {
+      "expected": {
+        "kind": "outbox",
+        "receipt": null,
+        "retry": "After drain",
+        "terminal": true
+      },
+      "name": "outbox.full"
+    },
+    {
+      "expected": {
+        "kind": "outbox",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "outbox.dependency_cycle"
+    },
+    {
+      "expected": {
+        "kind": "outbox",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "outbox.cross_shard_edge"
+    },
+    {
+      "expected": {
+        "kind": "projection",
+        "receipt": "Queued",
+        "retry": "Backoff",
+        "terminal": false
+      },
+      "name": "projection.lagging"
+    },
+    {
+      "expected": {
+        "kind": "projection",
+        "receipt": "Rejected",
+        "retry": "After rebuild",
+        "terminal": true
+      },
+      "name": "projection.epoch_invalid"
+    },
+    {
+      "expected": {
+        "kind": "projection",
+        "receipt": "Rejected",
+        "retry": "After rebuild",
+        "terminal": true
+      },
+      "name": "projection.watermark_regression"
+    },
+    {
+      "expected": {
+        "kind": "projection",
+        "receipt": "Rejected",
+        "retry": "After rebuild",
+        "terminal": true
+      },
+      "name": "projection.checksum_failed"
+    },
+    {
+      "expected": {
+        "kind": "projection",
+        "receipt": "Rejected",
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "projection.client_write_rejected"
+    },
+    {
+      "expected": {
+        "kind": "projection",
+        "receipt": "Rejected",
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "projection.fan_in_exceeded"
+    },
+    {
+      "expected": {
+        "kind": "projection",
+        "receipt": "Rejected",
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "projection.read_set_exceeded"
+    },
+    {
+      "expected": {
+        "kind": "policy",
+        "receipt": "Rejected",
+        "retry": "After catch-up",
+        "terminal": true
+      },
+      "name": "authorization.stale_facts"
+    },
+    {
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "scope.over_limit"
+    },
+    {
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "scope.device_budget_exceeded"
+    },
+    {
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "scope.hydration_budget_exceeded"
+    },
+    {
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "scope.identity_mismatch"
+    },
+    {
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "After policy sync",
+        "terminal": true
+      },
+      "name": "scope.policy_version_unknown"
+    },
+    {
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Backoff",
+        "terminal": true
+      },
+      "name": "scope.shard_unreachable"
+    },
+    {
+      "expected": {
+        "kind": "sync",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "sync.unsupported_version"
+    },
+    {
+      "expected": {
+        "kind": "sync",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "sync.unknown_capability"
+    },
+    {
+      "expected": {
+        "kind": "sync",
+        "receipt": null,
+        "retry": "After change",
+        "terminal": true
+      },
+      "name": "sync.scope_rejected"
+    },
+    {
+      "expected": {
+        "kind": "sync",
+        "receipt": null,
+        "retry": "Snapshot fallback",
+        "terminal": true
+      },
+      "name": "sync.cursor_expired"
+    },
+    {
+      "expected": {
+        "kind": "sync",
+        "receipt": null,
+        "retry": "New cursor",
+        "terminal": true
+      },
+      "name": "sync.cursor_invalid"
+    },
+    {
+      "expected": {
+        "kind": "sync",
+        "receipt": null,
+        "retry": "New cursor",
+        "terminal": true
+      },
+      "name": "sync.cursor_type_mismatch"
+    },
+    {
+      "expected": {
+        "kind": "sync",
+        "receipt": null,
+        "retry": "Snapshot fallback",
+        "terminal": true
+      },
+      "name": "sync.gap_too_large"
+    },
+    {
+      "expected": {
+        "kind": "sync",
+        "receipt": null,
+        "retry": "Backoff",
+        "terminal": true
+      },
+      "name": "sync.snapshot_unavailable"
+    },
+    {
+      "expected": {
+        "kind": "sync",
+        "receipt": null,
+        "retry": "Backoff",
+        "terminal": true
+      },
+      "name": "sync.rate_limited"
+    },
+    {
+      "expected": {
+        "kind": "sync",
+        "receipt": null,
+        "retry": "After auth",
+        "terminal": true
+      },
+      "name": "sync.unauthorized"
+    },
+    {
+      "expected": {
+        "kind": "sync",
+        "receipt": null,
+        "retry": "Backoff",
+        "terminal": true
+      },
+      "name": "sync.shard_unavailable"
+    },
+    {
+      "expected": {
+        "kind": "sync",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "sync.negotiation_required"
+    },
+    {
+      "expected": {
+        "kind": "sync",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "sync.incompatible_manifest"
+    },
+    {
+      "expected": {
+        "kind": "read",
+        "receipt": null,
+        "retry": "New pin",
+        "terminal": true
+      },
+      "name": "read.pin_expired"
+    },
+    {
+      "expected": {
+        "kind": "read",
+        "receipt": null,
+        "retry": "New pin",
+        "terminal": true
+      },
+      "name": "read.pin_unreadable"
+    },
+    {
+      "expected": {
+        "kind": "read",
+        "receipt": null,
+        "retry": "Backoff",
+        "terminal": true
+      },
+      "name": "read.behind_commit"
+    },
+    {
+      "expected": {
+        "kind": "read",
+        "receipt": null,
+        "retry": "Backoff",
+        "terminal": true
+      },
+      "name": "read.not_hydrated"
+    },
+    {
+      "expected": {
+        "kind": "read",
+        "receipt": null,
+        "retry": "Backoff",
+        "terminal": true
+      },
+      "name": "read.not_resident"
+    },
+    {
+      "expected": {
+        "kind": "read",
+        "receipt": null,
+        "retry": "Backoff",
+        "terminal": true
+      },
+      "name": "read.stale"
+    },
+    {
+      "expected": {
+        "kind": "search",
+        "receipt": null,
+        "retry": "New pin",
+        "terminal": true
+      },
+      "name": "search.pin_expired"
+    },
+    {
+      "expected": {
+        "kind": "search",
+        "receipt": null,
+        "retry": "New query",
+        "terminal": true
+      },
+      "name": "search.cursor_invalid"
+    },
+    {
+      "expected": {
+        "kind": "search",
+        "receipt": null,
+        "retry": "Narrow query",
+        "terminal": true
+      },
+      "name": "search.fanout_exceeded"
+    },
+    {
+      "expected": {
+        "kind": "search",
+        "receipt": null,
+        "retry": "Rebuild",
+        "terminal": true
+      },
+      "name": "search.index_mismatch"
+    },
+    {
+      "expected": {
+        "kind": "search",
+        "receipt": null,
+        "retry": "Rebuild",
+        "terminal": true
+      },
+      "name": "search.tokenizer_mismatch"
+    },
+    {
+      "expected": {
+        "kind": "search",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "search.tokenizer_unknown"
+    },
+    {
+      "expected": {
+        "kind": "search",
+        "receipt": null,
+        "retry": "Narrow query",
+        "terminal": true
+      },
+      "name": "search.token_budget_exceeded"
+    },
+    {
+      "expected": {
+        "kind": "search",
+        "receipt": "Rejected",
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "index.overhead_exceeded"
+    },
+    {
+      "expected": {
+        "kind": "query",
+        "receipt": null,
+        "retry": "Narrow query",
+        "terminal": true
+      },
+      "name": "query.budget_exceeded"
+    },
+    {
+      "expected": {
+        "kind": "map",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "map.unknown_version"
+    },
+    {
+      "expected": {
+        "kind": "map",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "map.overlap"
+    },
+    {
+      "expected": {
+        "kind": "map",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "map.gap"
+    },
+    {
+      "expected": {
+        "kind": "map",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "map.duplicate_id"
+    },
+    {
+      "expected": {
+        "kind": "map",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "map.empty_range"
+    },
+    {
+      "expected": {
+        "kind": "map",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "map.table_unmapped"
+    },
+    {
+      "expected": {
+        "kind": "map",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "map.table_split_unsupported"
+    },
+    {
+      "expected": {
+        "kind": "replication",
+        "receipt": "Rejected",
+        "retry": "After re-acquire",
+        "terminal": true
+      },
+      "name": "replication.stale_epoch"
+    },
+    {
+      "expected": {
+        "kind": "replication",
+        "receipt": "Rejected",
+        "retry": "After re-acquire",
+        "terminal": true
+      },
+      "name": "replication.lease_expired"
+    },
+    {
+      "expected": {
+        "kind": "replication",
+        "receipt": null,
+        "retry": "After hint",
+        "terminal": true
+      },
+      "name": "replication.lease_held"
+    },
+    {
+      "expected": {
+        "kind": "replication",
+        "receipt": null,
+        "retry": "Operator action",
+        "terminal": true
+      },
+      "name": "replication.only_copy_eviction"
+    },
+    {
+      "expected": {
+        "kind": "replication",
+        "receipt": null,
+        "retry": "Backoff",
+        "terminal": true
+      },
+      "name": "replication.tier_unavailable"
+    },
+    {
+      "expected": {
+        "kind": "replication",
+        "receipt": null,
+        "retry": "Continue with cursor",
+        "terminal": true
+      },
+      "name": "replication.warmup_budget_exceeded"
+    },
+    {
+      "expected": {
+        "kind": "replication",
+        "receipt": "Rejected",
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "replication.placement_violation"
+    },
+    {
+      "expected": {
+        "kind": "event",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "event.unknown_version"
+    },
+    {
+      "expected": {
+        "kind": "event",
+        "receipt": null,
+        "retry": "Snapshot backfill",
+        "terminal": true
+      },
+      "name": "event.retention_gap"
+    },
+    {
+      "expected": {
+        "kind": "event",
+        "receipt": null,
+        "retry": "Dead-letter",
+        "terminal": true
+      },
+      "name": "event.poison"
+    },
+    {
+      "expected": {
+        "kind": "event",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "event.payload_too_large"
+    },
+    {
+      "expected": {
+        "kind": "consumer",
+        "receipt": null,
+        "retry": "Backoff",
+        "terminal": true
+      },
+      "name": "consumer.too_slow"
+    },
+    {
+      "expected": {
+        "kind": "consumer",
+        "receipt": null,
+        "retry": "Backoff",
+        "terminal": true
+      },
+      "name": "consumer.handler_failed"
+    },
+    {
+      "expected": {
+        "kind": "consumer",
+        "receipt": null,
+        "retry": "Operator action",
+        "terminal": true
+      },
+      "name": "consumer.dead_lettered"
+    },
+    {
+      "expected": {
+        "kind": "consumer",
+        "receipt": null,
+        "retry": "Snapshot backfill",
+        "terminal": true
+      },
+      "name": "consumer.cursor_expired"
+    },
+    {
+      "expected": {
+        "kind": "auth",
+        "receipt": null,
+        "retry": "After auth",
+        "terminal": true
+      },
+      "name": "auth.unauthenticated"
+    },
+    {
+      "expected": {
+        "kind": "auth",
+        "receipt": null,
+        "retry": "After refresh",
+        "terminal": true
+      },
+      "name": "auth.stale_credentials"
+    },
+    {
+      "expected": {
+        "kind": "auth",
+        "receipt": "Rejected",
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "auth.forbidden"
+    },
+    {
+      "expected": {
+        "kind": "auth",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "auth.replayed_request"
+    },
+    {
+      "expected": {
+        "kind": "audit",
+        "receipt": "Rejected",
+        "retry": "Backoff",
+        "terminal": true
+      },
+      "name": "audit.unavailable"
+    },
+    {
+      "expected": {
+        "kind": "audit",
+        "receipt": null,
+        "retry": "Operator action",
+        "terminal": true
+      },
+      "name": "audit.chain_invalid"
+    },
+    {
+      "expected": {
+        "kind": "audit",
+        "receipt": null,
+        "retry": "After auth",
+        "terminal": true
+      },
+      "name": "audit.export_denied"
+    },
+    {
+      "expected": {
+        "kind": "operations",
+        "receipt": "Rejected",
+        "retry": "After maintenance",
+        "terminal": true
+      },
+      "name": "shard.frozen_for_maintenance"
+    },
+    {
+      "expected": {
+        "kind": "operations",
+        "receipt": null,
+        "retry": "Restart backup",
+        "terminal": true
+      },
+      "name": "ops.backup_pin_lost"
+    },
+    {
+      "expected": {
+        "kind": "operations",
+        "receipt": null,
+        "retry": "Restart restore",
+        "terminal": true
+      },
+      "name": "ops.restore_checksum_mismatch"
+    },
+    {
+      "expected": {
+        "kind": "operations",
+        "receipt": null,
+        "retry": "Resume migration",
+        "terminal": true
+      },
+      "name": "ops.migration_incomplete"
+    },
+    {
+      "expected": {
+        "kind": "operations",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "ops.downgrade_not_allowed"
+    },
+    {
+      "expected": {
+        "kind": "operations",
+        "receipt": null,
+        "retry": "After rebase",
+        "terminal": true
+      },
+      "name": "ops.client_outbox_stale"
+    },
+    {
+      "expected": {
+        "kind": "operations",
+        "receipt": "Rejected",
+        "retry": "After quota",
+        "terminal": true
+      },
+      "name": "ops.quota_exceeded"
+    },
+    {
+      "expected": {
+        "kind": "operations",
+        "receipt": null,
+        "retry": "Backoff",
+        "terminal": true
+      },
+      "name": "ops.rate_limited"
+    },
+    {
+      "expected": {
+        "kind": "rpc",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "rpc.unknown_method"
+    },
+    {
+      "expected": {
+        "kind": "rpc",
+        "receipt": null,
+        "retry": "Regenerate client",
+        "terminal": true
+      },
+      "name": "rpc.descriptor_mismatch"
+    },
+    {
+      "expected": {
+        "kind": "rpc",
+        "receipt": null,
+        "retry": "Reconnect",
+        "terminal": true
+      },
+      "name": "rpc.codec_unsupported"
+    },
+    {
+      "expected": {
+        "kind": "internal",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "internal.invariant_violation"
+    },
+    {
+      "expected": {
+        "kind": "internal",
+        "receipt": "Rejected",
+        "retry": "Backoff",
+        "terminal": true
+      },
+      "name": "internal.resource_exhausted"
+    }
+  ],
+  "contract": "receipt-error/v1"
+}

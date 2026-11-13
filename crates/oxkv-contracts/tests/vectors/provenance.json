@@ -1,0 +1,139 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "required_fields": [
+          "format_version",
+          "key_encoding_version",
+          "manifest_digest",
+          "shard_id",
+          "prefix_bounds",
+          "commit_version",
+          "content_digest",
+          "content_seal"
+        ]
+      },
+      "name": "ShardSnapshot"
+    },
+    {
+      "expected": {
+        "required_fields": [
+          "format_version",
+          "key_encoding_version",
+          "manifest_digest",
+          "shard_id",
+          "prefix_bounds",
+          "commit_version",
+          "content_digest",
+          "content_seal",
+          "page_id",
+          "page_sequence"
+        ]
+      },
+      "name": "Page"
+    },
+    {
+      "expected": {
+        "required_fields": [
+          "manifest_digest",
+          "content_digest"
+        ]
+      },
+      "name": "Manifest"
+    },
+    {
+      "expected": {
+        "required_fields": [
+          "manifest_digest",
+          "map_version",
+          "map_digest",
+          "content_digest"
+        ]
+      },
+      "name": "ShardMap"
+    },
+    {
+      "expected": {
+        "required_fields": [
+          "manifest_digest",
+          "policy_version",
+          "content_digest"
+        ]
+      },
+      "name": "Policy"
+    },
+    {
+      "expected": {
+        "required_fields": [
+          "manifest_digest",
+          "policy_version",
+          "version_vector",
+          "scope_identity",
+          "projection_epoch",
+          "projection_watermarks",
+          "content_digest"
+        ]
+      },
+      "name": "ScopeSnapshot"
+    },
+    {
+      "expected": {
+        "required_fields": [
+          "manifest_digest",
+          "version_vector",
+          "scope_identity"
+        ]
+      },
+      "name": "ReadPin"
+    },
+    {
+      "expected": {
+        "required_fields": [
+          "manifest_digest",
+          "key_encoding_version",
+          "scope_identity"
+        ]
+      },
+      "name": "Cursor"
+    },
+    {
+      "expected": {
+        "required_fields": [
+          "manifest_digest",
+          "policy_version",
+          "projection_epoch",
+          "projection_watermarks"
+        ]
+      },
+      "name": "Verdict"
+    },
+    {
+      "expected": {
+        "required_fields": [
+          "manifest_digest",
+          "policy_version"
+        ]
+      },
+      "name": "Event"
+    },
+    {
+      "expected": {
+        "required_fields": [
+          "manifest_digest",
+          "tokenizer_versions"
+        ]
+      },
+      "name": "Index"
+    },
+    {
+      "expected": {
+        "required_fields": [
+          "manifest_digest",
+          "tokenizer_versions"
+        ]
+      },
+      "name": "SearchArtifact"
+    }
+  ],
+  "contract": "snapshot-page/v1"
+}

@@ -1,0 +1,33 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "terminal": false,
+        "wire_tag": 1
+      },
+      "name": "Queued"
+    },
+    {
+      "expected": {
+        "terminal": true,
+        "wire_tag": 2
+      },
+      "name": "Committed"
+    },
+    {
+      "expected": {
+        "terminal": true,
+        "wire_tag": 3
+      },
+      "name": "Rejected"
+    },
+    {
+      "expected": {
+        "terminal": true,
+        "wire_tag": 4
+      },
+      "name": "Conflict"
+    }
+  ],
+  "contract": "receipt-error/v1"
+}

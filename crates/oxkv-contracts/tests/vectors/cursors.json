@@ -1,0 +1,69 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "error": "sync.cursor_expired",
+        "expiry": "snapshot retention",
+        "token_hex": "4f58433101000100000000000000086163636f756e7473000000000000001200000000000000026b01007521d3f7f270049607aa2b630700df3717f442aa370743fc2cb96f4d8d8d062d"
+      },
+      "name": "KeyCursor"
+    },
+    {
+      "expected": {
+        "error": "sync.cursor_expired",
+        "expiry": "diff retention",
+        "token_hex": "4f5843310200010000000000000003000000000000000200000000000000010100000000000000120000000000000001020000000000000009000000000000000100000000000000010100000000000000040707070707070707070707070707070707070707070707070707070707070707a2e70017780cd702392f0aff28d2a274c3ea6d1b636a49ba05591d7b4d45128f"
+      },
+      "name": "SyncCursor"
+    },
+    {
+      "expected": {
+        "error": "sync.cursor_expired",
+        "expiry": "snapshot retention",
+        "token_hex": "4f58433103000100000000000000010100000000000000120808080808080808080808080808080808080808080808080808080808080808000000000000000209090909090909090909090909090909090909090909090909090909090909092bd37d88a73b21c99186ca5d24ee371780b0cc3bf3abc5168e2349b0d3a5af72"
+      },
+      "name": "HydrationCursor"
+    },
+    {
+      "expected": {
+        "error": "receipt.expired",
+        "expiry": "receipt retention",
+        "token_hex": "4f5843310400010a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a00000000000000051a42196f7c2daeebf47d98b806dd2cd9337227298416fb00c730ce980712eb77"
+      },
+      "name": "ReceiptCursor"
+    },
+    {
+      "expected": {
+        "error": "event.retention_gap",
+        "expiry": "event retention",
+        "token_hex": "4f5843310500010100000000000000020000000000000001610000000000000004000000000000000162000000000000000756fecc015a7b2b9e821beebf96fd9f5085935cf6a327f2ff902bd41d90227c14"
+      },
+      "name": "EventCursor"
+    },
+    {
+      "expected": {
+        "error": "search.cursor_invalid",
+        "expiry": "pin lifetime",
+        "token_hex": "4f584331060001000000000000000100000000000000010100000000000000120b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b000000000000000303000000000000002a010000000000000005616c706861020000000000000003010203a67e5894d621928c6d11774a72c6a32688ab374f89503a8b97cfd74d08a340b7"
+      },
+      "name": "SearchCursor"
+    },
+    {
+      "expected": {
+        "error": "projection.epoch_invalid",
+        "expiry": "projection retention",
+        "token_hex": "4f584331070001000000000000000100000000000000086163636f756e7473000000000000000c00000000000000296abad5656fbb023ccf8616a6c702d4632ca2895d2f88b3101df571c6f9f0cd43"
+      },
+      "name": "ProjectionCursor"
+    },
+    {
+      "expected": {
+        "error": "query.budget_exceeded",
+        "expiry": "query budget",
+        "token_hex": "4f5843310800010000000000000002000000000000000101000000000000000a00000000000000010200000000000000140000000000000002000000000000000101000000000000001200000000000000010200000000000000090000000000000005c21f7eec68f113796e0150a834975cd7c89deba2ee8eb26eaf97e99eed66d305"
+      },
+      "name": "CostCursor"
+    }
+  ],
+  "contract": "cursor/v1"
+}

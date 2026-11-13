@@ -1,0 +1,61 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "commit_domain": "data shard or catalog shard",
+        "id": 1,
+        "scope_visible": false
+      },
+      "name": "receipt"
+    },
+    {
+      "expected": {
+        "commit_domain": "data shard or catalog shard",
+        "id": 2,
+        "scope_visible": false
+      },
+      "name": "event"
+    },
+    {
+      "expected": {
+        "commit_domain": "data shard or catalog shard",
+        "id": 3,
+        "scope_visible": false
+      },
+      "name": "audit"
+    },
+    {
+      "expected": {
+        "commit_domain": "data shard",
+        "id": 4,
+        "scope_visible": false
+      },
+      "name": "projection"
+    },
+    {
+      "expected": {
+        "commit_domain": "data shard",
+        "id": 5,
+        "scope_visible": false
+      },
+      "name": "index"
+    },
+    {
+      "expected": {
+        "commit_domain": "data shard or catalog shard",
+        "id": 6,
+        "scope_visible": false
+      },
+      "name": "lease"
+    },
+    {
+      "expected": {
+        "commit_domain": "data shard",
+        "id": 7,
+        "scope_visible": false
+      },
+      "name": "statistics"
+    }
+  ],
+  "contract": "key-encoding/v1"
+}
