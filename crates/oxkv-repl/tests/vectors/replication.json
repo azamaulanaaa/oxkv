@@ -1,0 +1,99 @@
+{
+  "contract": "replication/v1",
+  "cases": [
+    {
+      "name": "fence_sequence",
+      "expected": {
+        "terms": [1, 2, 3]
+      }
+    },
+    {
+      "name": "stale_epoch",
+      "expected": {
+        "code": "replication.stale_epoch",
+        "receipt_state": "Rejected",
+        "terminal": true
+      }
+    },
+    {
+      "name": "lease_expired",
+      "expected": {
+        "code": "replication.lease_expired",
+        "receipt_state": "Rejected",
+        "terminal": true
+      }
+    },
+    {
+      "name": "lease_held",
+      "expected": {
+        "code": "replication.lease_held",
+        "receipt_state": null,
+        "terminal": true
+      }
+    },
+    {
+      "name": "read_behind_commit",
+      "expected": {
+        "code": "read.behind_commit",
+        "receipt_state": null,
+        "terminal": true
+      }
+    },
+    {
+      "name": "read_stale",
+      "expected": {
+        "code": "read.stale",
+        "receipt_state": null,
+        "terminal": true
+      }
+    },
+    {
+      "name": "record_header",
+      "expected": {
+        "text": "index=1 term=1 len=5"
+      }
+    },
+    {
+      "name": "kill_before_append",
+      "expected": {
+        "state": "Committed",
+        "commit_version": 1,
+        "records": [{ "key": "6b", "value": "7631" }]
+      }
+    },
+    {
+      "name": "kill_after_append_before_commit",
+      "expected": {
+        "state": "Committed",
+        "commit_version": 1,
+        "records": [{ "key": "6b", "value": "7631" }]
+      }
+    },
+    {
+      "name": "kill_after_commit_before_apply",
+      "expected": {
+        "state": "Committed",
+        "commit_version": 1,
+        "records": [{ "key": "6b", "value": "7631" }]
+      }
+    },
+    {
+      "name": "kill_after_apply_before_reply",
+      "expected": {
+        "state": "Committed",
+        "commit_version": 1,
+        "records": [{ "key": "6b", "value": "7631" }]
+      }
+    },
+    {
+      "name": "driver_parity",
+      "expected": {
+        "commit_versions": [1, 2, 3],
+        "records": [
+          { "key": "61", "value": "33" },
+          { "key": "62", "value": "32" }
+        ]
+      }
+    }
+  ]
+}

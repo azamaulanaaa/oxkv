@@ -1378,6 +1378,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxkv-repl"
+version = "0.11.0"
+dependencies = [
+ "oxkv-contracts",
+ "serde_json",
+]
+
+[[package]]
 name = "oxkv-replica"
 version = "0.11.0"
 dependencies = [
