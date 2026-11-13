@@ -1,0 +1,5 @@
+# Keep the plan directory trackable. Ignore every other file in this directory.
+*
+!.gitignore
+!plan/
+!plan/**

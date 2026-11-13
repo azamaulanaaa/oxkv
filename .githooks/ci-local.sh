@@ -71,6 +71,7 @@ job_native() {
   require_tool native cargo-fmt "rustup component add rustfmt"
   require_tool native cargo-clippy "rustup component add clippy"
 
+  .github/scripts/check-plan-tracking.sh
   cargo fmt --all --check
   cargo clippy --workspace --all-targets -- -D warnings
   cargo test --workspace
