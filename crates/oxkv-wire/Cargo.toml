@@ -1,0 +1,20 @@
+[package]
+name = "oxkv-wire"
+version = "0.11.0"
+edition = "2024"
+description = "Portable sans-IO sync wire protocol v1 for oxkv."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/azamaulanaaa/oxkv"
+readme = "../../README.md"
+keywords = ["sync", "wire", "protocol", "replication"]
+categories = ["database", "network-programming"]
+
+[dependencies]
+blake3 = "1.8"
+oxkv-contracts = { path = "../oxkv-contracts", version = "0.11.0" }
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

@@ -1411,6 +1411,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxkv-wire"
+version = "0.11.0"
+dependencies = [
+ "blake3",
+ "oxkv-contracts",
+ "serde_json",
+]
+
+[[package]]
 name = "oxkv-write"
 version = "0.11.0"
 dependencies = [
