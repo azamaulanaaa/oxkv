@@ -35,9 +35,11 @@ use oxkv_contracts::version::{
     CommitVersion, DigestDomain, Hash32, KeyVersion, ManifestDigest, MapVersion, PolicyVersion,
     ProjectionEpoch, ProjectionWatermarks, ShardId,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use oxkv_security::audit::GENESIS_HASH;
 use oxkv_security::audit::{
     AuditChain, AuditCheckpoint, AuditDecision, AuditEntry, AuditRowDecision,
-    AuditVerificationReport, CheckpointSigner, GENESIS_HASH, SignerKind, StructuralSigner,
+    AuditVerificationReport, CheckpointSigner, SignerKind, StructuralSigner,
 };
 use oxkv_security::auth::PrincipalId;
 use oxkv_security::error::SecurityError;

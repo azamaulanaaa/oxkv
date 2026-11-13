@@ -41,6 +41,17 @@ Versioned write requests and a durable authority for oxkv.
 - Production still requires a real `CheckpointSigner`. This tree has no
   production signer.
 
+## Native binary
+
+- The `oxkv-authority` binary opens one data directory and loads the saved state
+  when it exists.
+- The binary commits one write, saves the state, and prints the receipt in a
+  stable text form.
+- The binary uses `FileWitnessOutbox` for the checkpoints.
+- The binary runs in local mode with `StructuralSigner`.
+- The binary refuses production mode with a clear error. This tree has no real
+  `CheckpointSigner`.
+
 ## Witness outbox
 
 - The commit path stores each signed checkpoint in an asynchronous outbox.
