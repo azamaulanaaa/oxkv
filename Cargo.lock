@@ -1375,6 +1375,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxkv-write"
+version = "0.11.0"
+dependencies = [
+ "oxkv-contracts",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,89 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "commit_version": null,
+        "duplicate": false,
+        "key_version": 4,
+        "reason": "write.version_conflict",
+        "receipt_count": 6,
+        "shard_commit_version": 5,
+        "state": "Conflict",
+        "tombstone": false,
+        "value_hex": "7468726565"
+      },
+      "name": "conflict"
+    },
+    {
+      "expected": {
+        "commit_version": 1,
+        "duplicate": false,
+        "key_version": 1,
+        "reason": null,
+        "receipt_count": 1,
+        "shard_commit_version": 1,
+        "state": "Committed",
+        "tombstone": false,
+        "value_hex": "6f6e65"
+      },
+      "name": "create"
+    },
+    {
+      "expected": {
+        "commit_version": 5,
+        "duplicate": false,
+        "key_version": 1,
+        "reason": null,
+        "receipt_count": 5,
+        "shard_commit_version": 5,
+        "state": "Committed",
+        "tombstone": false,
+        "value_hex": "62"
+      },
+      "name": "create_second_key"
+    },
+    {
+      "expected": {
+        "commit_version": 3,
+        "duplicate": false,
+        "key_version": 3,
+        "reason": null,
+        "receipt_count": 3,
+        "shard_commit_version": 3,
+        "state": "Committed",
+        "tombstone": true,
+        "value_hex": null
+      },
+      "name": "delete"
+    },
+    {
+      "expected": {
+        "commit_version": 4,
+        "duplicate": false,
+        "key_version": 4,
+        "reason": null,
+        "receipt_count": 4,
+        "shard_commit_version": 4,
+        "state": "Committed",
+        "tombstone": false,
+        "value_hex": "7468726565"
+      },
+      "name": "recreate"
+    },
+    {
+      "expected": {
+        "commit_version": 2,
+        "duplicate": false,
+        "key_version": 2,
+        "reason": null,
+        "receipt_count": 2,
+        "shard_commit_version": 2,
+        "state": "Committed",
+        "tombstone": false,
+        "value_hex": "74776f"
+      },
+      "name": "rename"
+    }
+  ],
+  "contract": "write/commit-outcome/v1"
+}

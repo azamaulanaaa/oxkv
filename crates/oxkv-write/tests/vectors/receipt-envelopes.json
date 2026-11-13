@@ -1,0 +1,148 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "duplicate": false,
+        "error": null,
+        "key_version": 1,
+        "receipt": {
+          "audit_sequence": 2,
+          "commit_version": null,
+          "current_key_version": 1,
+          "idempotency_key_hex": "02",
+          "manifest_digest_hex": "0505050505050505050505050505050505050505050505050505050505050505",
+          "policy_version_hex": "0404040404040404040404040404040404040404040404040404040404040404",
+          "reason": "write.version_conflict",
+          "receipt_id_hex": "a1ab18c72bf6e22b2e392351755f3638be5e342ecfc9201e266efd5a658a7ab0",
+          "request_id_hex": "0202020202020202020202020202020202020202020202020202020202020202",
+          "state": "Conflict"
+        },
+        "receipt_count": 2,
+        "shard_commit_version": 1
+      },
+      "name": "conflict"
+    },
+    {
+      "expected": {
+        "duplicate": false,
+        "error": null,
+        "key_version": 1,
+        "receipt": {
+          "audit_sequence": 1,
+          "commit_version": 1,
+          "current_key_version": null,
+          "idempotency_key_hex": "01",
+          "manifest_digest_hex": "0505050505050505050505050505050505050505050505050505050505050505",
+          "policy_version_hex": "0404040404040404040404040404040404040404040404040404040404040404",
+          "reason": null,
+          "receipt_id_hex": "c81474b2324cad65a619b09cf095935b37c98876468423463902efa90d8c8636",
+          "request_id_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+          "state": "Committed"
+        },
+        "receipt_count": 1,
+        "shard_commit_version": 1
+      },
+      "name": "create"
+    },
+    {
+      "expected": {
+        "duplicate": false,
+        "error": null,
+        "key_version": 1,
+        "receipt": {
+          "audit_sequence": 5,
+          "commit_version": null,
+          "current_key_version": null,
+          "idempotency_key_hex": "05",
+          "manifest_digest_hex": "0505050505050505050505050505050505050505050505050505050505050505",
+          "policy_version_hex": "0404040404040404040404040404040404040404040404040404040404040404",
+          "reason": "shard.cross_mutation_rejected",
+          "receipt_id_hex": "91e4b7ec254bee2edb02863805a9c1e1ce8e8f074830effe2f503710bf8936ed",
+          "request_id_hex": "0505050505050505050505050505050505050505050505050505050505050505",
+          "state": "Rejected"
+        },
+        "receipt_count": 5,
+        "shard_commit_version": 1
+      },
+      "name": "cross_shard"
+    },
+    {
+      "expected": {
+        "duplicate": true,
+        "error": null,
+        "key_version": 1,
+        "receipt": {
+          "audit_sequence": 1,
+          "commit_version": 1,
+          "current_key_version": null,
+          "idempotency_key_hex": "01",
+          "manifest_digest_hex": "0505050505050505050505050505050505050505050505050505050505050505",
+          "policy_version_hex": "0404040404040404040404040404040404040404040404040404040404040404",
+          "reason": null,
+          "receipt_id_hex": "c81474b2324cad65a619b09cf095935b37c98876468423463902efa90d8c8636",
+          "request_id_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+          "state": "Committed"
+        },
+        "receipt_count": 1,
+        "shard_commit_version": 1
+      },
+      "name": "duplicate"
+    },
+    {
+      "expected": {
+        "duplicate": false,
+        "error": "write.missing_base_version",
+        "key_version": 1,
+        "receipt": null,
+        "receipt_count": 5,
+        "shard_commit_version": 1
+      },
+      "name": "missing_base"
+    },
+    {
+      "expected": {
+        "duplicate": false,
+        "error": null,
+        "key_version": 1,
+        "receipt": {
+          "audit_sequence": 4,
+          "commit_version": null,
+          "current_key_version": null,
+          "idempotency_key_hex": "04",
+          "manifest_digest_hex": "0505050505050505050505050505050505050505050505050505050505050505",
+          "policy_version_hex": "0404040404040404040404040404040404040404040404040404040404040404",
+          "reason": "policy.budget_exhausted",
+          "receipt_id_hex": "777690364947a644b3798a78c8deef7c1cda1ba3d9123f2cde22809723ea83bd",
+          "request_id_hex": "0404040404040404040404040404040404040404040404040404040404040404",
+          "state": "Rejected"
+        },
+        "receipt_count": 4,
+        "shard_commit_version": 1
+      },
+      "name": "policy_reject"
+    },
+    {
+      "expected": {
+        "duplicate": false,
+        "error": null,
+        "key_version": 1,
+        "receipt": {
+          "audit_sequence": 3,
+          "commit_version": null,
+          "current_key_version": null,
+          "idempotency_key_hex": "03",
+          "manifest_digest_hex": "0505050505050505050505050505050505050505050505050505050505050505",
+          "policy_version_hex": "0404040404040404040404040404040404040404040404040404040404040404",
+          "reason": "write.stale_base_version",
+          "receipt_id_hex": "ac2f67cc863c209af2bf7a69e87de5c3d360ab7987a406e95b74ceb416028d13",
+          "request_id_hex": "0303030303030303030303030303030303030303030303030303030303030303",
+          "state": "Rejected"
+        },
+        "receipt_count": 3,
+        "shard_commit_version": 1
+      },
+      "name": "stale"
+    }
+  ],
+  "contract": "write/receipt-envelope/v1"
+}
