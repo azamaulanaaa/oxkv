@@ -1,6 +1,6 @@
 [package]
 name = "oxkv-event"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 description = "Business event envelope, deterministic identity, per-key consumer cursor, and operational feed for oxkv."
 license = "MIT OR Apache-2.0"
@@ -10,7 +10,7 @@ keywords = ["event", "stream", "consumer", "database"]
 categories = ["database"]
 
 [dependencies]
-oxkv-contracts = { path = "../oxkv-contracts", version = "0.11.0" }
+oxkv-contracts = { path = "../oxkv-contracts", version = "0.12.0" }
 thiserror = "2"
 
 [dev-dependencies]

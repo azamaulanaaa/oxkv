@@ -1,6 +1,6 @@
 [package]
 name = "oxkv-snapshot"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 description = "The v1 ShardSnapshot and ScopeSnapshot byte contract for oxkv."
 license = "MIT OR Apache-2.0"
@@ -12,7 +12,7 @@ categories = ["database"]
 [dependencies]
 blake3 = "1.8"
 crc32fast = "1"
-oxkv-contracts = { path = "../oxkv-contracts", version = "0.11.0" }
+oxkv-contracts = { path = "../oxkv-contracts", version = "0.12.0" }
 thiserror = "2"
 
 [dev-dependencies]

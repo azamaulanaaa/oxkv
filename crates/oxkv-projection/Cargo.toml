@@ -1,6 +1,6 @@
 [package]
 name = "oxkv-projection"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 description = "Portable policy fact projection for oxkv: facts, epochs, watermarks, staleness, and invalidation."
 license = "MIT OR Apache-2.0"
@@ -10,7 +10,7 @@ keywords = ["projection", "policy", "fact", "keyvalue", "database"]
 categories = ["database"]
 
 [dependencies]
-oxkv-contracts = { path = "../oxkv-contracts", version = "0.11.0" }
+oxkv-contracts = { path = "../oxkv-contracts", version = "0.12.0" }
 thiserror = "2"
 
 [dev-dependencies]

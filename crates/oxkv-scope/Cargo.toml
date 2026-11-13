@@ -1,6 +1,6 @@
 [package]
 name = "oxkv-scope"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 description = "Scope declaration, deterministic identity, membership, diffs, and result modes for oxkv."
 license = "MIT OR Apache-2.0"
@@ -10,7 +10,7 @@ keywords = ["scope", "keyvalue", "database", "replication"]
 categories = ["database"]
 
 [dependencies]
-oxkv-contracts = { path = "../oxkv-contracts", version = "0.11.0" }
+oxkv-contracts = { path = "../oxkv-contracts", version = "0.12.0" }
 thiserror = "2"
 
 [lints]

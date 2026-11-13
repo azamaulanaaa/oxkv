@@ -1,6 +1,6 @@
 [package]
 name = "oxkv-query"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 description = "Legacy Lucene-style query filter for the oxkv key-value store. This crate is not part of the 1.0 search contract."
 license = "MIT OR Apache-2.0"
@@ -10,7 +10,7 @@ keywords = ["lucene", "query", "keyvalue", "json"]
 categories = ["database"]
 
 [dependencies]
-oxkv = { path = "../..", version = "0.11.0", default-features = false }
+oxkv = { path = "../..", version = "0.12.0", default-features = false }
 async-trait = "0.1"
 pest = "2.9.0"
 pest_derive = "2.9.0"
@@ -20,7 +20,7 @@ strsim = "0.11"
 
 [dev-dependencies]
 criterion = "0.7"
-oxkv = { path = "../..", version = "0.11.0", features = ["btree"] }
+oxkv = { path = "../..", version = "0.12.0", features = ["btree"] }
 tokio = { version = "1.53.1", features = ["test-util", "macros", "rt"] }
 
 [[bench]]

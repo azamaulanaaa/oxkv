@@ -1,6 +1,6 @@
 [package]
 name = "oxkv-scheduler"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 description = "Pure per-key write scheduler for oxkv: queued, in-flight, and terminal state with bounded deterministic selection."
 license = "MIT OR Apache-2.0"
@@ -10,7 +10,7 @@ keywords = ["scheduler", "keyvalue", "database", "deterministic"]
 categories = ["database"]
 
 [dependencies]
-oxkv-contracts = { path = "../oxkv-contracts", version = "0.11.0" }
+oxkv-contracts = { path = "../oxkv-contracts", version = "0.12.0" }
 thiserror = "2"
 
 [dev-dependencies]
