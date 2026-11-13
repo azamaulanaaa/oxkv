@@ -9,6 +9,9 @@
 //!   record for every write verdict.
 //! - [`audit`] holds the per-shard hash chain and signed checkpoints.
 //! - [`witness`] models asynchronous checkpoint delivery as a queue.
+//!
+//! A production deployment supplies a real [`CheckpointSigner`]. The
+//! [`StructuralSigner`] is for tests and local runs only.
 //! - [`access`] holds the separate read access log.
 //! - [`policy`] rejects regular expressions and charges named step budgets.
 //! - [`secret`] keeps key material out of policy and audit output.
@@ -53,7 +56,8 @@ pub use access::{
 };
 pub use audit::{
     AuditChain, AuditCheckpoint, AuditDecision, AuditEntry, AuditExport, AuditRecord,
-    AuditVerificationReport, CheckpointSigner, GENESIS_HASH, RuleIdentity, StructuralSigner,
+    AuditVerificationReport, CheckpointSigner, GENESIS_HASH, RuleIdentity, SignerKind,
+    StructuralSigner,
 };
 pub use auth::{
     CredentialDirectory, CredentialId, CredentialProof, CredentialVerifier, LogicalTime,

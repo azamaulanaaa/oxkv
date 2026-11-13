@@ -53,7 +53,7 @@ fn fact_versions() -> ProjectionWatermarks {
 }
 
 fn new_authority() -> Authority {
-    Authority::new(AuthorityConfig::new(
+    Authority::local(AuthorityConfig::new(
         shard(),
         PolicyVersion::from_bytes([4; 32]),
         ManifestDigest::from_bytes([5; 32]),
@@ -62,6 +62,7 @@ fn new_authority() -> Authority {
         fact_versions(),
         KeyIdentifier::new("checkpoint-key-1"),
     ))
+    .expect("the local authority starts")
 }
 
 fn write_request(request_id: u8, client: u8, idempotency: u8) -> WriteRequest {

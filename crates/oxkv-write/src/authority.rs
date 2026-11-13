@@ -14,8 +14,13 @@
 //! the idempotency key, and the request body digest. The receipt ledger keys
 //! every receipt by the client identity and the idempotency key. The simulator
 //! has no clock, randomness, or I/O.
+//!
+//! A production authority takes a real [`CheckpointSigner`]. Production mode
+//! rejects [`StructuralSigner`]. A local authority uses the structural signer
+//! and the in-memory witness queue.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use oxkv_contracts::receipt::{
     AuditReference, IdempotencyKey, ReceiptEnvelope, ReceiptId, ReceiptOutcome, ReceiptState,
@@ -26,7 +31,7 @@ use oxkv_contracts::version::{
 };
 use oxkv_security::audit::{
     AuditChain, AuditCheckpoint, AuditDecision, AuditEntry, AuditRowDecision,
-    AuditVerificationReport, StructuralSigner,
+    AuditVerificationReport, CheckpointSigner, SignerKind, StructuralSigner,
 };
 use oxkv_security::auth::PrincipalId;
 use oxkv_security::error::SecurityError;
@@ -211,6 +216,42 @@ impl SubmitError {
     }
 }
 
+/// The mode of one authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum AuthorityMode {
+    /// A production authority. It requires a real checkpoint signer.
+    Production,
+    /// A local authority. It uses the structural signer.
+    Local,
+}
+
+/// An error from authority startup.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AuthorityInitError {
+    /// Production mode received a structural signer.
+    #[error("Production mode requires a real checkpoint signer.")]
+    StructuralSignerInProduction,
+    /// The signer key identifier differs from the configured checkpoint key.
+    #[error("The signer key {signer} does not match the configured key {configured}.")]
+    CheckpointKeyMismatch {
+        /// The signer key identifier.
+        signer: String,
+        /// The configured checkpoint key identifier.
+        configured: String,
+    },
+}
+
+impl AuthorityInitError {
+    /// Returns the canonical error code.
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::StructuralSignerInProduction => "authority.structural_signer_in_production",
+            Self::CheckpointKeyMismatch { .. } => "authority.checkpoint_key_mismatch",
+        }
+    }
+}
+
 /// The configuration of one authority.
 ///
 /// Every value is explicit. The simulator supplies no default value. The
@@ -224,13 +265,15 @@ pub struct AuthorityConfig {
     projection_epoch: ProjectionEpoch,
     fact_versions: ProjectionWatermarks,
     checkpoint_key: KeyIdentifier,
+    mode: AuthorityMode,
 }
 
 impl AuthorityConfig {
-    /// Creates an authority configuration.
+    /// Creates a local authority configuration.
     ///
     /// The checkpoint key names the key that signs each audit checkpoint. The
-    /// value is a key identifier. It is not key material.
+    /// value is a key identifier. It is not key material. A local authority
+    /// uses the structural signer.
     #[must_use]
     pub fn new(
         shard_id: ShardId,
@@ -241,6 +284,57 @@ impl AuthorityConfig {
         fact_versions: ProjectionWatermarks,
         checkpoint_key: KeyIdentifier,
     ) -> Self {
+        Self::with_mode(
+            shard_id,
+            policy_version,
+            manifest_digest,
+            map_version,
+            projection_epoch,
+            fact_versions,
+            checkpoint_key,
+            AuthorityMode::Local,
+        )
+    }
+
+    /// Creates a production authority configuration.
+    ///
+    /// A production authority must receive a real checkpoint signer. Startup
+    /// fails when the signer is structural.
+    #[must_use]
+    pub fn production(
+        shard_id: ShardId,
+        policy_version: PolicyVersion,
+        manifest_digest: ManifestDigest,
+        map_version: MapVersion,
+        projection_epoch: ProjectionEpoch,
+        fact_versions: ProjectionWatermarks,
+        checkpoint_key: KeyIdentifier,
+    ) -> Self {
+        Self::with_mode(
+            shard_id,
+            policy_version,
+            manifest_digest,
+            map_version,
+            projection_epoch,
+            fact_versions,
+            checkpoint_key,
+            AuthorityMode::Production,
+        )
+    }
+
+    /// Creates an authority configuration with an explicit mode.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_mode(
+        shard_id: ShardId,
+        policy_version: PolicyVersion,
+        manifest_digest: ManifestDigest,
+        map_version: MapVersion,
+        projection_epoch: ProjectionEpoch,
+        fact_versions: ProjectionWatermarks,
+        checkpoint_key: KeyIdentifier,
+        mode: AuthorityMode,
+    ) -> Self {
         Self {
             shard_id,
             policy_version,
@@ -249,7 +343,14 @@ impl AuthorityConfig {
             projection_epoch,
             fact_versions,
             checkpoint_key,
+            mode,
         }
+    }
+
+    /// Returns the authority mode.
+    #[must_use]
+    pub const fn mode(&self) -> AuthorityMode {
+        self.mode
     }
 
     /// Returns the shard identity.
@@ -296,8 +397,11 @@ impl AuthorityConfig {
 }
 
 /// The in-memory authority for one shard.
+///
+/// The witness type defaults to the in-memory [`WitnessQueue`]. A production
+/// deployment supplies a durable outbox instead.
 #[derive(Debug, Clone)]
-pub struct Authority {
+pub struct Authority<W = WitnessQueue> {
     shard_id: ShardId,
     policy_version: PolicyVersion,
     manifest_digest: ManifestDigest,
@@ -308,17 +412,56 @@ pub struct Authority {
     receipts: ReceiptLedger,
     commit_version: CommitVersion,
     audit: AuditChain,
-    signer: StructuralSigner,
-    witness: WitnessQueue,
+    signer: Arc<dyn CheckpointSigner>,
+    witness: W,
 }
 
-impl Authority {
-    /// Creates an authority for one shard.
-    #[must_use]
-    pub fn new(config: AuthorityConfig) -> Self {
+impl Authority<WitnessQueue> {
+    /// Creates a local authority for one shard.
+    ///
+    /// The authority uses the structural signer and the in-memory witness
+    /// queue.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthorityInitError::StructuralSignerInProduction`] when the
+    /// configuration selects production mode.
+    pub fn local(config: AuthorityConfig) -> Result<Self, AuthorityInitError> {
+        let signer = Arc::new(StructuralSigner::new(config.checkpoint_key.clone()));
+        Self::open(config, signer, WitnessQueue::new())
+    }
+}
+
+impl<W> Authority<W> {
+    /// Creates an authority from a configuration, a checkpoint signer, and a
+    /// witness outbox.
+    ///
+    /// Production mode requires a real checkpoint signer. Startup fails when
+    /// production mode receives a structural signer. The signer key identifier
+    /// must match the configured checkpoint key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthorityInitError::StructuralSignerInProduction`] when the
+    /// configuration selects production mode and the signer is structural.
+    /// Returns [`AuthorityInitError::CheckpointKeyMismatch`] when the signer
+    /// key identifier differs from the configured key.
+    pub fn open(
+        config: AuthorityConfig,
+        signer: Arc<dyn CheckpointSigner>,
+        witness: W,
+    ) -> Result<Self, AuthorityInitError> {
+        if config.mode == AuthorityMode::Production && signer.kind() == SignerKind::Structural {
+            return Err(AuthorityInitError::StructuralSignerInProduction);
+        }
+        if signer.key_id() != &config.checkpoint_key {
+            return Err(AuthorityInitError::CheckpointKeyMismatch {
+                signer: signer.key_id().as_str().to_owned(),
+                configured: config.checkpoint_key.as_str().to_owned(),
+            });
+        }
         let audit = AuditChain::new(config.shard_id.clone());
-        let signer = StructuralSigner::new(config.checkpoint_key);
-        Self {
+        Ok(Self {
             shard_id: config.shard_id,
             policy_version: config.policy_version,
             manifest_digest: config.manifest_digest,
@@ -330,8 +473,8 @@ impl Authority {
             commit_version: CommitVersion::new(0),
             audit,
             signer,
-            witness: WitnessQueue::new(),
-        }
+            witness,
+        })
     }
 
     /// Returns the shard identity.
@@ -430,15 +573,15 @@ impl Authority {
         self.audit.last_checkpoint()
     }
 
-    /// Returns the asynchronous witness queue.
+    /// Returns the asynchronous witness outbox.
     #[must_use]
-    pub const fn witness(&self) -> &WitnessQueue {
+    pub const fn witness(&self) -> &W {
         &self.witness
     }
 
-    /// Returns the asynchronous witness queue for delivery.
+    /// Returns the asynchronous witness outbox for delivery.
     #[must_use]
-    pub const fn witness_mut(&mut self) -> &mut WitnessQueue {
+    pub const fn witness_mut(&mut self) -> &mut W {
         &mut self.witness
     }
 
@@ -451,7 +594,9 @@ impl Authority {
     ) -> Option<&ReceiptEnvelope> {
         self.receipts.receipt(client_id, idempotency_key)
     }
+}
 
+impl<W: WitnessSink> Authority<W> {
     /// Submits one write request.
     ///
     /// A duplicate request returns the existing receipt. A reused key with a
@@ -806,7 +951,7 @@ impl Authority {
         })?;
         let checkpoint = self
             .audit
-            .checkpoint(&self.signer)
+            .checkpoint(self.signer.as_ref())
             .map_err(|_| SubmitError::AuditChainInvalid)?;
         let mut receipt = ReceiptEnvelope::queued(
             receipt_id,

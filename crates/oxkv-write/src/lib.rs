@@ -12,13 +12,22 @@
 //! 4. policy check;
 //! 5. commit.
 //!
-//! Authentication is outside this crate. The crate is portable and pure. It
-//! uses no clock, randomness, I/O, floating point, or `unsafe`.
+//! Authentication is outside this crate. The core is portable and pure. It
+//! uses no clock, randomness, I/O, floating point, or `unsafe`. The native
+//! witness outbox is the only file I/O path.
 //!
 //! The authority appends one signed audit record for each terminal verdict.
 //! The audit chain comes from `oxkv-security`. The authority sends each signed
-//! checkpoint to an asynchronous witness queue after the commit. The commit
+//! checkpoint to an asynchronous witness outbox after the commit. The commit
 //! path does not wait for the witness.
+//!
+//! Production mode requires a real [`CheckpointSigner`]. A production
+//! configuration that uses [`StructuralSigner`] fails at startup. The
+//! structural signer is for tests and local runs.
+//!
+//! A native deployment stores checkpoints in a `FileWitnessOutbox`. The
+//! outbox survives a restart and resumes delivery. Tests and local runs use
+//! the in-memory `WitnessQueue`.
 //!
 //! # Example
 //!
@@ -31,7 +40,7 @@
 //! use oxkv_security::secret::KeyIdentifier;
 //! use oxkv_write::{AllowAll, Authority, AuthorityConfig, ClientId, Key, Mutation, WriteRequest};
 //!
-//! let mut authority = Authority::new(AuthorityConfig::new(
+//! let mut authority = Authority::local(AuthorityConfig::new(
 //!     ShardId::new(vec![1]),
 //!     PolicyVersion::from_bytes([4; 32]),
 //!     ManifestDigest::from_bytes([5; 32]),
@@ -39,7 +48,8 @@
 //!     ProjectionEpoch::new(7),
 //!     ProjectionWatermarks::new(),
 //!     KeyIdentifier::new("checkpoint-key-1"),
-//! ));
+//! ))
+//! .expect("the local authority starts");
 //! let request = WriteRequest::new(
 //!     RequestId::from_bytes([2; 32]),
 //!     ClientId::new(vec![7]),
@@ -71,9 +81,16 @@ pub mod receipt;
 pub mod record;
 pub mod request;
 mod util;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod witness_outbox;
 
-pub use audit::{AuditChain, AuditCheckpoint, AuditRecord, AuditRecordBody, AuditVerdict};
-pub use authority::{Authority, AuthorityConfig, SubmitError, SubmitOutcome};
+pub use audit::{
+    AuditChain, AuditCheckpoint, AuditRecord, AuditRecordBody, AuditVerdict, CheckpointSigner,
+    SignerKind, StructuralSigner,
+};
+pub use authority::{
+    Authority, AuthorityConfig, AuthorityInitError, AuthorityMode, SubmitError, SubmitOutcome,
+};
 pub use conflict::{ConflictDetail, RebaseError, rebase_request};
 pub use hook::{CommitHook, HookEffect, HookError};
 pub use policy::{
@@ -83,3 +100,5 @@ pub use policy::{
 pub use receipt::{ReceiptLedger, ReceiptLedgerError, StoredReceipt};
 pub use record::{CommitSummary, CommitView, KeyChange, KeyRecord, KeyValue};
 pub use request::{ClientId, Key, Mutation, WriteOperation, WriteRequest};
+#[cfg(not(target_arch = "wasm32"))]
+pub use witness_outbox::FileWitnessOutbox;

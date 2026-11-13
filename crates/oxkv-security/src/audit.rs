@@ -291,23 +291,41 @@ pub struct AuditCheckpoint {
     pub checkpoint_hash: Hash32,
 }
 
+/// The kind of one checkpoint signer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum SignerKind {
+    /// A production signer. The key material lives outside this crate.
+    Production,
+    /// A structural signer for tests and local runs.
+    Structural,
+}
+
 /// A signer for one audit checkpoint.
 ///
 /// The signer holds key material outside this crate. The crate stores only the
 /// key identifier and the signature value.
-pub trait CheckpointSigner {
+pub trait CheckpointSigner: fmt::Debug {
     /// Returns the signing key identifier.
     fn key_id(&self) -> &KeyIdentifier;
 
     /// Signs one checkpoint digest.
     fn sign(&self, checkpoint_digest: Hash32) -> Signature;
+
+    /// Returns the signer kind.
+    ///
+    /// A production signer keeps the default value. A structural signer
+    /// returns [`SignerKind::Structural`].
+    fn kind(&self) -> SignerKind {
+        SignerKind::Production
+    }
 }
 
 /// A structural checkpoint signer with no key material.
 ///
 /// The signer derives a deterministic 64-byte value from the key identifier
 /// and the checkpoint digest. It is a structural test and operations seam. It
-/// is not a production signature scheme.
+/// is not a production signature scheme. A production configuration must not
+/// use it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructuralSigner {
     key_id: KeyIdentifier,
@@ -324,6 +342,10 @@ impl StructuralSigner {
 impl CheckpointSigner for StructuralSigner {
     fn key_id(&self) -> &KeyIdentifier {
         &self.key_id
+    }
+
+    fn kind(&self) -> SignerKind {
+        SignerKind::Structural
     }
 
     fn sign(&self, checkpoint_digest: Hash32) -> Signature {

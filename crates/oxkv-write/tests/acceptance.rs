@@ -97,7 +97,7 @@ fn key(name: &str) -> Key {
 }
 
 fn authority() -> Authority {
-    Authority::new(AuthorityConfig::new(
+    Authority::local(AuthorityConfig::new(
         shard(),
         PolicyVersion::from_bytes([4; 32]),
         ManifestDigest::from_bytes([5; 32]),
@@ -106,6 +106,7 @@ fn authority() -> Authority {
         ProjectionWatermarks::new(),
         KeyIdentifier::new("checkpoint-key-1"),
     ))
+    .expect("the local authority starts")
 }
 
 fn put_request(id: u8, name: &str, base: u64, value: &str) -> WriteRequest {

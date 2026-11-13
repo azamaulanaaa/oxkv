@@ -14,7 +14,7 @@
 
 pub use oxkv_security::audit::{
     AuditChain, AuditCheckpoint, AuditDecision, AuditEntry, AuditRecord, AuditRowDecision,
-    CheckpointSigner, GENESIS_HASH, StructuralSigner,
+    CheckpointSigner, GENESIS_HASH, SignerKind, StructuralSigner,
 };
 
 /// The outcome that one audit record covers.
