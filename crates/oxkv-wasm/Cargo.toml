@@ -14,6 +14,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 oxkv = { path = "../..", version = "0.11.0", features = ["btree", "oxkv"] }
+oxkv-query = { path = "../oxkv-query", version = "0.11.0" }
 oxkv-opfs = { path = "../oxkv-opfs", version = "0.11.0" }
 oxkv-cached = { path = "../oxkv-cached", version = "0.11.0" }
 futures = { version = "0.3", default-features = false, features = ["std"] }

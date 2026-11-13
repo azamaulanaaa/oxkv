@@ -5,6 +5,7 @@
 use wasm_bindgen::prelude::*;
 
 use oxkv::{self as store, GetSet, GetSetExt, Store, StoreExt, Transaction, load_stream};
+use oxkv_query::QueryExt;
 
 use super::{Direction, js_error, json_compatible, json_entries};
 
@@ -209,13 +210,21 @@ impl JsBTreeStore {
         }
     }
 
-    /// Retrieve JSON documents with cursor-based pagination.
+    /// Retrieve JSON documents with cursor-based pagination. A legacy
+    /// Lucene-style query string can filter the result.
     ///
     /// This method mirrors `gets_bytes`. The `limit`, `direction`, and cursor
     /// parameters have the same meaning as in `gets_bytes`. The `value` field
     /// holds the parsed JSON document. When the stored bytes are not valid
     /// JSON, the `value` field holds a `Uint8Array` instead.
+    ///
+    /// The query uses the legacy `oxkv-query` filter. The filter is not the
+    /// 1.0 search contract. The filter supports field paths, ranges,
+    /// wildcards, fuzzy terms, boolean operators, and regular expressions.
+    /// Without a query, this method returns the same rows as `gets_bytes`.
+    ///
     /// # Errors
+    /// * `StoreError` - if the query is invalid
     /// * `StoreError` - if an I/O error occurs
     #[wasm_bindgen(
         return_description = "An array of key-value objects where `value` is the parsed JSON document"
@@ -234,15 +243,20 @@ impl JsBTreeStore {
             param_description = "Optional end key for the range; keys *at* this cursor are included when present"
         )]
         end_cursor: Option<String>,
+        #[wasm_bindgen(
+            param_description = "Optional legacy Lucene-style query string (for example, \"age:[30 TO 40] AND tags:rust\")"
+        )]
+        query: Option<String>,
     ) -> Result<Vec<js_sys::Object>, JsValue> {
         let store = self.inner.lock().await;
-        match store
-            .gets_bytes(
-                limit.map(|value| value as usize),
-                direction.into(),
-                (start_cursor, end_cursor),
-            )
-            .await
+        match QueryExt::gets(
+            &*store,
+            limit.map(|value| value as usize),
+            direction.into(),
+            (start_cursor, end_cursor),
+            query.as_deref(),
+        )
+        .await
         {
             Ok(kvs) => json_entries(kvs),
             Err(e) => Err(js_error(&e)),
@@ -742,10 +756,86 @@ mod tests {
             ok(js_store.set(&format!("k{n}"), doc).await);
         }
 
-        let all = entries(js_store.gets(None, Direction::Next, None, None).await);
+        let all = entries(js_store.gets(None, Direction::Next, None, None, None).await);
         assert_eq!(all.len(), 3);
         assert_eq!(entry_key(&all[0]), "k0");
         assert_eq!(entry_json(&all[0]), serde_json::json!({ "n": 0 }));
+    }
+
+    #[wasm_bindgen_test]
+    async fn gets_filters_with_a_field_query() {
+        let js_store = JsBTreeStore::new();
+        for (key, doc) in [
+            ("k0", serde_json::json!({ "lang": "rust" })),
+            ("k1", serde_json::json!({ "lang": "go" })),
+        ] {
+            let doc = json_compatible(&doc).expect("serialize to JsValue");
+            ok(js_store.set(key, doc).await);
+        }
+
+        let rows = entries(
+            js_store
+                .gets(
+                    None,
+                    Direction::Next,
+                    None,
+                    None,
+                    Some("lang:rust".to_owned()),
+                )
+                .await,
+        );
+        let keys: Vec<_> = rows.iter().map(entry_key).collect();
+        assert_eq!(keys, vec!["k0"]);
+    }
+
+    #[wasm_bindgen_test]
+    async fn gets_filters_with_a_range_query() {
+        let js_store = JsBTreeStore::new();
+        for (key, age) in [("k0", 20), ("k1", 35), ("k2", 50)] {
+            let doc =
+                json_compatible(&serde_json::json!({ "age": age })).expect("serialize to JsValue");
+            ok(js_store.set(key, doc).await);
+        }
+
+        let rows = entries(
+            js_store
+                .gets(
+                    None,
+                    Direction::Next,
+                    None,
+                    None,
+                    Some("age:[30 TO 40]".to_owned()),
+                )
+                .await,
+        );
+        let keys: Vec<_> = rows.iter().map(entry_key).collect();
+        assert_eq!(keys, vec!["k1"]);
+    }
+
+    #[wasm_bindgen_test]
+    async fn gets_filters_with_a_regex_query() {
+        let js_store = JsBTreeStore::new();
+        for (key, doc) in [
+            ("k0", serde_json::json!({ "lang": "rust" })),
+            ("k1", serde_json::json!({ "lang": "go" })),
+        ] {
+            let doc = json_compatible(&doc).expect("serialize to JsValue");
+            ok(js_store.set(key, doc).await);
+        }
+
+        let rows = entries(
+            js_store
+                .gets(
+                    None,
+                    Direction::Next,
+                    None,
+                    None,
+                    Some("lang:/^ru.*/".to_owned()),
+                )
+                .await,
+        );
+        let keys: Vec<_> = rows.iter().map(entry_key).collect();
+        assert_eq!(keys, vec!["k0"]);
     }
 
     #[wasm_bindgen_test]
@@ -757,7 +847,11 @@ mod tests {
             ok(js_store.set(&format!("k{n}"), doc).await);
         }
 
-        let page = entries(js_store.gets(Some(2), Direction::Next, None, None).await);
+        let page = entries(
+            js_store
+                .gets(Some(2), Direction::Next, None, None, None)
+                .await,
+        );
         let keys: Vec<_> = page.iter().map(entry_key).collect();
         assert_eq!(keys, vec!["k0", "k1"]);
     }
@@ -778,6 +872,7 @@ mod tests {
                     Direction::Next,
                     Some("k1".to_owned()),
                     Some("k2".to_owned()),
+                    None,
                 )
                 .await,
         );
@@ -793,7 +888,7 @@ mod tests {
             json_compatible(&serde_json::json!({ "ok": true })).expect("serialize to JsValue");
         ok(js_store.set("doc", doc).await);
 
-        let all = entries(js_store.gets(None, Direction::Next, None, None).await);
+        let all = entries(js_store.gets(None, Direction::Next, None, None, None).await);
         assert_eq!(all.len(), 2);
         assert_eq!(entry_key(&all[0]), "doc");
         assert_eq!(entry_json(&all[0]), serde_json::json!({ "ok": true }));

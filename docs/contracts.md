@@ -7,20 +7,31 @@ names the source file and function that implements it.
 The crate version is 1.0.0. The contracts below describe this branch only.
 They do not describe requested features that are absent from this branch. The
 legacy Lucene-style query filter lives in the standalone `oxkv-query` crate at
-`crates/oxkv-query`. It is not part of the 1.0 search contract.
+`crates/oxkv-query`. The 1.0 release still supports it. It is not part of the
+1.0 search contract.
 
 ## Search surface
 
 The 1.0 search contract is `oxkv-index` for the tokenizer and inverted index,
-and `oxkv-search` for the pinned search read. The `oxkv-query` crate is a
-standalone legacy crate. It is not part of the 1.0 search contract. The
-`oxkv-wasm` bindings do not depend on `oxkv-query`. The WASM `gets` and
-`getsBytes` methods return a plain paginated JSON scan. They have no query
-filter and no regex path.
+and `oxkv-search` for the pinned search read. The `oxkv-query` crate is the
+legacy filter. It is not part of the 1.0 search contract.
 
-The 1.0 search language has no regular expressions. A `/regex/` term fails
-with `policy.regex_not_supported`. The `*` and `?` wildcard forms still work.
-A later release can add regular expressions with a new contract version.
+The `oxkv-wasm` bindings depend on `oxkv-query`. The WASM `gets` methods take
+an optional query argument. The query argument uses the legacy filter. Without
+a query, the methods return a plain paginated JSON scan. With a query, the
+methods return only the rows whose JSON document matches the query. The
+`getsBytes` methods return raw bytes and take no query.
+
+The legacy filter supports field paths, ranges, wildcards, fuzzy terms,
+boolean operators, and regular expressions. A `/pattern/` term matches with
+the `regex` crate. See `crates/oxkv-query/src/json.rs`, `compile_term` and
+`match_string_kind`.
+
+The 1.0 search contract has no regular expressions. A policy with a regex
+fails with `policy.regex_not_supported`. See `crates/oxkv-policy/src/ast.rs`,
+`Policy::new`. The `*` and `?` wildcard forms still work in the legacy
+filter. A later release can add regular expressions to the 1.0 contract with a
+new contract version.
 
 ## Terms
 

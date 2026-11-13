@@ -1,8 +1,9 @@
 //! JSON document matcher for [`Query`] ASTs.
 //!
 //! The matcher lowers a query once into a [`CompiledQuery`]. The matcher
-//! compiles the globs and parses the range bounds. The matcher then
-//! evaluates the compiled query against any [`serde_json::Value`].
+//! compiles the regexes, compiles the globs, and parses the range bounds. The
+//! matcher then evaluates the compiled query against any
+//! [`serde_json::Value`].
 //!
 //! # Evaluation semantics
 //!
@@ -22,7 +23,8 @@
 //!   - A quoted phrase is case-insensitive substring containment. The phrase
 //!     `"born on"` finds `"i am born on 2000"`.
 //!   - A `*` or `?` wildcard is an anchored glob.
-//!   - A `/regex/` term is rejected with `policy.regex_not_supported`.
+//!   - A `/regex/` term uses the `regex` crate. The legacy filter supports
+//!     regular expressions. The 1.0 search contract does not.
 //!   - The parser accepts boosts. Boosts do not affect boolean matching.
 //!   - A numeric leaf compares numerically whenever the term parses as a
 //!     number.
@@ -40,6 +42,7 @@
 //!   instant on that day. The matcher reads a naive datetime (no offset) as
 //!   UTC. Non-date-shaped strings keep the classic comparison behavior.
 
+use regex::Regex;
 use serde_json::Value;
 use strsim::levenshtein;
 
@@ -91,8 +94,8 @@ struct CompiledTerm {
 enum TermKind {
     /// Unquoted term with `*`/`?`: anchored, case-insensitive glob.
     Glob(String),
-    /// A term that never matches. The 1.0 surface rejects regex terms.
-    Never,
+    /// `/regex/` term: user-provided pattern, case-sensitive.
+    Pattern(Option<Regex>),
     /// Quoted phrase: case-insensitive containment anywhere in the value.
     Contains(String),
     /// Bare term: any word token of the value within Levenshtein `slop` of
@@ -153,12 +156,12 @@ fn compile_expr(expr: &Expression) -> CompiledExpr {
 /// Compiles a term in the same way regardless of scoping. Scoping selects
 /// *which* leaf to search, not how it matches. Bare terms are token-level
 /// fuzzy with default slop 2. Quoted phrases are case-insensitive
-/// containment. Wildcards keep their anchored whole-value behavior.
-/// Date-shaped literals are routed to calendar intervals before this function
-/// runs. [`crate::parse`] rejects a `/regex/` term before evaluation.
+/// containment. Wildcards and regexes keep their anchored whole-value
+/// behavior. Date-shaped literals are routed to calendar intervals before
+/// this function runs.
 fn compile_term(term: &TermExpr) -> CompiledTerm {
     let kind = if term.is_regex {
-        TermKind::Never
+        TermKind::Pattern(Regex::new(&term.value).ok())
     } else if term.is_quoted {
         TermKind::Contains(term.value.to_lowercase())
     } else if let Some(slop) = term.fuzzy_slop {
@@ -663,14 +666,15 @@ fn numeric_literal(kind: &TermKind) -> Option<f64> {
             target: text,
             slop: _,
         } => text.parse::<f64>().ok(),
-        TermKind::Glob(_) | TermKind::Never => None,
+        TermKind::Glob(_) | TermKind::Pattern(_) => None,
     }
 }
 
 fn match_string_kind(kind: &TermKind, text: &str) -> bool {
     match kind {
         TermKind::Glob(pattern) => glob_matches(pattern, text),
-        TermKind::Never => false,
+        TermKind::Pattern(Some(regex)) => regex.is_match(text),
+        TermKind::Pattern(None) => false,
         TermKind::Contains(needle) => text.to_lowercase().contains(needle),
         TermKind::FuzzyToken { target, slop } => {
             tokens_ci(text).any(|token| levenshtein(target, token) <= *slop)
@@ -800,13 +804,21 @@ mod tests {
     }
 
     #[test]
-    fn test_a_regex_term_is_rejected_before_evaluation() {
-        let error = parse("lang:/^rust$/").expect_err("a regex term must fail");
-        assert!(error.contains(crate::REGEX_NOT_SUPPORTED_CODE), "{error}");
+    fn test_a_regex_term_matches_by_pattern() {
+        let doc = sample_doc();
+        assert!(eval_q("lang:/^rust$/", &doc));
+        assert!(eval_q("name:/^Rust/", &doc));
+        assert!(!eval_q("lang:/^Rust$/", &doc));
     }
 
     #[test]
-    fn test_a_hand_built_regex_term_never_matches() {
+    fn test_an_invalid_regex_term_never_matches() {
+        let doc = sample_doc();
+        assert!(!eval_q("lang:/([/", &doc));
+    }
+
+    #[test]
+    fn test_a_hand_built_regex_term_matches_by_pattern() {
         let query = Query::Group(vec![crate::QueryItem {
             prefix: None,
             op: None,
@@ -818,7 +830,7 @@ mod tests {
                 boost: None,
             }),
         }]);
-        assert!(!eval(&query, &sample_doc()));
+        assert!(eval(&query, &sample_doc()));
     }
 
     #[test]

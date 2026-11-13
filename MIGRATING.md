@@ -1,30 +1,29 @@
 # Migrating from 0.12 to 1.0
 
-OxKV 1.0 removes the query filter from the WASM surface. The `gets` and
-`getsBytes` methods on `BTreeStore`, `OxKvStore`, and `CachedOxKvStore` now
-take four arguments. They return a plain paginated JSON scan.
-
-Before:
+OxKV 1.0 keeps the legacy Lucene-style query filter. The `gets` methods on
+`BTreeStore`, `OxKvStore`, and `CachedOxKvStore` keep five arguments. The fifth
+argument is the optional query string. `getsBytes` returns raw bytes and takes
+no query.
 
 ```js
 const rows = await store.gets(10, Direction.Next, null, null, "age:[30 TO 40]");
 ```
 
-After:
+The query argument is optional. Pass `null` for a plain paginated JSON scan:
 
 ```js
-const rows = await store.gets(10, Direction.Next, null, null);
+const rows = await store.gets(10, Direction.Next, null, null, null);
 ```
 
-Filter the returned rows in JavaScript. The WASM surface has no query path and
-no regex path.
+The `oxkv-query` crate is the legacy filter. The 1.0 release still supports it.
+It is not part of the 1.0 search contract. The `oxkv-index` and `oxkv-search`
+crates hold the 1.0 search contract.
 
-The `oxkv-query` crate is a standalone legacy crate. It is not part of the 1.0
-search contract. The `oxkv-index` and `oxkv-search` crates hold the 1.0 search
-contract. The 1.0 search language has no regular expressions. A query with
-`/regex/` fails with `policy.regex_not_supported`. The `*` and `?` wildcard
-forms still work in the legacy filter. All workspace crates release in lockstep
-at 1.0.0.
+The 1.0 search contract has no regular expressions. A policy with a regex
+fails with `policy.regex_not_supported`. The legacy filter supports regular
+expressions, because it keeps the 0.12 behavior. The `*` and `?` wildcard
+forms work in both surfaces. All workspace crates release in lockstep at
+1.0.0.
 
 # Migrating from 0.11 to 0.12
 

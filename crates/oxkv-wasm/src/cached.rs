@@ -5,6 +5,7 @@
 use wasm_bindgen::prelude::*;
 
 use oxkv::{self as store, GetSet, GetSetExt, Store, StoreExt, Transaction, load_stream};
+use oxkv_query::QueryExt;
 
 use super::{Direction, js_error, json_compatible, json_entries};
 
@@ -423,13 +424,21 @@ impl JsCachedOxKvStore {
         }
     }
 
-    /// Retrieve JSON documents with cursor-based pagination.
+    /// Retrieve JSON documents with cursor-based pagination. A legacy
+    /// Lucene-style query string can filter the result.
     ///
     /// This method mirrors `gets_bytes`. The `limit`, `direction`, and cursor
     /// parameters have the same meaning as in `gets_bytes`. The `value` field
     /// holds the parsed JSON document. When the stored bytes are not valid
     /// JSON, the `value` field holds a `Uint8Array` instead.
+    ///
+    /// The query uses the legacy `oxkv-query` filter. The filter is not the
+    /// 1.0 search contract. The filter supports field paths, ranges,
+    /// wildcards, fuzzy terms, boolean operators, and regular expressions.
+    /// Without a query, this method returns the same rows as `gets_bytes`.
+    ///
     /// # Errors
+    /// * `StoreError` - if the query is invalid
     /// * `StoreError` - if an I/O error occurs
     #[wasm_bindgen(
         return_description = "An array of key-value objects where `value` is the parsed JSON document"
@@ -448,15 +457,20 @@ impl JsCachedOxKvStore {
             param_description = "Optional end key for the range; keys *at* this cursor are included when present"
         )]
         end_cursor: Option<String>,
+        #[wasm_bindgen(
+            param_description = "Optional legacy Lucene-style query string (for example, \"age:[30 TO 40] AND tags:rust\")"
+        )]
+        query: Option<String>,
     ) -> Result<Vec<js_sys::Object>, JsValue> {
         let store = self.inner.lock().await;
-        match store
-            .gets_bytes(
-                limit.map(|value| value as usize),
-                direction.into(),
-                (start_cursor, end_cursor),
-            )
-            .await
+        match QueryExt::gets(
+            &*store,
+            limit.map(|value| value as usize),
+            direction.into(),
+            (start_cursor, end_cursor),
+            query.as_deref(),
+        )
+        .await
         {
             Ok(kvs) => json_entries(kvs),
             Err(e) => Err(js_error(&e)),
@@ -778,7 +792,7 @@ mod tests {
         }
 
         let page = js_store
-            .gets(Some(2), Direction::Next, None, None)
+            .gets(Some(2), Direction::Next, None, None, None)
             .await
             .expect("gets failed");
         assert_eq!(page.len(), 2);

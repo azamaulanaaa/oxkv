@@ -7,7 +7,7 @@ A transactional key-value store library written in Rust, with optional WebAssemb
 
 - **Transaction support** — atomic commit/rollback batches of CRUD operations, with opt-in transaction-level conditional writes via `TxCas`
 - **Cursor-based pagination** — bidirectional traversal (`Next` / `Prev`) with inclusive range cursors and limit control
-- **Legacy query filter** — the standalone `oxkv-query` crate filters stored JSON documents. It is not part of the 1.0 search contract, and the WASM surface does not expose it
+- **Legacy query filter** — the standalone `oxkv-query` crate filters stored JSON documents. The 1.0 release still supports it, and the WASM `gets` method exposes it. It is not part of the 1.0 search contract
 - **JSON serialization** — extension methods for inserting and retrieving `serde_json::Value` types via JSON, stored as raw bytes
 - **WASM bindings** — thread-safe wrappers in `crates/oxkv-wasm/` expose `BTreeStore`, `OxKvStore`, and `CachedOxKvStore` to JavaScript as async promises (`oxkv-otel` is native-only, the OXKV export is portable across all)
 - **Extensible backends** — the crate defines three traits (`GetSet`, `Transaction`, `Store`) that any backend can implement; ships with an in-memory B-tree backend (`btree`, test and bench baseline + WASM baseline) and an LSM backend (`oxkv`, native + wasm) generic over `Storage` + `Cache` (S3/GCS/Azure via the `oxkv-s3` crate)
@@ -114,10 +114,15 @@ async fn main() {
 
 ## Legacy Query Filter
 
-The `oxkv-query` crate is a standalone legacy crate. It is not part of the 1.0
-search contract. The 1.0 search contract is `oxkv-index` for the tokenizer and
-the inverted index, and `oxkv-search` for the pinned search read. The
-`oxkv-wasm` bindings do not expose this filter.
+The `oxkv-query` crate is the legacy Lucene-style filter. The 1.0 release
+still supports it. It is not part of the 1.0 search contract. The 1.0 search
+contract is `oxkv-index` for the tokenizer and the inverted index, and
+`oxkv-search` for the pinned search read. The `oxkv-wasm` bindings expose this
+legacy filter through the `gets` method.
+
+The legacy filter supports regular expressions. The 1.0 search contract does
+not. Do not use the legacy filter for a new search integration. Use
+`oxkv-index` and `oxkv-search` for the 1.0 contract.
 
 Any store can scan its entries and return only the JSON documents that match a
 query string, using `gets` from the `oxkv-query` crate. It mirrors
@@ -191,7 +196,8 @@ Rules of thumb:
   (override per-term with `~N`; note transpositions count as two edits).
 - **Quoted phrase** → case-insensitive containment anywhere in the value.
 - **Wildcards** (`rus*`, `j?va`) → anchored whole-value globs.
-- **Regex** (`/pattern/`) → rejected with `policy.regex_not_supported`.
+- **Regex** (`/pattern/`) → matches with the `regex` crate. This legacy
+  filter supports regex. The 1.0 search contract does not.
 - **Numbers** stay precise: a numeric term against a numeric leaf compares
   as a number, not fuzzily as text.
 - **Date-shaped values** (`2025-03-08`, timestamps with `Z` or offsets)
@@ -207,7 +213,7 @@ Rules of thumb:
 | Field-scoped term | `lang:rust` | dot-separated paths descend into objects (`address.city:Berlin`) and fan out across arrays (`tags:kv`) |
 | Quoted phrase | `"memory safe"`, `title:"rust prog"` | case-insensitive substring containment in any scope |
 | Wildcards | `name:r*`, `j?va` | `*` and `?`, case-insensitive |
-| Regex | `email:/@gmail\.com$/` | rejected with `policy.regex_not_supported` |
+| Regex | `email:/@gmail\.com$/` | legacy filter only: uses the `regex` crate; the 1.0 search contract has no regex |
 | Fuzzy | `name:Jon~1` | Levenshtein distance ≤ slop; bare `~` defaults to 2 |
 | Boost | `rust^2.5` | parsed but ignored for boolean matching |
 | Inclusive range | `age:[30 TO 40]` | numeric bounds also match numeric-looking strings |
@@ -868,11 +874,26 @@ const results = await store.gets(
     Direction.Next,
     null,   // start cursor
     null,   // end cursor
+    null,   // optional legacy query string
 );
 for (const { key, value } of results) {
     console.log(key, value); // value is the parsed JSON document
 }
+
+// The optional fifth argument is the legacy Lucene-style filter.
+// It supports field paths, ranges, wildcards, fuzzy terms, boolean
+// operators, and regular expressions.
+const adults = await store.gets(
+    10,
+    Direction.Next,
+    null,
+    null,
+    "age:[18 TO 120] AND lang:/^ru.*/",
+);
 ```
+
+The query argument uses the legacy `oxkv-query` filter. It is not the 1.0
+search contract. The 1.0 search contract has no regular expressions.
 
 ### LSM from JavaScript
 
