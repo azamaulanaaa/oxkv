@@ -1,0 +1,47 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "bytes_hex": "73657373696f6e5f6d696e696d756d7c73657373696f6e"
+      },
+      "id": "A11/session-version",
+      "input": {
+        "axis": "session_minimum"
+      },
+      "kind": "version"
+    },
+    {
+      "expected": {
+        "bytes_hex": "726561642e70696e5f657870697265647c726561647c6e6f6e657c4e65772070696e7c74727565"
+      },
+      "id": "A11/pin-expired",
+      "input": {
+        "code": "read.pin_expired"
+      },
+      "kind": "error"
+    },
+    {
+      "expected": {
+        "bytes_hex": "74727565"
+      },
+      "id": "A11/pin-entails",
+      "input": {
+        "left": [
+          [
+            "01",
+            18
+          ]
+        ],
+        "right": [
+          [
+            "01",
+            18
+          ]
+        ]
+      },
+      "kind": "entails"
+    }
+  ],
+  "contract": "A11",
+  "version": "read-pin/v1"
+}

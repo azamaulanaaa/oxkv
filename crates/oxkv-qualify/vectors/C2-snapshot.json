@@ -1,0 +1,83 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "bytes_hex": "5368617264536e617073686f747c666f726d61745f76657273696f6e2c6b65795f656e636f64696e675f76657273696f6e2c6d616e69666573745f6469676573742c73686172645f69642c7072656669785f626f756e64732c636f6d6d69745f76657273696f6e2c636f6e74656e745f6469676573742c636f6e74656e745f7365616c"
+      },
+      "id": "C2/shard-snapshot-provenance",
+      "input": {
+        "kind": "ShardSnapshot"
+      },
+      "kind": "provenance"
+    },
+    {
+      "expected": {
+        "bytes_hex": "506167657c666f726d61745f76657273696f6e2c6b65795f656e636f64696e675f76657273696f6e2c6d616e69666573745f6469676573742c73686172645f69642c7072656669785f626f756e64732c636f6d6d69745f76657273696f6e2c636f6e74656e745f6469676573742c636f6e74656e745f7365616c2c706167655f69642c706167655f73657175656e6365"
+      },
+      "id": "C2/page-provenance",
+      "input": {
+        "kind": "Page"
+      },
+      "kind": "provenance"
+    },
+    {
+      "expected": {
+        "bytes_hex": "6433643934303936"
+      },
+      "id": "C2/page-crc32c",
+      "input": {
+        "payload_hex": "00ff10"
+      },
+      "kind": "page_checksum"
+    },
+    {
+      "expected": {
+        "error": "format.corrupt_page"
+      },
+      "id": "C2/page-crc32c-mismatch",
+      "input": {
+        "expected_crc32c": 0,
+        "payload_hex": "00ff10"
+      },
+      "kind": "page_checksum"
+    },
+    {
+      "expected": {
+        "bytes_hex": "6f6b7c312e30"
+      },
+      "id": "C2/artifact-v1",
+      "input": {
+        "format_major": 1,
+        "format_minor": 0,
+        "provenance": true
+      },
+      "kind": "artifact"
+    },
+    {
+      "expected": {
+        "error": "format.unsupported_version"
+      },
+      "id": "C2/artifact-v2",
+      "input": {
+        "format_major": 2,
+        "format_minor": 0,
+        "provenance": true
+      },
+      "kind": "artifact"
+    },
+    {
+      "expected": {
+        "error": "format.missing_provenance"
+      },
+      "id": "C2/artifact-missing-provenance",
+      "input": {
+        "format_major": 1,
+        "format_minor": 0,
+        "provenance": false
+      },
+      "kind": "artifact"
+    }
+  ],
+  "contract": "C2",
+  "version": "snapshot-page/v1"
+}

@@ -1,0 +1,46 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "bytes_hex": "70726f6a656374696f6e5f76657273696f6e7c636f6e7472616374"
+      },
+      "id": "A6/projection-version",
+      "input": {
+        "axis": "projection_version"
+      },
+      "kind": "version"
+    },
+    {
+      "expected": {
+        "bytes_hex": "65706f63683d34317c6163636f756e74733d31327c6c65646765723d33"
+      },
+      "id": "A6/projection-order",
+      "input": {
+        "epoch": 41,
+        "watermarks": [
+          [
+            "ledger",
+            3
+          ],
+          [
+            "accounts",
+            12
+          ]
+        ]
+      },
+      "kind": "projection"
+    },
+    {
+      "expected": {
+        "bytes_hex": "70726f6a656374696f6e2e65706f63685f696e76616c69647c70726f6a656374696f6e7c52656a65637465647c41667465722072656275696c647c74727565"
+      },
+      "id": "A6/projection-epoch",
+      "input": {
+        "code": "projection.epoch_invalid"
+      },
+      "kind": "error"
+    }
+  ],
+  "contract": "A6",
+  "version": "projection/v1"
+}

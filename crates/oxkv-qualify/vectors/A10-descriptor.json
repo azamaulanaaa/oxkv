@@ -1,0 +1,50 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "bytes_hex": "64657363726970746f725f76657273696f6e7c636f6e7472616374"
+      },
+      "id": "A10/descriptor-version",
+      "input": {
+        "axis": "descriptor_version"
+      },
+      "kind": "version"
+    },
+    {
+      "expected": {
+        "bytes_hex": "7270632e64657363726970746f725f6d69736d617463687c7270637c6e6f6e657c526567656e657261746520636c69656e747c74727565"
+      },
+      "id": "A10/descriptor-mismatch",
+      "input": {
+        "code": "rpc.descriptor_mismatch"
+      },
+      "kind": "error"
+    },
+    {
+      "expected": {
+        "bytes_hex": "5b227a657461222c22616c706861225d"
+      },
+      "id": "A10/descriptor-order",
+      "input": {
+        "methods": [
+          "zeta",
+          "alpha"
+        ]
+      },
+      "kind": "descriptor"
+    },
+    {
+      "expected": {
+        "bytes_hex": "35288de048809fef19f732de8bbda2d904c7aaa84e0eed5c9ba783bd795d7593"
+      },
+      "id": "A10/descriptor-digest",
+      "input": {
+        "bytes_hex": "64657363726970746f72",
+        "domain": "descriptor"
+      },
+      "kind": "digest"
+    }
+  ],
+  "contract": "A10",
+  "version": "descriptor/v1"
+}

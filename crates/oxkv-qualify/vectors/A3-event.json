@@ -1,0 +1,37 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "bytes_hex": "6576656e745f76657273696f6e7c636f6e7472616374"
+      },
+      "id": "A3/event-version",
+      "input": {
+        "axis": "event_version"
+      },
+      "kind": "version"
+    },
+    {
+      "expected": {
+        "bytes_hex": "6576656e742e726574656e74696f6e5f6761707c6576656e747c6e6f6e657c536e617073686f74206261636b66696c6c7c74727565"
+      },
+      "id": "A3/event-retention",
+      "input": {
+        "code": "event.retention_gap"
+      },
+      "kind": "error"
+    },
+    {
+      "expected": {
+        "bytes_hex": "ae16ff4d6cc0f022e7269d8a3bfc6db8966b1dc5ede7d1d707a91c4ca239aeb4"
+      },
+      "id": "A3/event-id",
+      "input": {
+        "bytes_hex": "6576656e74",
+        "domain": "event-id"
+      },
+      "kind": "digest"
+    }
+  ],
+  "contract": "A3",
+  "version": "event/v1"
+}

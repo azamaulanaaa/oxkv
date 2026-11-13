@@ -1,0 +1,45 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "bytes_hex": "746f6b656e697a65725f76657273696f6e7c636f6e7472616374"
+      },
+      "id": "A2/tokenizer-version",
+      "input": {
+        "axis": "tokenizer_version"
+      },
+      "kind": "version"
+    },
+    {
+      "expected": {
+        "bytes_hex": "626f64793d746f6b656e697a65722f76327c7469746c653d746f6b656e697a65722f7631"
+      },
+      "id": "A2/tokenizer-order",
+      "input": {
+        "fields": [
+          [
+            "title",
+            "tokenizer/v1"
+          ],
+          [
+            "body",
+            "tokenizer/v2"
+          ]
+        ]
+      },
+      "kind": "tokenizer"
+    },
+    {
+      "expected": {
+        "bytes_hex": "7365617263682e746f6b656e697a65725f756e6b6e6f776e7c7365617263687c6e6f6e657c4e657665727c74727565"
+      },
+      "id": "A2/tokenizer-unknown",
+      "input": {
+        "code": "search.tokenizer_unknown"
+      },
+      "kind": "error"
+    }
+  ],
+  "contract": "A2",
+  "version": "tokenizer/v1"
+}

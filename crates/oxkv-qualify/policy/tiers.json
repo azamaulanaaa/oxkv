@@ -1,0 +1,35 @@
+{
+  "policy_version": "tiers/v1",
+  "tiers": [
+    {
+      "name": "pull_request",
+      "browser_targets": "one",
+      "native_vectors": true,
+      "browser_vectors": true,
+      "full_browser_matrix": false,
+      "fuzz": false,
+      "old_artifacts": false,
+      "gates_release": false
+    },
+    {
+      "name": "nightly",
+      "browser_targets": "full",
+      "native_vectors": true,
+      "browser_vectors": true,
+      "full_browser_matrix": true,
+      "fuzz": true,
+      "old_artifacts": true,
+      "gates_release": false
+    },
+    {
+      "name": "release_candidate",
+      "browser_targets": "full",
+      "native_vectors": true,
+      "browser_vectors": true,
+      "full_browser_matrix": true,
+      "fuzz": true,
+      "old_artifacts": true,
+      "gates_release": true
+    }
+  ]
+}

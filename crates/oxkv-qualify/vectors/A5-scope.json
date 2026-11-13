@@ -1,0 +1,75 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "bytes_hex": "73636f70655f76657273696f6e7c636f6e7472616374"
+      },
+      "id": "A5/scope-version",
+      "input": {
+        "axis": "scope_version"
+      },
+      "kind": "version"
+    },
+    {
+      "expected": {
+        "bytes_hex": "084276b50aaa2f177a2f71d2dadb0ca277d7a011fe50ababfe5a3f5e6395a6c9"
+      },
+      "id": "A5/scope-identity",
+      "input": {
+        "tables": [
+          "ledger",
+          "accounts"
+        ]
+      },
+      "kind": "scope_identity"
+    },
+    {
+      "expected": {
+        "bytes_hex": "74727565"
+      },
+      "id": "A5/scope-entails",
+      "input": {
+        "left": [
+          [
+            "01",
+            18
+          ],
+          [
+            "02",
+            9
+          ]
+        ],
+        "right": [
+          [
+            "01",
+            18
+          ]
+        ]
+      },
+      "kind": "entails"
+    },
+    {
+      "expected": {
+        "bytes_hex": "66616c7365"
+      },
+      "id": "A5/scope-behind",
+      "input": {
+        "left": [
+          [
+            "01",
+            4
+          ]
+        ],
+        "right": [
+          [
+            "01",
+            18
+          ]
+        ]
+      },
+      "kind": "entails"
+    }
+  ],
+  "contract": "A5",
+  "version": "scope/v1"
+}

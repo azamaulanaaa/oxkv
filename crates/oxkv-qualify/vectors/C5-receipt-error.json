@@ -1,0 +1,68 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "bytes_hex": "5175657565647c317c66616c7365"
+      },
+      "id": "C5/receipt-queued",
+      "input": {
+        "name": "Queued"
+      },
+      "kind": "receipt"
+    },
+    {
+      "expected": {
+        "bytes_hex": "436f6d6d69747465647c327c74727565"
+      },
+      "id": "C5/receipt-committed",
+      "input": {
+        "name": "Committed"
+      },
+      "kind": "receipt"
+    },
+    {
+      "expected": {
+        "bytes_hex": "436f6e666c6963747c347c74727565"
+      },
+      "id": "C5/receipt-conflict",
+      "input": {
+        "name": "Conflict"
+      },
+      "kind": "receipt"
+    },
+    {
+      "expected": {
+        "error": "receipt.state_invalid"
+      },
+      "id": "C5/receipt-terminal",
+      "input": {
+        "from": "Committed",
+        "to": "Rejected"
+      },
+      "kind": "receipt_transition"
+    },
+    {
+      "expected": {
+        "bytes_hex": "5175657565642d3e436f6d6d6974746564"
+      },
+      "id": "C5/receipt-close",
+      "input": {
+        "from": "Queued",
+        "to": "Committed"
+      },
+      "kind": "receipt_transition"
+    },
+    {
+      "expected": {
+        "bytes_hex": "77726974652e76657273696f6e5f636f6e666c6963747c77726974657c436f6e666c6963747c4166746572207265626173657c74727565"
+      },
+      "id": "C5/conflict-error",
+      "input": {
+        "code": "write.version_conflict"
+      },
+      "kind": "error"
+    }
+  ],
+  "contract": "C5",
+  "version": "receipt-error/v1"
+}

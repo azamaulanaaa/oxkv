@@ -1,0 +1,70 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "bytes_hex": "73796e632e637572736f725f657870697265647c73796e637c6e6f6e657c536e617073686f742066616c6c6261636b7c74727565"
+      },
+      "id": "C3/cursor-expired",
+      "input": {
+        "code": "sync.cursor_expired"
+      },
+      "kind": "error"
+    },
+    {
+      "expected": {
+        "bytes_hex": "73796e635f776972655f76657273696f6e7c636f6e7472616374"
+      },
+      "id": "C3/sync-version",
+      "input": {
+        "axis": "sync_wire_version"
+      },
+      "kind": "version"
+    },
+    {
+      "expected": {
+        "bytes_hex": "6f6b"
+      },
+      "id": "C3/sync-cursor-ok",
+      "input": {
+        "token_hex": "4f5843310200010000000000000003000000000000000200000000000000010100000000000000120000000000000001020000000000000009000000000000000100000000000000010100000000000000040707070707070707070707070707070707070707070707070707070707070707a2e70017780cd702392f0aff28d2a274c3ea6d1b636a49ba05591d7b4d45128f",
+        "type": "SyncCursor"
+      },
+      "kind": "cursor_decode"
+    },
+    {
+      "expected": {
+        "bytes_hex": "000000000000000d6f786b762f6672616d652f7631000000000000000300000000000000016b0000000000000001760000000000000002dc9cb19e"
+      },
+      "id": "C3/sync-frame-encode",
+      "input": {
+        "index": 3,
+        "key_hex": "6b",
+        "key_version": 2,
+        "value_hex": "76"
+      },
+      "kind": "frame"
+    },
+    {
+      "expected": {
+        "bytes_hex": "6f6b7c337c36627c32"
+      },
+      "id": "C3/sync-frame-ok",
+      "input": {
+        "bytes_hex": "000000000000000d6f786b762f6672616d652f7631000000000000000300000000000000016b0000000000000001760000000000000002dc9cb19e"
+      },
+      "kind": "frame_decode"
+    },
+    {
+      "expected": {
+        "error": "sync.cursor_invalid"
+      },
+      "id": "C3/sync-frame-truncated",
+      "input": {
+        "bytes_hex": "4f584331"
+      },
+      "kind": "frame_decode"
+    }
+  ],
+  "contract": "C3",
+  "version": "sync-wire/v1"
+}

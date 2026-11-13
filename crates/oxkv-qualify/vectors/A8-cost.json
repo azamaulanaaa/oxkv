@@ -1,0 +1,36 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "bytes_hex": "636f73745f76657273696f6e7c636f6e7472616374"
+      },
+      "id": "A8/cost-version",
+      "input": {
+        "axis": "cost_version"
+      },
+      "kind": "version"
+    },
+    {
+      "expected": {
+        "bytes_hex": "71756572792e6275646765745f65786365656465647c71756572797c6e6f6e657c4e6172726f772071756572797c74727565"
+      },
+      "id": "A8/cost-budget",
+      "input": {
+        "code": "query.budget_exceeded"
+      },
+      "kind": "error"
+    },
+    {
+      "expected": {
+        "error": "qualify.vector_unknown"
+      },
+      "id": "A8/cost-cursor",
+      "input": {
+        "type": "Cost"
+      },
+      "kind": "cursor"
+    }
+  ],
+  "contract": "A8",
+  "version": "cost/v1"
+}

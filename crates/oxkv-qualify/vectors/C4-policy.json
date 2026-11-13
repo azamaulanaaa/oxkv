@@ -1,0 +1,101 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "bytes_hex": "706f6c6963795f6173745f76657273696f6e7c636f6e7472616374"
+      },
+      "id": "C4/policy-version",
+      "input": {
+        "axis": "policy_ast_version"
+      },
+      "kind": "version"
+    },
+    {
+      "expected": {
+        "bytes_hex": "416c6c6f777c317c307c31"
+      },
+      "id": "C4/policy-allow",
+      "input": {
+        "budget": {},
+        "expression": "allow",
+        "facts": {}
+      },
+      "kind": "policy"
+    },
+    {
+      "expected": {
+        "bytes_hex": "416c6c6f777c357c317c3133"
+      },
+      "id": "C4/policy-and",
+      "input": {
+        "budget": {},
+        "expression": "and(eq(tier,\"gold\"),eq(region,\"eu\"))",
+        "facts": {
+          "region": {
+            "text": "eu"
+          },
+          "tier": {
+            "text": "gold"
+          }
+        }
+      },
+      "kind": "policy"
+    },
+    {
+      "expected": {
+        "error": "policy.unknown_field"
+      },
+      "id": "C4/policy-unknown-field",
+      "input": {
+        "budget": {},
+        "expression": "eq(missing,1)",
+        "facts": {}
+      },
+      "kind": "policy"
+    },
+    {
+      "expected": {
+        "error": "policy.budget_exhausted"
+      },
+      "id": "C4/policy-budget",
+      "input": {
+        "budget": {
+          "max_steps": 1
+        },
+        "expression": "and(allow,allow)",
+        "facts": {}
+      },
+      "kind": "policy"
+    },
+    {
+      "expected": {
+        "error": "policy.parse_error"
+      },
+      "id": "C4/policy-parse",
+      "input": {
+        "budget": {},
+        "expression": "and(",
+        "facts": {}
+      },
+      "kind": "policy"
+    },
+    {
+      "expected": {
+        "error": "policy.not_total"
+      },
+      "id": "C4/policy-not-total",
+      "input": {
+        "budget": {},
+        "expression": "eq(age,\"seven\")",
+        "facts": {
+          "age": {
+            "int": 7
+          }
+        }
+      },
+      "kind": "policy"
+    }
+  ],
+  "contract": "C4",
+  "version": "policy-ast/v1"
+}

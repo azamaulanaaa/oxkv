@@ -1,0 +1,76 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "bytes_hex": "726563656970747c317c64617461207368617264206f7220636174616c6f672073686172647c66616c7365"
+      },
+      "id": "A1/namespace-receipt",
+      "input": {
+        "label": "receipt"
+      },
+      "kind": "namespace"
+    },
+    {
+      "expected": {
+        "bytes_hex": "70726f6a656374696f6e7c347c646174612073686172647c66616c7365"
+      },
+      "id": "A1/namespace-projection",
+      "input": {
+        "label": "projection"
+      },
+      "kind": "namespace"
+    },
+    {
+      "expected": {
+        "bytes_hex": "6f6b7c6163636f756e74737c66616c7365"
+      },
+      "id": "A1/table-user",
+      "input": {
+        "name": "accounts"
+      },
+      "kind": "table"
+    },
+    {
+      "expected": {
+        "bytes_hex": "6f6b7c5f636174616c6f677c74727565"
+      },
+      "id": "A1/table-catalog",
+      "input": {
+        "name": "_catalog"
+      },
+      "kind": "table"
+    },
+    {
+      "expected": {
+        "error": "manifest.reserved_table_name"
+      },
+      "id": "A1/table-reserved",
+      "input": {
+        "name": "_other"
+      },
+      "kind": "table"
+    },
+    {
+      "expected": {
+        "error": "key.malformed"
+      },
+      "id": "A1/table-bad",
+      "input": {
+        "name": "Accounts"
+      },
+      "kind": "table"
+    },
+    {
+      "expected": {
+        "bytes_hex": "6b65792e72657365727665645f73797374656d5f6d61726b65727c6b65797c52656a65637465647c4e657665727c74727565"
+      },
+      "id": "A1/system-marker",
+      "input": {
+        "code": "key.reserved_system_marker"
+      },
+      "kind": "error"
+    }
+  ],
+  "contract": "A1",
+  "version": "key-encoding/v1"
+}

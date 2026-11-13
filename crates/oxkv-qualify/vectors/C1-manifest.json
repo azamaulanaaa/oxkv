@@ -1,0 +1,77 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "bytes_hex": "6d616e69666573742e756e6b6e6f776e5f6669656c647c6d616e69666573747c6e6f6e657c4e657665727c74727565"
+      },
+      "id": "C1/manifest-unknown-field",
+      "input": {
+        "code": "manifest.unknown_field"
+      },
+      "kind": "error"
+    },
+    {
+      "expected": {
+        "bytes_hex": "6d616e69666573742e666c6f61745f6e6f745f616c6c6f7765647c6d616e69666573747c6e6f6e657c4e657665727c74727565"
+      },
+      "id": "C1/manifest-float",
+      "input": {
+        "code": "manifest.float_not_allowed"
+      },
+      "kind": "error"
+    },
+    {
+      "expected": {
+        "bytes_hex": "6d616e69666573745f736368656d615f76657273696f6e7c636f6e7472616374"
+      },
+      "id": "C1/manifest-version",
+      "input": {
+        "axis": "manifest_schema_version"
+      },
+      "kind": "version"
+    },
+    {
+      "expected": {
+        "bytes_hex": "4d616e69666573747c6d616e69666573745f6469676573742c636f6e74656e745f646967657374"
+      },
+      "id": "C1/manifest-provenance",
+      "input": {
+        "kind": "Manifest"
+      },
+      "kind": "provenance"
+    },
+    {
+      "expected": {
+        "bytes_hex": "99aa06e4ef702c6060f23004e8086927494be0c7b03a48063f857b97d9c788f7"
+      },
+      "id": "C1/manifest-digest",
+      "input": {
+        "bytes_hex": "7b7d",
+        "domain": "manifest"
+      },
+      "kind": "digest"
+    },
+    {
+      "expected": {
+        "bytes_hex": "74727565"
+      },
+      "id": "C1/manifest-shape-ok",
+      "input": {
+        "code": "manifest.unknown_field"
+      },
+      "kind": "error_shape"
+    },
+    {
+      "expected": {
+        "bytes_hex": "66616c7365"
+      },
+      "id": "C1/manifest-shape-bad",
+      "input": {
+        "code": "Manifest.Unknown"
+      },
+      "kind": "error_shape"
+    }
+  ],
+  "contract": "C1",
+  "version": "oxkv/manifest/v1"
+}

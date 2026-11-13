@@ -1,0 +1,124 @@
+{
+  "vector_version": "qualification-vectors/v1",
+  "vectors": [
+    {
+      "contract": "C1",
+      "digest": "34a0d518e7f88a444166dc765ec3c9f309aaecca44b31a84686da4be85885d15",
+      "id": "C1-manifest",
+      "path": "vectors/C1-manifest.json",
+      "released": true
+    },
+    {
+      "contract": "C2",
+      "digest": "33cd0bfdab4f1c9e093203f9f92d7ee0a2b408abc5eed639cca118f4428f6bef",
+      "id": "C2-snapshot",
+      "path": "vectors/C2-snapshot.json",
+      "released": true
+    },
+    {
+      "contract": "C3",
+      "digest": "935f6ffa9760401164fa6f3cff22257f97bb232bd89d2a822fbaea933b853001",
+      "id": "C3-sync-wire",
+      "path": "vectors/C3-sync-wire.json",
+      "released": true
+    },
+    {
+      "contract": "C4",
+      "digest": "1b001478e0efee8d9a01353073ee86e59bc0a56fb9c3a78555208cc8e837e14f",
+      "id": "C4-policy",
+      "path": "vectors/C4-policy.json",
+      "released": true
+    },
+    {
+      "contract": "C5",
+      "digest": "80205c3049f88c0e523bbec28c01b1607683e197d14bb50715e34d74ee50e699",
+      "id": "C5-receipt-error",
+      "path": "vectors/C5-receipt-error.json",
+      "released": true
+    },
+    {
+      "contract": "A1",
+      "digest": "813e3b31270183dfb7726ec2c239ae81dfd08a70900ba9de97e395ea59677609",
+      "id": "A1-key-encoding",
+      "path": "vectors/A1-key-encoding.json",
+      "released": true
+    },
+    {
+      "contract": "A2",
+      "digest": "5f469718a20938a4ac3492cec96d73e20ebfefbe6ffb52283fd5b41b20cddd39",
+      "id": "A2-tokenizer",
+      "path": "vectors/A2-tokenizer.json",
+      "released": true
+    },
+    {
+      "contract": "A3",
+      "digest": "961e8348d64c12b6168c8327bff5776643e4ea049a49bb0ac3a99a19c1a6ba99",
+      "id": "A3-event",
+      "path": "vectors/A3-event.json",
+      "released": true
+    },
+    {
+      "contract": "A4",
+      "digest": "4666588a3755849131baebf24ec23023729dd582c95cfa03db787631ddb3317e",
+      "id": "A4-shard-map",
+      "path": "vectors/A4-shard-map.json",
+      "released": true
+    },
+    {
+      "contract": "A5",
+      "digest": "20568a2435cae5c1e99fe3f8547ec5295073b0d420ce3c8076cc689d7b06f71d",
+      "id": "A5-scope",
+      "path": "vectors/A5-scope.json",
+      "released": true
+    },
+    {
+      "contract": "A6",
+      "digest": "94c64c142ba8f1020cf7a20b59370c68a2aa8a174c6f9166f27f7028b2bed6fd",
+      "id": "A6-projection",
+      "path": "vectors/A6-projection.json",
+      "released": true
+    },
+    {
+      "contract": "A7",
+      "digest": "c037954e8b12a5e5854e47ae5476f8e5e6b3572293b6d901d77f3d6347e41db8",
+      "id": "A7-audit",
+      "path": "vectors/A7-audit.json",
+      "released": true
+    },
+    {
+      "contract": "A8",
+      "digest": "58ed8aea24af400012a3e2cf95a9829f6437ae4b859968f005273556e1e62bfb",
+      "id": "A8-cost",
+      "path": "vectors/A8-cost.json",
+      "released": true
+    },
+    {
+      "contract": "A9",
+      "digest": "4cf319b0dcd9a44f67a6daefe0412ed2ada7fb06d037a86685218475fa2224cd",
+      "id": "A9-cursor",
+      "path": "vectors/A9-cursor.json",
+      "released": true
+    },
+    {
+      "contract": "A10",
+      "digest": "5158e19146a3ee09884b0b95b9a5f28440eee18a4022a815af0e365b786b0bb5",
+      "id": "A10-descriptor",
+      "path": "vectors/A10-descriptor.json",
+      "released": true
+    },
+    {
+      "contract": "A11",
+      "digest": "ee03f915b9fd184d552b9d0cc969dac38ed1a78fdc6689856514ca6b4685013c",
+      "id": "A11-read-pin",
+      "path": "vectors/A11-read-pin.json",
+      "released": true
+    },
+    {
+      "contract": "A12",
+      "digest": "54ac4d156fb4bb14fe172bdf5fb10a599c08c0c1a09714faab6706c2cbfcbdd0",
+      "id": "A12-migration",
+      "path": "vectors/A12-migration.json",
+      "released": true
+    }
+  ]
+}

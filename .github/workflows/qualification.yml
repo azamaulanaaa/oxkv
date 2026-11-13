@@ -1,0 +1,38 @@
+name: Qualification
+
+# This workflow runs the portable qualification suite and the append-only
+# vector check. It needs a checkout and the Rust toolchain only.
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: Native suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-rust
+      - run: cargo fmt --check -p oxkv-qualify
+      - run: cargo clippy -p oxkv-qualify --all-targets --locked -- -D warnings
+      - run: cargo test -p oxkv-qualify --locked
+
+  vectors:
+    name: Vector immutability
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-rust
+      - run: cargo test -p oxkv-qualify --locked --test immutability

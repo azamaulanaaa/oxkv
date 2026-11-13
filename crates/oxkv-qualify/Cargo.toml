@@ -1,0 +1,18 @@
+[package]
+name = "oxkv-qualify"
+version = "0.11.0"
+edition = "2024"
+description = "Portable qualification suite for oxkv: scenario matrix, fault injection, golden vectors, differential comparison, and fuzz entry points."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/azamaulanaaa/oxkv"
+readme = "../../README.md"
+keywords = ["qualification", "contract", "golden-vector", "fuzz", "wasm"]
+categories = ["database", "development-tools::testing"]
+
+[dependencies]
+blake3 = "1.8"
+oxkv-contracts = { path = "../oxkv-contracts" }
+serde_json = "1"
+
+[lints]
+workspace = true

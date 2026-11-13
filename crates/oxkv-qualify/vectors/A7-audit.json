@@ -1,0 +1,39 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "bytes_hex": "61756469745f76657273696f6e7c636f6e7472616374"
+      },
+      "id": "A7/audit-version",
+      "input": {
+        "axis": "audit_version"
+      },
+      "kind": "version"
+    },
+    {
+      "expected": {
+        "bytes_hex": "b96666d8662465ed6c41cbfb7010b47e83d0cf091c63e1b51e7740bd482d815b"
+      },
+      "id": "A7/audit-chain",
+      "input": {
+        "bodies": [
+          "aa",
+          "bb"
+        ]
+      },
+      "kind": "audit_chain"
+    },
+    {
+      "expected": {
+        "bytes_hex": "61756469742e636861696e5f696e76616c69647c61756469747c6e6f6e657c4f70657261746f7220616374696f6e7c74727565"
+      },
+      "id": "A7/audit-invalid",
+      "input": {
+        "code": "audit.chain_invalid"
+      },
+      "kind": "error"
+    }
+  ],
+  "contract": "A7",
+  "version": "audit/v1"
+}

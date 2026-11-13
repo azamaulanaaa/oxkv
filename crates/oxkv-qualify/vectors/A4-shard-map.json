@@ -1,0 +1,37 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "bytes_hex": "6d61705f736368656d615f76657273696f6e7c636f6e7472616374"
+      },
+      "id": "A4/map-version",
+      "input": {
+        "axis": "map_schema_version"
+      },
+      "kind": "version"
+    },
+    {
+      "expected": {
+        "bytes_hex": "6d61702e7461626c655f73706c69745f756e737570706f727465647c6d61707c6e6f6e657c4e657665727c74727565"
+      },
+      "id": "A4/map-split",
+      "input": {
+        "code": "map.table_split_unsupported"
+      },
+      "kind": "error"
+    },
+    {
+      "expected": {
+        "bytes_hex": "da648fda39837a7a118768a60e9ac91c673dca5342528f0157a73694740a83f0"
+      },
+      "id": "A4/map-digest",
+      "input": {
+        "bytes_hex": "6d6170",
+        "domain": "map"
+      },
+      "kind": "digest"
+    }
+  ],
+  "contract": "A4",
+  "version": "oxkv/map/v1"
+}
