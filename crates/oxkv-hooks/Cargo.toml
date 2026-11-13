@@ -1,0 +1,19 @@
+[package]
+name = "oxkv-hooks"
+version = "0.11.0"
+edition = "2024"
+description = "Pure pre-write validation and post-write notification hooks for oxkv."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/azamaulanaaa/oxkv"
+readme = "../../README.md"
+keywords = ["hooks", "policy", "keyvalue", "database"]
+categories = ["database"]
+
+[dependencies]
+oxkv-contracts = { path = "../oxkv-contracts" }
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

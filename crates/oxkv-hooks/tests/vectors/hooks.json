@@ -1,0 +1,129 @@
+{
+  "contract": "oxkv/hooks/v1",
+  "cases": [
+    {
+      "name": "pre_write_rejection_changes_no_state",
+      "expected": {
+        "accepted": false,
+        "code": "policy.unknown_field",
+        "rule_id": "rule.reject_forbidden",
+        "notifications": 0,
+        "fingerprint_unchanged": true
+      }
+    },
+    {
+      "name": "post_write_order_equals_batch_order",
+      "expected": {
+        "accepted": true,
+        "order": [
+          "0:key_changed",
+          "0:audit",
+          "1:key_changed",
+          "1:audit",
+          "2:key_changed",
+          "2:audit"
+        ],
+        "emission_indexes": [0, 1, 2, 3, 4, 5]
+      }
+    },
+    {
+      "name": "post_write_failure_aborts_batch",
+      "expected": {
+        "accepted": false,
+        "code": "internal.invariant_violation",
+        "rule_id": "rule.fail_on_key",
+        "notifications": 0,
+        "state_unchanged": true
+      }
+    },
+    {
+      "name": "replay_notifications_are_identical",
+      "expected": {
+        "accepted": true,
+        "notification_hex": [
+          "01343302d0549fc39ded7a7d4857365b6eb6478261499b5aaa0f114f083554fcd500000000000000010100000000000000090000000000000005616c706861000000000000000b6b65795f6368616e676564000000000000001172756c652e656d69745f6368616e67656400000000000000000000000000000007616c7068613d33",
+          "016fa46120e55fa574397d463c19b8af65d51476295b6a89d011cc51417711878e00000000000000010100000000000000090000000000000005616c70686100000000000000056175646974000000000000000f72756c652e656d69745f617564697400000001000000000000000000000005616c706861",
+          "01783fafd28e63e45c4292b9f1193eef0015ea7cddbe1a5caa667c4ec86270a3250000000000000001010000000000000009000000000000000462657461000000000000000b6b65795f6368616e676564000000000000001172756c652e656d69745f6368616e67656400000002000000010000000000000006626574613d32",
+          "01effc7b8d4e541c3f231eeffb328f21fc6b24c7f08ca4cb9a33dbab1c32135508000000000000000101000000000000000900000000000000046265746100000000000000056175646974000000000000000f72756c652e656d69745f61756469740000000300000001000000000000000462657461",
+          "01da56d9ec36ef7e3b8d9bd8dd93ac745858e4167a19dfefb548ff80b48001ce8200000000000000010100000000000000090000000000000005616c706861000000000000000b6b65795f6368616e676564000000000000001172756c652e656d69745f6368616e67656400000004000000020000000000000007616c7068613d33",
+          "01b4983c32d095e665b6e6b5b9c2f85ee524579ca1dcf9f38914f2ff9b8f39c35500000000000000010100000000000000090000000000000005616c70686100000000000000056175646974000000000000000f72756c652e656d69745f617564697400000005000000020000000000000005616c706861"
+        ]
+      }
+    },
+    {
+      "name": "a_hook_cannot_mutate_the_batch",
+      "expected": {
+        "accepted": true,
+        "op_count": 3,
+        "fingerprint_unchanged": true
+      }
+    },
+    {
+      "name": "duplicate_validator_registration_is_deterministic",
+      "expected": {
+        "accepted": false,
+        "code": "internal.invariant_violation",
+        "rule_id": "rule.allow_all",
+        "same_message": true
+      }
+    },
+    {
+      "name": "notification_bytes_are_native_wasm_identical",
+      "expected": {
+        "notification_hex": [
+          "01343302d0549fc39ded7a7d4857365b6eb6478261499b5aaa0f114f083554fcd500000000000000010100000000000000090000000000000005616c706861000000000000000b6b65795f6368616e676564000000000000001172756c652e656d69745f6368616e67656400000000000000000000000000000007616c7068613d33",
+          "016fa46120e55fa574397d463c19b8af65d51476295b6a89d011cc51417711878e00000000000000010100000000000000090000000000000005616c70686100000000000000056175646974000000000000000f72756c652e656d69745f617564697400000001000000000000000000000005616c706861",
+          "01783fafd28e63e45c4292b9f1193eef0015ea7cddbe1a5caa667c4ec86270a3250000000000000001010000000000000009000000000000000462657461000000000000000b6b65795f6368616e676564000000000000001172756c652e656d69745f6368616e67656400000002000000010000000000000006626574613d32",
+          "01effc7b8d4e541c3f231eeffb328f21fc6b24c7f08ca4cb9a33dbab1c32135508000000000000000101000000000000000900000000000000046265746100000000000000056175646974000000000000000f72756c652e656d69745f61756469740000000300000001000000000000000462657461",
+          "01da56d9ec36ef7e3b8d9bd8dd93ac745858e4167a19dfefb548ff80b48001ce8200000000000000010100000000000000090000000000000005616c706861000000000000000b6b65795f6368616e676564000000000000001172756c652e656d69745f6368616e67656400000004000000020000000000000007616c7068613d33",
+          "01b4983c32d095e665b6e6b5b9c2f85ee524579ca1dcf9f38914f2ff9b8f39c35500000000000000010100000000000000090000000000000005616c70686100000000000000056175646974000000000000000f72756c652e656d69745f617564697400000005000000020000000000000005616c706861"
+        ]
+      }
+    },
+    {
+      "name": "value_budget_is_named",
+      "expected": {
+        "accepted": false,
+        "code": "write.value_too_large"
+      }
+    },
+    {
+      "name": "step_budget_is_named",
+      "expected": {
+        "accepted": false,
+        "code": "policy.budget_exhausted"
+      }
+    },
+    {
+      "name": "batch_budget_is_named",
+      "expected": {
+        "accepted": false,
+        "code": "write.batch_too_large"
+      }
+    },
+    {
+      "name": "event_payload_budget_is_named",
+      "expected": {
+        "accepted": false,
+        "code": "event.payload_too_large",
+        "rule_id": "rule.emit_changed"
+      }
+    },
+    {
+      "name": "unknown_field_is_named",
+      "expected": {
+        "accepted": false,
+        "code": "policy.unknown_field",
+        "rule_id": "rule.read_outside"
+      }
+    },
+    {
+      "name": "validator_view_uses_pre_value_for_current_key",
+      "expected": {
+        "accepted": true,
+        "pre_value": "old",
+        "staged_value": "3"
+      }
+    }
+  ]
+}
