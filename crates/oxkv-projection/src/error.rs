@@ -13,6 +13,12 @@ use crate::fact::FactId;
 pub const PROJECTION_CLIENT_WRITE_REJECTED: &str = "projection.client_write_rejected";
 /// The projection epoch error code.
 pub const PROJECTION_EPOCH_INVALID: &str = "projection.epoch_invalid";
+/// The projection fact-set mismatch error code.
+pub const PROJECTION_FACT_SET_MISMATCH: &str = "projection.fact_set_mismatch";
+/// The projection fact-type mismatch error code.
+pub const PROJECTION_FACT_TYPE_MISMATCH: &str = "projection.fact_type_mismatch";
+/// The projection feed sequence error code.
+pub const PROJECTION_FEED_SEQUENCE_INVALID: &str = "projection.feed_sequence_invalid";
 /// The projection watermark regression error code.
 pub const PROJECTION_WATERMARK_REGRESSION: &str = "projection.watermark_regression";
 /// The projection checksum error code.
@@ -115,10 +121,10 @@ impl ProjectionError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::ClientWriteRejected => PROJECTION_CLIENT_WRITE_REJECTED,
-            Self::EpochInvalid
-            | Self::FactSetMismatch
-            | Self::FactTypeMismatch { .. }
-            | Self::FeedSequenceInvalid { .. } => PROJECTION_EPOCH_INVALID,
+            Self::EpochInvalid => PROJECTION_EPOCH_INVALID,
+            Self::FactSetMismatch => PROJECTION_FACT_SET_MISMATCH,
+            Self::FactTypeMismatch { .. } => PROJECTION_FACT_TYPE_MISMATCH,
+            Self::FeedSequenceInvalid { .. } => PROJECTION_FEED_SEQUENCE_INVALID,
             Self::WatermarkRegression { .. } => PROJECTION_WATERMARK_REGRESSION,
             Self::ChecksumFailed => PROJECTION_CHECKSUM_FAILED,
             Self::FanInExceeded { .. } => PROJECTION_FAN_IN_EXCEEDED,

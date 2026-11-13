@@ -33,6 +33,14 @@ pub const CODE_OPERATION_UNKNOWN_FIELD: &str = "manifest.operation_unknown_field
 pub const CODE_ARTIFACT_DRIFT: &str = "manifest.artifact_drift";
 /// The canonical code for a missing policy catalog.
 pub const CODE_POLICY_CATALOG_MISSING: &str = "manifest.policy_catalog_missing";
+/// The canonical code for JSON text outside the canonical subset.
+pub const CODE_JSON_SYNTAX: &str = "manifest.json_syntax";
+/// The canonical code for a required field that is absent.
+pub const CODE_MISSING_FIELD: &str = "manifest.missing_field";
+/// The canonical code for a value with the wrong canonical type.
+pub const CODE_TYPE_MISMATCH: &str = "manifest.type_mismatch";
+/// The canonical code for a text value outside its declared enum.
+pub const CODE_INVALID_VALUE: &str = "manifest.invalid_value";
 
 /// One manifest validation or parse error.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,11 +170,11 @@ impl ManifestError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::JsonSyntax { .. }
-            | Self::UnknownField { .. }
-            | Self::MissingField { .. }
-            | Self::TypeMismatch { .. }
-            | Self::InvalidValue { .. } => CODE_UNKNOWN_FIELD,
+            Self::JsonSyntax { .. } => CODE_JSON_SYNTAX,
+            Self::UnknownField { .. } => CODE_UNKNOWN_FIELD,
+            Self::MissingField { .. } => CODE_MISSING_FIELD,
+            Self::TypeMismatch { .. } => CODE_TYPE_MISMATCH,
+            Self::InvalidValue { .. } => CODE_INVALID_VALUE,
             Self::DuplicateKey { .. } | Self::DuplicateName { .. } => CODE_DUPLICATE_NAME,
             Self::FloatNotAllowed { .. } => CODE_FLOAT_NOT_ALLOWED,
             Self::UnsupportedSchema { .. } => CODE_UNSUPPORTED_SCHEMA,

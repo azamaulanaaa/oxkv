@@ -5,7 +5,7 @@
     { "code": "auth.stale_credentials", "receipt": null },
     { "code": "auth.forbidden", "receipt": "Rejected" },
     { "code": "auth.replayed_request", "receipt": null },
-    { "code": "audit.unavailable", "receipt": "Rejected" },
+    { "code": "audit.unavailable", "receipt": null },
     { "code": "audit.chain_invalid", "receipt": null },
     { "code": "audit.export_denied", "receipt": null },
     { "code": "policy.regex_not_supported", "receipt": null },

@@ -532,7 +532,7 @@ mod tests {
             ))
             .expect_err("the system key is rejected");
         assert!(matches!(error, ScopeError::SystemKey { .. }));
-        assert_eq!("internal.invariant_violation", error.code());
+        assert_eq!("scope.system_key_rejected", error.code());
         assert!(membership.is_empty());
         assert!(membership.local_pin().is_empty());
     }

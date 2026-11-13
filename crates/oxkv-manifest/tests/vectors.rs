@@ -5,9 +5,10 @@
 
 use oxkv_manifest::{
     CODE_ARTIFACT_DRIFT, CODE_DUPLICATE_NAME, CODE_FLOAT_NOT_ALLOWED, CODE_INDEX_SCOPE_UNREACHABLE,
-    CODE_INDEX_UNKNOWN_FIELD, CODE_KEY_SCHEMA_MISSING, CODE_OPERATION_CROSS_SHARD,
-    CODE_OPERATION_UNKNOWN_FIELD, CODE_POLICY_CATALOG_MISSING, CODE_RESERVED_TABLE_NAME,
-    CODE_RULE_UNBOUNDED, CODE_RULE_UNKNOWN_PATH, CODE_UNKNOWN_FIELD, CODE_UNSUPPORTED_SCHEMA,
+    CODE_INDEX_UNKNOWN_FIELD, CODE_INVALID_VALUE, CODE_JSON_SYNTAX, CODE_KEY_SCHEMA_MISSING,
+    CODE_MISSING_FIELD, CODE_OPERATION_CROSS_SHARD, CODE_OPERATION_UNKNOWN_FIELD,
+    CODE_POLICY_CATALOG_MISSING, CODE_RESERVED_TABLE_NAME, CODE_RULE_UNBOUNDED,
+    CODE_RULE_UNKNOWN_PATH, CODE_TYPE_MISMATCH, CODE_UNKNOWN_FIELD, CODE_UNSUPPORTED_SCHEMA,
     Manifest, ManifestError, compile,
 };
 
@@ -51,6 +52,10 @@ fn fixture(name: &str) -> &'static str {
         "policy-catalog-missing" => {
             include_str!("vectors/errors/policy-catalog-missing.json")
         }
+        "json-syntax" => include_str!("vectors/errors/json-syntax.json"),
+        "missing-field" => include_str!("vectors/errors/missing-field.json"),
+        "type-mismatch" => include_str!("vectors/errors/type-mismatch.json"),
+        "invalid-value" => include_str!("vectors/errors/invalid-value.json"),
         other => panic!("the fixture {other} is unknown"),
     }
 }
@@ -161,7 +166,7 @@ fn a_search_index_requires_a_tokenizer_a_scorer_and_integer_parameters() {
     index.scorer = None;
     index.scorer_parameters.clear();
     let error = manifest.validate().expect_err("the scorer is required");
-    assert_eq!(error.code(), CODE_UNKNOWN_FIELD);
+    assert_eq!(error.code(), CODE_INVALID_VALUE);
 
     let mut manifest = full_manifest();
     let index = manifest
@@ -171,7 +176,7 @@ fn a_search_index_requires_a_tokenizer_a_scorer_and_integer_parameters() {
         .expect("the fixture has a search index");
     index.tokenizer = None;
     let error = manifest.validate().expect_err("the tokenizer is required");
-    assert_eq!(error.code(), CODE_UNKNOWN_FIELD);
+    assert_eq!(error.code(), CODE_INVALID_VALUE);
 
     let mut manifest = full_manifest();
     let index = manifest
@@ -183,14 +188,14 @@ fn a_search_index_requires_a_tokenizer_a_scorer_and_integer_parameters() {
     let error = manifest
         .validate()
         .expect_err("the integer parameters are required");
-    assert_eq!(error.code(), CODE_UNKNOWN_FIELD);
+    assert_eq!(error.code(), CODE_INVALID_VALUE);
 }
 
 #[test]
 fn a_projection_invalidation_cause_is_closed() {
     let text = FULL_MANIFEST.replace("\"fact-set\"", "\"every_policy_predicate_change\"");
     let error = Manifest::parse(&text).expect_err("the cause is not declared");
-    assert_eq!(error.code(), CODE_UNKNOWN_FIELD);
+    assert_eq!(error.code(), CODE_INVALID_VALUE);
 }
 
 #[test]
@@ -198,7 +203,7 @@ fn a_fact_owner_must_name_a_table_or_a_fact() {
     let mut manifest = full_manifest();
     manifest.facts[0].owner = "missing_owner".to_owned();
     let error = manifest.validate().expect_err("the owner is not declared");
-    assert_eq!(error.code(), CODE_UNKNOWN_FIELD);
+    assert_eq!(error.code(), CODE_INVALID_VALUE);
 }
 
 #[test]
@@ -219,6 +224,10 @@ fn every_named_error_fixture_matches_its_code() {
         ("operation-cross-shard", CODE_OPERATION_CROSS_SHARD),
         ("artifact-drift", CODE_ARTIFACT_DRIFT),
         ("policy-catalog-missing", CODE_POLICY_CATALOG_MISSING),
+        ("json-syntax", CODE_JSON_SYNTAX),
+        ("missing-field", CODE_MISSING_FIELD),
+        ("type-mismatch", CODE_TYPE_MISMATCH),
+        ("invalid-value", CODE_INVALID_VALUE),
     ];
     for (name, expected) in cases {
         let error = fixture_error(name);
@@ -238,7 +247,7 @@ fn a_receipt_that_names_an_unknown_code_fails_validation() {
     let error = manifest
         .validate()
         .expect_err("the unknown receipt code must fail");
-    assert_eq!(error.code(), CODE_UNKNOWN_FIELD);
+    assert_eq!(error.code(), CODE_INVALID_VALUE);
     assert!(
         error.to_string().contains("write.not_a_code"),
         "the error does not name the unknown code: {error}"

@@ -1,6 +1,7 @@
 //! Golden vectors and acceptance tests for the scope contract.
 
 use oxkv_contracts::Hash32;
+use oxkv_contracts::error::lookup;
 use oxkv_contracts::keyspace::TableName;
 use oxkv_contracts::version::{
     CommitVersion, KeyVersion, PageId, PolicyVersion, ProjectionEpoch, ProjectionWatermarks,
@@ -422,4 +423,40 @@ fn eviction_does_not_change_membership() {
         }
     );
     assert_eq!(membership, before);
+}
+
+#[test]
+fn each_scope_cause_has_one_distinct_code() {
+    let shard = ShardId::new(vec![1]);
+    let cases = [
+        (
+            ScopeError::SystemKey { key: vec![0xFF, 1] },
+            "scope.system_key_rejected",
+        ),
+        (
+            ScopeError::RemoveUnknownMember {
+                key: b"accounts/missing".to_vec(),
+            },
+            "scope.remove_unknown_member",
+        ),
+        (
+            ScopeError::UnknownShard {
+                shard_id: shard.clone(),
+            },
+            "scope.unknown_shard",
+        ),
+        (
+            ScopeError::MissingPinShard {
+                shard_id: shard.clone(),
+            },
+            "scope.missing_pin_shard",
+        ),
+    ];
+    let mut seen = std::collections::BTreeSet::new();
+    for (error, code) in cases {
+        assert_eq!(error.code(), code);
+        assert!(seen.insert(code), "the code {code} is used two times");
+        let spec = lookup(code).unwrap_or_else(|| panic!("the code {code} is not registered"));
+        assert_eq!(spec.receipt, None, "the code {code} must have no receipt");
+    }
 }

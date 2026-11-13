@@ -8,9 +8,9 @@
 //! therefore the only cycle that a caller can declare. The cycle check also
 //! walks the existing edges.
 //!
-//! A forward reference uses `outbox.dependency_cycle`. The error registry has
-//! no forward-reference code. A forward reference and a cycle are both a
-//! broken edge order. The code documents that shared cause.
+//! A forward reference uses `outbox.forward_reference`. A cycle uses
+//! `outbox.dependency_cycle`. The two causes are distinct. A broken edge order
+//! can be a forward reference without a cycle.
 
 use std::collections::BTreeSet;
 
@@ -75,8 +75,7 @@ pub enum AdmissionError {
     },
     /// The edge names a request that is not an earlier request in the shard.
     ///
-    /// The error code is `outbox.dependency_cycle`. The registry has no
-    /// forward-reference code.
+    /// The error code is `outbox.forward_reference`.
     #[error(
         "The dependency is not an earlier request in the shard. Request {request_id:?} depends on {dependency:?}."
     )]
@@ -100,8 +99,7 @@ pub enum AdmissionError {
     },
     /// The request has too many dependency edges.
     ///
-    /// The error code is `write.batch_too_large`. The registry has no
-    /// scheduler fan-in code.
+    /// The error code is `outbox.fan_in_exceeded`.
     #[error("The request has too many dependency edges. The limit is {limit}.")]
     FanInExceeded {
         /// The request that declares the edges.
@@ -127,16 +125,14 @@ pub enum AdmissionError {
 
 impl AdmissionError {
     /// Returns the canonical error code.
-    ///
-    /// A forward reference returns `outbox.dependency_cycle`. The registry has
-    /// no forward-reference code.
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::Cycle { .. } | Self::ForwardReference { .. } => "outbox.dependency_cycle",
+            Self::Cycle { .. } => "outbox.dependency_cycle",
+            Self::ForwardReference { .. } => "outbox.forward_reference",
             Self::CrossShardEdge { .. } => "outbox.cross_shard_edge",
-            Self::FanInExceeded { .. } => "write.batch_too_large",
-            Self::DuplicateRequest { .. } => "write.idempotency_key_reuse",
+            Self::FanInExceeded { .. } => "outbox.fan_in_exceeded",
+            Self::DuplicateRequest { .. } => "outbox.duplicate_request",
             Self::ArrivalExhausted { .. } => "internal.resource_exhausted",
         }
     }

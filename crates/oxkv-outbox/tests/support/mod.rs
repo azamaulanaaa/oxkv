@@ -46,7 +46,8 @@ pub(crate) fn envelope(
         PolicyVersion::from_bytes([4; 32]),
         ManifestDigest::from_bytes([5; 32]),
         "projection.lagging",
-    );
+    )
+    .expect("the reason code is registered");
     if let Some(outcome) = outcome {
         receipt
             .close(outcome)

@@ -724,7 +724,7 @@ mod tests {
             .query(QueryMode::Exact, &pin, &responses)
             .expect_err("the system key is rejected");
         assert!(matches!(error, QueryError::SystemKey { .. }));
-        assert_eq!("internal.invariant_violation", error.code());
+        assert_eq!("scope.system_key_rejected", error.code());
     }
 
     #[test]

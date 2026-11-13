@@ -186,9 +186,9 @@ impl ScopeError {
             Self::SystemNamespace { .. } => "manifest.reserved_table_name",
             Self::InvalidRuleSetSelector { .. } => "policy.parse_error",
             Self::InvalidFieldName { .. } => "manifest.unknown_field",
-            Self::UnmappedTable { .. }
-            | Self::UnknownShard { .. }
-            | Self::MissingPinShard { .. } => "map.table_unmapped",
+            Self::UnmappedTable { .. } => "map.table_unmapped",
+            Self::UnknownShard { .. } => "scope.unknown_shard",
+            Self::MissingPinShard { .. } => "scope.missing_pin_shard",
             Self::OverLimit { .. } => "scope.over_limit",
             Self::DeviceBudgetExceeded { .. } => "scope.device_budget_exceeded",
             Self::HydrationBudgetExceeded { .. } => "scope.hydration_budget_exceeded",
@@ -200,9 +200,8 @@ impl ScopeError {
             | Self::BaseVersionMismatch
             | Self::MalformedDiff => "sync.cursor_invalid",
             Self::DuplicateTableAssignment { .. } => "map.duplicate_id",
-            Self::RemoveUnknownMember { .. } | Self::SystemKey { .. } => {
-                "internal.invariant_violation"
-            }
+            Self::RemoveUnknownMember { .. } => "scope.remove_unknown_member",
+            Self::SystemKey { .. } => "scope.system_key_rejected",
             Self::ByteCountOverflow => "format.page_too_large",
         }
     }
@@ -303,11 +302,12 @@ impl QueryError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::ShardUnreachable { .. } | Self::ShardNotAtPin { .. } => "scope.shard_unreachable",
-            Self::PinIncomplete { .. }
-            | Self::UnknownShard { .. }
-            | Self::DuplicateResponse { .. }
-            | Self::DuplicateRow { .. }
-            | Self::SystemKey { .. } => "internal.invariant_violation",
+            Self::PinIncomplete { .. } => "scope.missing_pin_shard",
+            Self::UnknownShard { .. } => "scope.unknown_shard",
+            Self::SystemKey { .. } => "scope.system_key_rejected",
+            Self::DuplicateResponse { .. } | Self::DuplicateRow { .. } => {
+                "internal.invariant_violation"
+            }
         }
     }
 }

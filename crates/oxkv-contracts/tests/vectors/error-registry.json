@@ -272,6 +272,42 @@
     },
     {
       "expected": {
+        "kind": "manifest",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "manifest.json_syntax"
+    },
+    {
+      "expected": {
+        "kind": "manifest",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "manifest.missing_field"
+    },
+    {
+      "expected": {
+        "kind": "manifest",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "manifest.type_mismatch"
+    },
+    {
+      "expected": {
+        "kind": "manifest",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "manifest.invalid_value"
+    },
+    {
+      "expected": {
         "kind": "policy",
         "receipt": null,
         "retry": "Never",
@@ -497,6 +533,33 @@
     },
     {
       "expected": {
+        "kind": "outbox",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "outbox.forward_reference"
+    },
+    {
+      "expected": {
+        "kind": "outbox",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "outbox.fan_in_exceeded"
+    },
+    {
+      "expected": {
+        "kind": "outbox",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "outbox.duplicate_request"
+    },
+    {
+      "expected": {
         "kind": "projection",
         "receipt": "Queued",
         "retry": "Backoff",
@@ -560,6 +623,33 @@
     },
     {
       "expected": {
+        "kind": "projection",
+        "receipt": null,
+        "retry": "After rebuild",
+        "terminal": true
+      },
+      "name": "projection.fact_set_mismatch"
+    },
+    {
+      "expected": {
+        "kind": "projection",
+        "receipt": null,
+        "retry": "After rebuild",
+        "terminal": true
+      },
+      "name": "projection.fact_type_mismatch"
+    },
+    {
+      "expected": {
+        "kind": "projection",
+        "receipt": null,
+        "retry": "After rebuild",
+        "terminal": true
+      },
+      "name": "projection.feed_sequence_invalid"
+    },
+    {
+      "expected": {
         "kind": "policy",
         "receipt": "Rejected",
         "retry": "After catch-up",
@@ -620,6 +710,42 @@
         "terminal": true
       },
       "name": "scope.shard_unreachable"
+    },
+    {
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "scope.system_key_rejected"
+    },
+    {
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "scope.remove_unknown_member"
+    },
+    {
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "scope.unknown_shard"
+    },
+    {
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      },
+      "name": "scope.missing_pin_shard"
     },
     {
       "expected": {
@@ -1110,7 +1236,7 @@
     {
       "expected": {
         "kind": "audit",
-        "receipt": "Rejected",
+        "receipt": null,
         "retry": "Backoff",
         "terminal": true
       },

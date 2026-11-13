@@ -30,22 +30,15 @@ Admission rejects four edge faults:
 | Fault | Error code |
 | --- | --- |
 | Cycle, including a self-edge | `outbox.dependency_cycle` |
-| Forward reference | `outbox.dependency_cycle` |
+| Forward reference | `outbox.forward_reference` |
 | Cross-shard edge | `outbox.cross_shard_edge` |
-| Fan-in overflow | `write.batch_too_large` |
-
-The error registry has no forward-reference code. A forward reference uses
-`outbox.dependency_cycle`. A forward reference and a cycle are both a broken
-edge order.
+| Fan-in overflow | `outbox.fan_in_exceeded` |
 
 Admission appends a request after every existing request. A self-edge is
 therefore the only cycle that a caller can declare. The cycle check also walks
 the existing edges.
 
-The registry has no scheduler fan-in code. Fan-in overflow uses
-`write.batch_too_large`.
-
-A duplicate request identity uses `write.batch_too_large`. An exhausted shard
+A duplicate request identity uses `outbox.duplicate_request`. An exhausted shard
 arrival sequence uses `internal.resource_exhausted`.
 
 The scheduler collapses duplicate dependency edges. It stores edges in arrival

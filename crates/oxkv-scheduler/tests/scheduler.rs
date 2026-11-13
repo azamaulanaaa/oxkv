@@ -401,7 +401,7 @@ fn admission_rejects_cycle_forward_cross_shard_and_fan_in() {
     let forward = admit_result(&mut state, &first, &key(1), request(2), &[request(3)])
         .expect_err("an unknown dependency is a forward reference");
     assert!(matches!(forward, AdmissionError::ForwardReference { .. }));
-    assert_eq!(forward.code(), "outbox.dependency_cycle");
+    assert_eq!(forward.code(), "outbox.forward_reference");
 
     admit(&mut state, &second, &key(3), request(3), &[]);
     let cross = admit_result(&mut state, &first, &key(2), request(2), &[request(3)])
@@ -421,13 +421,13 @@ fn admission_rejects_cycle_forward_cross_shard_and_fan_in() {
     )
     .expect_err("three edges exceed a limit of two");
     assert!(matches!(fan_in, AdmissionError::FanInExceeded { .. }));
-    assert_eq!(fan_in.code(), "write.batch_too_large");
+    assert_eq!(fan_in.code(), "outbox.fan_in_exceeded");
 
     admit(&mut state, &first, &key(20), request(20), &[]);
     let duplicate = admit_result(&mut state, &first, &key(21), request(20), &[])
         .expect_err("a request id is admitted once");
     assert!(matches!(duplicate, AdmissionError::DuplicateRequest { .. }));
-    assert_eq!(duplicate.code(), "write.idempotency_key_reuse");
+    assert_eq!(duplicate.code(), "outbox.duplicate_request");
 
     admit(&mut state, &first, &key(21), request(21), &[request(20)]);
     assert_eq!(
@@ -437,9 +437,10 @@ fn admission_rejects_cycle_forward_cross_shard_and_fan_in() {
 
     for code in [
         "outbox.dependency_cycle",
+        "outbox.forward_reference",
         "outbox.cross_shard_edge",
-        "write.batch_too_large",
-        "write.idempotency_key_reuse",
+        "outbox.fan_in_exceeded",
+        "outbox.duplicate_request",
         "internal.resource_exhausted",
     ] {
         assert!(lookup(code).is_some(), "the code {code} is registered");

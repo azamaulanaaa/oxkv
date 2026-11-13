@@ -1,6 +1,7 @@
 //! Behaviour tests for the policy projection crate.
 
 use oxkv_contracts::ProjectionCursor;
+use oxkv_contracts::error::lookup;
 use oxkv_contracts::receipt::ReceiptState;
 use oxkv_contracts::version::{
     FactSourceId, FactVersion, PolicyVersion, ProjectionEpoch, ProjectionWatermarks, ShardId,
@@ -708,4 +709,35 @@ fn a_lag_observation_keeps_time_out_of_the_decision() {
         )
         .expect("the projection is live");
     assert!(report.decision.is_queued());
+}
+
+#[test]
+fn each_projection_cause_has_one_distinct_code() {
+    let cases = [
+        (
+            ProjectionError::FactSetMismatch,
+            "projection.fact_set_mismatch",
+        ),
+        (
+            ProjectionError::FactTypeMismatch {
+                fact_id: FactId::new("account_owner"),
+            },
+            "projection.fact_type_mismatch",
+        ),
+        (
+            ProjectionError::FeedSequenceInvalid {
+                expected: 2,
+                found: 3,
+            },
+            "projection.feed_sequence_invalid",
+        ),
+    ];
+    let mut seen = std::collections::BTreeSet::new();
+    for (error, code) in cases {
+        assert_eq!(error.code(), code);
+        assert!(seen.insert(code), "the code {code} is used two times");
+        let spec = lookup(code).unwrap_or_else(|| panic!("the code {code} is not registered"));
+        assert_eq!(spec.receipt, None, "the code {code} must have no receipt");
+        assert_eq!(error.receipt_state(), None);
+    }
 }

@@ -250,10 +250,10 @@ pub enum EnforcementError {
     IdempotencyKeyReuse,
     /// The audit append failed.
     ///
-    /// The error registry maps `audit.unavailable` to a `Rejected` receipt.
-    /// A `Rejected` receipt must name an audit record. A failed audit append
-    /// cannot produce that record, so this path returns an error with no
-    /// receipt.
+    /// The error registry maps `audit.unavailable` to no receipt. A failed
+    /// audit append cannot produce the audit record that a terminal receipt
+    /// needs. This path therefore returns an error with no receipt and changes
+    /// no state.
     #[error("The audit append is unavailable.")]
     AuditUnavailable,
 }
@@ -767,7 +767,8 @@ impl Enforcement {
             draft.pin.policy_version(),
             draft.pin.manifest_digest(),
             ReasonCode::PROJECTION_LAGGING.as_str(),
-        );
+        )
+        .expect("the queued reason code is registered");
         let pending = PendingWrite {
             request: draft.request.clone(),
             principal: draft.principal,
@@ -1063,8 +1064,9 @@ fn terminal_receipt(
         record.audit_reference(),
         draft.pin.policy_version(),
         draft.pin.manifest_digest(),
-        draft.reason.as_str(),
-    );
+        ReasonCode::PROJECTION_LAGGING.as_str(),
+    )
+    .expect("the receipt reason code is registered");
     receipt
         .close(outcome)
         .expect("a queued receipt closes exactly once");

@@ -645,7 +645,8 @@ fn read_your_writes_raises_the_minimum_to_the_receipt_commit_version() {
         PolicyVersion::from_bytes([4; 32]),
         ManifestDigest::from_bytes([5; 32]),
         "projection.lagging",
-    );
+    )
+    .expect("the reason code is registered");
     receipt
         .close(ReceiptOutcome::Committed { commit_version })
         .expect("the receipt closes");

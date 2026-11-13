@@ -86,12 +86,11 @@ impl SecurityError {
     #[must_use]
     pub const fn receipt_state(self) -> Option<ReceiptState> {
         match self {
-            Self::Forbidden | Self::AuditUnavailable | Self::PolicyBudgetExhausted => {
-                Some(ReceiptState::Rejected)
-            }
+            Self::Forbidden | Self::PolicyBudgetExhausted => Some(ReceiptState::Rejected),
             Self::Unauthenticated
             | Self::StaleCredentials
             | Self::ReplayedRequest
+            | Self::AuditUnavailable
             | Self::AuditChainInvalid
             | Self::AuditExportDenied
             | Self::RegexNotSupported

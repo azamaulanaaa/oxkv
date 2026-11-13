@@ -532,7 +532,8 @@ impl Authority {
             self.policy_version,
             self.manifest_digest,
             REASON_QUEUED,
-        );
+        )
+        .expect("the queued reason code is registered");
         receipt
             .close(outcome)
             .map_err(|source| SubmitError::Receipt {

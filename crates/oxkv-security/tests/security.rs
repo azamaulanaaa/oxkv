@@ -276,6 +276,8 @@ fn a_failed_audit_append_rejects_the_write() {
 
     assert_eq!(error, SecurityError::AuditUnavailable);
     assert_eq!(error.code(), "audit.unavailable");
+    assert_eq!(error.receipt_state(), None);
+    assert!(lookup("audit.unavailable").is_some_and(|spec| spec.receipt.is_none()));
     assert_eq!(gate.receipt_count(), 0);
     assert!(gate.audit().is_empty());
     assert_eq!(gate.nonce_count(), 0);

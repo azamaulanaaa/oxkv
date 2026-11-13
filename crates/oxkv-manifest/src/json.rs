@@ -499,11 +499,11 @@ mod tests {
     fn null_and_trailing_data_are_rejected() {
         assert_eq!(
             parse("null").expect_err("null is not allowed").code(),
-            "manifest.unknown_field"
+            "manifest.json_syntax"
         );
         assert_eq!(
             parse("1 2").expect_err("the text has trailing data").code(),
-            "manifest.unknown_field"
+            "manifest.json_syntax"
         );
     }
 }

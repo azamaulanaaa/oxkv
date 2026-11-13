@@ -324,37 +324,12 @@ pub struct ReceiptEnvelope {
 
 impl ReceiptEnvelope {
     /// Creates a `Queued` receipt.
-    #[must_use]
-    pub fn queued(
-        receipt_id: ReceiptId,
-        request_id: RequestId,
-        idempotency_key: IdempotencyKey,
-        audit: AuditReference,
-        policy_version: PolicyVersion,
-        manifest_digest: ManifestDigest,
-        reason_code: &'static str,
-    ) -> Self {
-        Self {
-            receipt_id,
-            request_id,
-            state: ReceiptState::Queued,
-            idempotency_key,
-            audit,
-            policy_version,
-            manifest_digest,
-            commit_version: None,
-            current_key_version: None,
-            reason_code: Some(reason_code),
-        }
-    }
-
-    /// Creates a `Queued` receipt when the reason code is registered.
     ///
     /// # Errors
     ///
     /// Returns [`ErrorRegistryError`] when the reason code is absent or maps
     /// to no receipt.
-    pub fn try_queued(
+    pub fn queued(
         receipt_id: ReceiptId,
         request_id: RequestId,
         idempotency_key: IdempotencyKey,
@@ -383,8 +358,8 @@ impl ReceiptEnvelope {
     /// # Errors
     ///
     /// Returns [`ReceiptTransitionError::Terminal`] when the receipt is
-    /// already terminal. Returns [`ReceiptTransitionError::NotTerminal`] when
-    /// the outcome is not terminal.
+    /// already terminal. Returns [`ReceiptTransitionError::UnknownReason`] when
+    /// the outcome reason is not a registered receipt reason.
     pub fn close(&mut self, outcome: ReceiptOutcome) -> Result<(), ReceiptTransitionError> {
         if self.state.is_terminal() {
             return Err(ReceiptTransitionError::Terminal { state: self.state });
@@ -397,6 +372,8 @@ impl ReceiptEnvelope {
                 self.reason_code = None;
             }
             ReceiptOutcome::Rejected { reason } => {
+                lookup_receipt_reason(reason)
+                    .map_err(|_error| ReceiptTransitionError::UnknownReason { code: reason })?;
                 self.state = ReceiptState::Rejected;
                 self.commit_version = None;
                 self.current_key_version = None;
@@ -406,6 +383,8 @@ impl ReceiptEnvelope {
                 current_key_version,
                 reason,
             } => {
+                lookup_receipt_reason(reason)
+                    .map_err(|_error| ReceiptTransitionError::UnknownReason { code: reason })?;
                 self.state = ReceiptState::Conflict;
                 self.commit_version = None;
                 self.current_key_version = Some(current_key_version);
@@ -500,6 +479,7 @@ mod tests {
             ManifestDigest::from_bytes([5; 32]),
             "projection.lagging",
         )
+        .expect("the reason code is registered")
     }
 
     #[test]
@@ -592,7 +572,7 @@ mod tests {
     #[test]
     fn a_queued_receipt_reason_must_be_registered() {
         assert!(
-            ReceiptEnvelope::try_queued(
+            ReceiptEnvelope::queued(
                 ReceiptId::from_bytes([1; 32]),
                 RequestId::from_bytes([2; 32]),
                 IdempotencyKey::new(vec![9, 9]),
@@ -607,8 +587,8 @@ mod tests {
             )
             .is_ok()
         );
-        assert!(
-            ReceiptEnvelope::try_queued(
+        assert_eq!(
+            ReceiptEnvelope::queued(
                 ReceiptId::from_bytes([1; 32]),
                 RequestId::from_bytes([2; 32]),
                 IdempotencyKey::new(vec![9, 9]),
@@ -620,9 +600,56 @@ mod tests {
                 PolicyVersion::from_bytes([4; 32]),
                 ManifestDigest::from_bytes([5; 32]),
                 "write.not_registered",
-            )
-            .is_err()
+            ),
+            Err(ErrorRegistryError::Unknown {
+                code: "write.not_registered".to_owned()
+            })
         );
+        assert_eq!(
+            ReceiptEnvelope::queued(
+                ReceiptId::from_bytes([1; 32]),
+                RequestId::from_bytes([2; 32]),
+                IdempotencyKey::new(vec![9, 9]),
+                AuditReference::new(
+                    ShardId::new(vec![1]),
+                    AuditSequence::new(7),
+                    Hash32::from_bytes([3; 32]),
+                ),
+                PolicyVersion::from_bytes([4; 32]),
+                ManifestDigest::from_bytes([5; 32]),
+                "audit.unavailable",
+            ),
+            Err(ErrorRegistryError::NoReceipt {
+                code: "audit.unavailable".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn a_terminal_receipt_reason_must_be_registered() {
+        let mut receipt = sample_receipt();
+        assert_eq!(
+            receipt.close(ReceiptOutcome::Rejected {
+                reason: "write.not_registered",
+            }),
+            Err(ReceiptTransitionError::UnknownReason {
+                code: "write.not_registered"
+            })
+        );
+        assert_eq!(receipt.state(), ReceiptState::Queued);
+        assert_eq!(receipt.reason_code(), Some("projection.lagging"));
+
+        let mut receipt = sample_receipt();
+        assert_eq!(
+            receipt.close(ReceiptOutcome::Conflict {
+                current_key_version: KeyVersion::new(8),
+                reason: "audit.unavailable",
+            }),
+            Err(ReceiptTransitionError::UnknownReason {
+                code: "audit.unavailable"
+            })
+        );
+        assert_eq!(receipt.state(), ReceiptState::Queued);
     }
 
     #[test]

@@ -629,6 +629,10 @@ error_registry!(
     ("manifest.operation_unknown_field", Manifest, None, Never),
     ("manifest.artifact_drift", Manifest, None, Regenerate),
     ("manifest.policy_catalog_missing", Manifest, None, Never),
+    ("manifest.json_syntax", Manifest, None, Never),
+    ("manifest.missing_field", Manifest, None, Never),
+    ("manifest.type_mismatch", Manifest, None, Never),
+    ("manifest.invalid_value", Manifest, None, Never),
     ("policy.parse_error", Policy, None, Never),
     (
         "policy.unknown_field",
@@ -724,6 +728,9 @@ error_registry!(
     ("outbox.full", Outbox, None, AfterDrain),
     ("outbox.dependency_cycle", Outbox, None, Never),
     ("outbox.cross_shard_edge", Outbox, None, Never),
+    ("outbox.forward_reference", Outbox, None, Never),
+    ("outbox.fan_in_exceeded", Outbox, None, Never),
+    ("outbox.duplicate_request", Outbox, None, Never),
     (
         "projection.lagging",
         Projection,
@@ -767,6 +774,24 @@ error_registry!(
         Never
     ),
     (
+        "projection.fact_set_mismatch",
+        Projection,
+        None,
+        AfterRebuild
+    ),
+    (
+        "projection.fact_type_mismatch",
+        Projection,
+        None,
+        AfterRebuild
+    ),
+    (
+        "projection.feed_sequence_invalid",
+        Projection,
+        None,
+        AfterRebuild
+    ),
+    (
         "authorization.stale_facts",
         Policy,
         Some(ReceiptState::Rejected),
@@ -778,6 +803,10 @@ error_registry!(
     ("scope.identity_mismatch", Scope, None, Never),
     ("scope.policy_version_unknown", Scope, None, AfterPolicySync),
     ("scope.shard_unreachable", Scope, None, Backoff),
+    ("scope.system_key_rejected", Scope, None, Never),
+    ("scope.remove_unknown_member", Scope, None, Never),
+    ("scope.unknown_shard", Scope, None, Never),
+    ("scope.missing_pin_shard", Scope, None, Never),
     ("sync.unsupported_version", Sync, None, Never),
     ("sync.unknown_capability", Sync, None, Never),
     ("sync.scope_rejected", Sync, None, AfterChange),
@@ -862,12 +891,7 @@ error_registry!(
     ("auth.stale_credentials", Auth, None, AfterRefresh),
     ("auth.forbidden", Auth, Some(ReceiptState::Rejected), Never),
     ("auth.replayed_request", Auth, None, Never),
-    (
-        "audit.unavailable",
-        Audit,
-        Some(ReceiptState::Rejected),
-        Backoff
-    ),
+    ("audit.unavailable", Audit, None, Backoff),
     ("audit.chain_invalid", Audit, None, OperatorAction),
     ("audit.export_denied", Audit, None, AfterAuth),
     (
@@ -979,7 +1003,7 @@ mod tests {
 
     #[test]
     fn the_registry_has_one_row_per_code() {
-        assert_eq!(ERROR_REGISTRY.len(), 139);
+        assert_eq!(ERROR_REGISTRY.len(), 153);
         assert_eq!(find_duplicate_code(ERROR_REGISTRY), None);
     }
 
@@ -1105,6 +1129,119 @@ mod tests {
             lookup_receipt_reason("not.registered"),
             Err(ErrorRegistryError::Unknown { .. })
         ));
+    }
+
+    #[test]
+    fn a_failed_audit_append_has_no_receipt() {
+        let spec = lookup("audit.unavailable").expect("the code is registered");
+        assert_eq!(spec.receipt, None);
+        assert_eq!(
+            lookup_receipt_reason("audit.unavailable"),
+            Err(ErrorRegistryError::NoReceipt {
+                code: "audit.unavailable".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn the_distinct_cause_codes_are_pinned() {
+        let cases = [
+            (
+                "scope.system_key_rejected",
+                ErrorKind::Scope,
+                None,
+                RetryClass::Never,
+            ),
+            (
+                "scope.remove_unknown_member",
+                ErrorKind::Scope,
+                None,
+                RetryClass::Never,
+            ),
+            (
+                "scope.unknown_shard",
+                ErrorKind::Scope,
+                None,
+                RetryClass::Never,
+            ),
+            (
+                "scope.missing_pin_shard",
+                ErrorKind::Scope,
+                None,
+                RetryClass::Never,
+            ),
+            (
+                "projection.fact_set_mismatch",
+                ErrorKind::Projection,
+                None,
+                RetryClass::AfterRebuild,
+            ),
+            (
+                "projection.fact_type_mismatch",
+                ErrorKind::Projection,
+                None,
+                RetryClass::AfterRebuild,
+            ),
+            (
+                "projection.feed_sequence_invalid",
+                ErrorKind::Projection,
+                None,
+                RetryClass::AfterRebuild,
+            ),
+            (
+                "manifest.json_syntax",
+                ErrorKind::Manifest,
+                None,
+                RetryClass::Never,
+            ),
+            (
+                "manifest.missing_field",
+                ErrorKind::Manifest,
+                None,
+                RetryClass::Never,
+            ),
+            (
+                "manifest.type_mismatch",
+                ErrorKind::Manifest,
+                None,
+                RetryClass::Never,
+            ),
+            (
+                "manifest.invalid_value",
+                ErrorKind::Manifest,
+                None,
+                RetryClass::Never,
+            ),
+            (
+                "outbox.forward_reference",
+                ErrorKind::Outbox,
+                None,
+                RetryClass::Never,
+            ),
+            (
+                "outbox.fan_in_exceeded",
+                ErrorKind::Outbox,
+                None,
+                RetryClass::Never,
+            ),
+            (
+                "outbox.duplicate_request",
+                ErrorKind::Outbox,
+                None,
+                RetryClass::Never,
+            ),
+        ];
+        for (code, kind, receipt, retry) in cases {
+            let spec = lookup(code).unwrap_or_else(|| panic!("the code {code} is not registered"));
+            assert_eq!(spec.kind, kind, "the kind is wrong for {code}");
+            assert_eq!(spec.receipt, receipt, "the receipt is wrong for {code}");
+            assert_eq!(spec.retry, retry, "the retry class is wrong for {code}");
+            assert_eq!(
+                spec.wire_shape,
+                WireShape::Code,
+                "the shape is wrong for {code}"
+            );
+        }
     }
 
     #[test]

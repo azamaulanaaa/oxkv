@@ -504,7 +504,8 @@ fn make_receipt(
         input.policy_version,
         input.manifest_digest,
         "projection.lagging",
-    );
+    )
+    .map_err(|_error| SecurityError::InvariantViolation)?;
     let closed = if decision == AuditDecision::Committed {
         receipt.close(ReceiptOutcome::Committed {
             commit_version: input.commit_version,
