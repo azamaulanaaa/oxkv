@@ -1,0 +1,144 @@
+{
+  "contract": "tokenizer/v1",
+  "identity": {
+    "unicode-word": {
+      "version": "tokenizer/v1",
+      "unicode_version": "16.0.0",
+      "normalization": "nfc",
+      "case_folding": "full",
+      "segmentation": "unicode-word-run",
+      "stop_words": [],
+      "fingerprint": "92dc86e6c90e3661e3b48445a915e3100d321b10e6af837cfafd73c750184ca8"
+    },
+    "ascii-word": {
+      "version": "tokenizer/v1",
+      "unicode_version": "none",
+      "normalization": "none",
+      "case_folding": "ascii-lower",
+      "segmentation": "ascii-word-run",
+      "stop_words": [],
+      "fingerprint": "c6524cb75ebc35274f28db37abeb2dab8ad9468f3665a25f405fc436e5b32925"
+    }
+  },
+  "cases": [
+    {
+      "name": "empty",
+      "tokenizer": "unicode-word",
+      "text": "",
+      "tokens": [],
+      "positions": []
+    },
+    {
+      "name": "separators_only",
+      "tokenizer": "unicode-word",
+      "text": "   ,.!?   ",
+      "tokens": [],
+      "positions": []
+    },
+    {
+      "name": "ascii_case",
+      "tokenizer": "unicode-word",
+      "text": "Hello, WORLD!",
+      "tokens": ["hello", "world"],
+      "positions": [0, 1]
+    },
+    {
+      "name": "multibyte_japanese",
+      "tokenizer": "unicode-word",
+      "text": "日本語 テスト",
+      "tokens": ["日本語", "テスト"],
+      "positions": [0, 1]
+    },
+    {
+      "name": "latin_accent",
+      "tokenizer": "unicode-word",
+      "text": "Café",
+      "tokens": ["café"],
+      "positions": [0]
+    },
+    {
+      "name": "combining_acute",
+      "tokenizer": "unicode-word",
+      "text": "e\u0301",
+      "tokens": ["é"],
+      "positions": [0]
+    },
+    {
+      "name": "combining_reorder",
+      "tokenizer": "unicode-word",
+      "text": "e\u0301\u0323",
+      "tokens": ["ẹ\u0301"],
+      "positions": [0]
+    },
+    {
+      "name": "combining_devanagari",
+      "tokenizer": "unicode-word",
+      "text": "क\u093c",
+      "tokens": ["क\u093c"],
+      "positions": [0]
+    },
+    {
+      "name": "full_case_fold",
+      "tokenizer": "unicode-word",
+      "text": "Straße",
+      "tokens": ["strasse"],
+      "positions": [0]
+    },
+    {
+      "name": "full_case_fold_masse",
+      "tokenizer": "unicode-word",
+      "text": "Maße",
+      "tokens": ["masse"],
+      "positions": [0]
+    },
+    {
+      "name": "dotted_capital_i",
+      "tokenizer": "unicode-word",
+      "text": "İstanbul",
+      "tokens": ["i\u0307stanbul"],
+      "positions": [0]
+    },
+    {
+      "name": "segmentation_underscore_digit",
+      "tokenizer": "unicode-word",
+      "text": "foo_bar one2three",
+      "tokens": ["foo_bar", "one2three"],
+      "positions": [0, 1]
+    },
+    {
+      "name": "segmentation_hyphen",
+      "tokenizer": "unicode-word",
+      "text": "a-b_c",
+      "tokens": ["a", "b_c"],
+      "positions": [0, 1]
+    },
+    {
+      "name": "three_positions",
+      "tokenizer": "unicode-word",
+      "text": "one two three",
+      "tokens": ["one", "two", "three"],
+      "positions": [0, 1, 2]
+    },
+    {
+      "name": "ascii_tokenizer_case",
+      "tokenizer": "ascii-word",
+      "text": "Hello, WORLD!",
+      "tokens": ["hello", "world"],
+      "positions": [0, 1]
+    },
+    {
+      "name": "ascii_tokenizer_non_ascii",
+      "tokenizer": "ascii-word",
+      "text": "café",
+      "tokens": ["caf"],
+      "positions": [0]
+    },
+    {
+      "name": "ascii_tokenizer_underscore",
+      "tokenizer": "ascii-word",
+      "text": "foo_bar",
+      "tokens": ["foo_bar"],
+      "positions": [0]
+    }
+  ]
+}

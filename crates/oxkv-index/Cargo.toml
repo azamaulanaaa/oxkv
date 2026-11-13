@@ -1,0 +1,20 @@
+[package]
+name = "oxkv-index"
+version = "0.11.0"
+edition = "2024"
+description = "Per-shard inverted index and frozen tokenizer contract for oxkv search."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/azamaulanaaa/oxkv"
+readme = "README.md"
+keywords = ["inverted-index", "tokenizer", "search", "keyvalue", "database"]
+categories = ["database", "text-processing"]
+
+[dependencies]
+oxkv-contracts = { path = "../oxkv-contracts", version = "0.11.0" }
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true
