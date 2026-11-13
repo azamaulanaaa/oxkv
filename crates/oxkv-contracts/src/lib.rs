@@ -2,7 +2,8 @@
 //!
 //! This crate holds the registries that every essay consumes. The first
 //! registry is [`version`]. It defines the qualified version axes and the
-//! provenance block.
+//! provenance block. [`receipt`] defines the four receipt states and the
+//! receipt envelope.
 //!
 //! The crate is portable. It compiles for native and `wasm32-unknown-unknown`.
 //! It uses no floating point. It does not read a clock, draw randomness, or
@@ -21,8 +22,13 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::module_name_repetitions)]
 
+pub mod receipt;
 pub mod version;
 
+pub use receipt::{
+    AuditReference, AuditSequence, IdempotencyKey, ReceiptEnvelope, ReceiptId, ReceiptOutcome,
+    ReceiptState, ReceiptTransitionError, RequestId,
+};
 pub use version::{
     ArtifactKind, CommitVersion, ContentDigest, ContentSeal, CrateVersion, DescriptorDigest,
     DescriptorVersion, EventVersion, FactSourceId, FactVersion, Hash32, KeyEncodingVersion,
