@@ -999,7 +999,7 @@ pub trait CursorToken: Sized {
         token.push(Self::CURSOR_TYPE.tag());
         token.extend_from_slice(&Self::TOKEN_VERSION.to_be_bytes());
         token.extend_from_slice(&payload);
-        let digest = Hash32::of(DigestDomain::CursorToken, &token);
+        let digest = Hash32::of_domain(DigestDomain::CursorToken, &token);
         token.extend_from_slice(digest.as_bytes());
         token
     }
@@ -1034,7 +1034,7 @@ pub trait CursorToken: Sized {
             });
         }
         let body_end = token.len() - DIGEST_LENGTH;
-        let expected = Hash32::of(DigestDomain::CursorToken, &token[..body_end]);
+        let expected = Hash32::of_domain(DigestDomain::CursorToken, &token[..body_end]);
         if expected.as_bytes().as_slice() != &token[body_end..] {
             return Err(CursorError::Invalid);
         }

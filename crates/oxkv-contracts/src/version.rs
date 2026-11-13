@@ -300,9 +300,22 @@ impl DigestDomain {
 }
 
 impl Hash32 {
-    /// Computes a domain-separated `BLAKE3` hash.
+    /// Computes a raw `BLAKE3` hash.
+    ///
+    /// The function hashes the bytes as given. It adds no prefix and no
+    /// suffix.
     #[must_use]
-    pub fn of(domain: DigestDomain, bytes: &[u8]) -> Self {
+    pub fn of(bytes: &[u8]) -> Self {
+        Self(*blake3::hash(bytes).as_bytes())
+    }
+
+    /// Computes a domain-separated `BLAKE3` hash.
+    ///
+    /// The function hashes the domain tag, one zero byte, and the input bytes.
+    /// Use this function for an internal token or for a value that must not
+    /// collide with a raw artifact hash.
+    #[must_use]
+    pub fn of_domain(domain: DigestDomain, bytes: &[u8]) -> Self {
         let mut hasher = blake3::Hasher::new();
         hasher.update(domain.tag().as_bytes());
         hasher.update(&[0]);
@@ -359,7 +372,7 @@ impl ContentDigest {
     /// Computes the content digest of artifact bytes.
     #[must_use]
     pub fn of_bytes(bytes: &[u8]) -> Self {
-        Self(Hash32::of(DigestDomain::Content, bytes))
+        Self(Hash32::of(bytes))
     }
 
     /// Creates a content digest from raw bytes.
@@ -1723,6 +1736,15 @@ mod tests {
         let digest = ContentDigest::of_bytes(b"page bytes");
         assert_eq!(digest.as_bytes().len(), 32);
         assert_ne!(digest, ContentDigest::of_bytes(b"other bytes"));
+    }
+
+    #[test]
+    fn content_digest_is_raw_blake3() {
+        let bytes = b"immutable artifact bytes";
+        assert_eq!(
+            ContentDigest::of_bytes(bytes).as_bytes(),
+            blake3::hash(bytes).as_bytes()
+        );
     }
 
     #[test]
