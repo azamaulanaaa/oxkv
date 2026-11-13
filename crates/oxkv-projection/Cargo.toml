@@ -1,0 +1,20 @@
+[package]
+name = "oxkv-projection"
+version = "0.11.0"
+edition = "2024"
+description = "Portable policy fact projection for oxkv: facts, epochs, watermarks, staleness, and invalidation."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/azamaulanaaa/oxkv"
+readme = "../../README.md"
+keywords = ["projection", "policy", "fact", "keyvalue", "database"]
+categories = ["database"]
+
+[dependencies]
+oxkv-contracts = { path = "../oxkv-contracts", version = "0.11.0" }
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

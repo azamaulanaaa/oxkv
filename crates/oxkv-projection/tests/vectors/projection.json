@@ -1,0 +1,71 @@
+{
+  "contract": "projection/v1",
+  "cases": [
+    {
+      "name": "fact_declaration_text",
+      "expected": {
+        "canonical_hex": "000000000000000d6163636f756e745f6f776e657204000000000000000a010000000000000001020000000000000004000000000000000200"
+      }
+    },
+    {
+      "name": "fact_set_two",
+      "expected": {
+        "digest_hex": "7ea44e6ce8dacd0503740b26dd8826bb7523ddebca0a2cdf0472e8052c71a6c4"
+      }
+    },
+    {
+      "name": "snapshot_seven",
+      "expected": {
+        "canonical_hex": "000000000000001b6f786b762f70726f6a656374696f6e2d736e617073686f742f763100000000000000070000000000000020030303030303030303030303030303030303030303030303030303030303030300000000000000207ea44e6ce8dacd0503740b26dd8826bb7523ddebca0a2cdf0472e8052c71a6c40000000000000001000000000000000873686172643a3032000000000000000c00000000000000010000000000000043000000000000000d6163636f756e745f6f776e6572000000000000000873686172643a3032000000000000000c000000000000000e040000000000000005616c696365",
+        "checksum_hex": "9be35606571cb509f1e0aacfed842c1b9dc3975ef5360f8f4397270d60125ab8"
+      }
+    },
+    {
+      "name": "diff_upsert",
+      "expected": {
+        "canonical_hex": "00000000000000176f786b762f70726f6a656374696f6e2d646966662f763100000000000000070000000000000003000000000000000873686172643a3032000000000000000d00000000000000010000000000000032000000000000000d6163636f756e745f6f776e6572000000000000000d01000000000000000c040000000000000003626f62",
+        "checksum_hex": "21282fc5d3baf0f651f2be6984f38241b9a395bd633222bd836831ed2e610db7"
+      }
+    },
+    {
+      "name": "watermark_same",
+      "expected": {
+        "outcome": "accept",
+        "distance": 0
+      }
+    },
+    {
+      "name": "watermark_ahead",
+      "expected": {
+        "outcome": "accept",
+        "distance": 1
+      }
+    },
+    {
+      "name": "watermark_behind",
+      "expected": {
+        "outcome": "regression"
+      }
+    },
+    {
+      "name": "staleness_within",
+      "expected": {
+        "within_bound": true,
+        "distance": 2
+      }
+    },
+    {
+      "name": "staleness_over",
+      "expected": {
+        "within_bound": false,
+        "distance": 3
+      }
+    },
+    {
+      "name": "staleness_unknown",
+      "expected": {
+        "within_bound": false
+      }
+    }
+  ]
+}
