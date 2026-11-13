@@ -1,0 +1,762 @@
+{
+  "cases": [
+    {
+      "before": {
+        "owner": {
+          "type": "text",
+          "value": "alice"
+        }
+      },
+      "budget": {
+        "arena_bytes": 4096,
+        "depth": 16,
+        "steps": 256
+      },
+      "expect": {
+        "arena_used": 13,
+        "canonical_hex": "6f786b762f706f6c6963792d6173742f76310001000e000000000000006163636f756e74732e6f776e6572000100000000000010000000001000000000000003000100010000000000000005000000000000006f776e657200030500000000000000616c696365",
+        "depth_used": 1,
+        "explanation_hex": "6f786b762f706f6c6963792d6578706c61696e2f7631000100000000000000010e000000000000006163636f756e74732e6f776e6572000c00000000000000706f6c6963792e616c6c6f770100010000000000000005000000000000006f776e6572",
+        "path": "before.owner",
+        "policy_version": "2cb463274bf735d4c0b2b5e4918f2e654b77df330994a4c0268e175c1093225a",
+        "reason": "policy.allow",
+        "status": "allow",
+        "steps_used": 13
+      },
+      "expr": {
+        "kind": "compare",
+        "left": {
+          "kind": "path",
+          "root": "before",
+          "segments": [
+            "owner"
+          ]
+        },
+        "op": "eq",
+        "right": {
+          "kind": "literal",
+          "value": {
+            "type": "text",
+            "value": "alice"
+          }
+        }
+      },
+      "mode": "read",
+      "name": "allow_owner_read",
+      "row_key": "01",
+      "rule": "accounts.owner"
+    },
+    {
+      "before": {
+        "owner": {
+          "type": "text",
+          "value": "bob"
+        }
+      },
+      "budget": {
+        "arena_bytes": 4096,
+        "depth": 16,
+        "steps": 256
+      },
+      "expect": {
+        "arena_used": 13,
+        "canonical_hex": "6f786b762f706f6c6963792d6173742f76310001000e000000000000006163636f756e74732e6f776e6572000100000000000010000000001000000000000003000100010000000000000005000000000000006f776e657200030500000000000000616c696365",
+        "depth_used": 1,
+        "explanation_hex": "6f786b762f706f6c6963792d6578706c61696e2f7631000100000000000000020e000000000000006163636f756e74732e6f776e6572010b00000000000000706f6c6963792e64656e790100010000000000000005000000000000006f776e6572",
+        "path": "before.owner",
+        "policy_version": "2cb463274bf735d4c0b2b5e4918f2e654b77df330994a4c0268e175c1093225a",
+        "reason": "policy.deny",
+        "status": "deny",
+        "steps_used": 13
+      },
+      "expr": {
+        "kind": "compare",
+        "left": {
+          "kind": "path",
+          "root": "before",
+          "segments": [
+            "owner"
+          ]
+        },
+        "op": "eq",
+        "right": {
+          "kind": "literal",
+          "value": {
+            "type": "text",
+            "value": "alice"
+          }
+        }
+      },
+      "mode": "read",
+      "name": "deny_owner_read",
+      "row_key": "02",
+      "rule": "accounts.owner"
+    },
+    {
+      "before": {
+        "owner": {
+          "type": "text",
+          "value": "alice"
+        }
+      },
+      "budget": {
+        "arena_bytes": 4096,
+        "depth": 16,
+        "steps": 256
+      },
+      "expect": {
+        "arena_used": 8,
+        "canonical_hex": "6f786b762f706f6c6963792d6173742f763100010010000000000000006163636f756e74732e756e6b6e6f776e00010000000000001000000000100000000000000100010000000000000007000000000000006d697373696e67",
+        "depth_used": 0,
+        "explanation_hex": "6f786b762f706f6c6963792d6578706c61696e2f76310001000000000000000310000000000000006163636f756e74732e756e6b6e6f776e011400000000000000706f6c6963792e756e6b6e6f776e5f6669656c640100010000000000000007000000000000006d697373696e67",
+        "path": "before.missing",
+        "policy_version": "8b6fdced829f47c642ebbedb0928e3894d917f0bbac99ae21ca98823da0eb634",
+        "reason": "policy.unknown_field",
+        "status": "deny",
+        "steps_used": 8
+      },
+      "expr": {
+        "kind": "path",
+        "root": "before",
+        "segments": [
+          "missing"
+        ]
+      },
+      "mode": "read",
+      "name": "unknown_path_runtime",
+      "row_key": "03",
+      "rule": "accounts.unknown"
+    },
+    {
+      "budget": {
+        "arena_bytes": 4096,
+        "depth": 16,
+        "steps": 256
+      },
+      "compile_error": "manifest.rule_unknown_path",
+      "expr": {
+        "kind": "path",
+        "root": "before",
+        "segments": [
+          "missing"
+        ]
+      },
+      "name": "unknown_path_compile",
+      "rule": "accounts.unknown",
+      "schema": [
+        "owner"
+      ]
+    },
+    {
+      "budget": {
+        "arena_bytes": 4096,
+        "depth": 16,
+        "steps": 256
+      },
+      "compile_error": "policy.regex_not_supported",
+      "expr": {
+        "kind": "regex",
+        "pattern": "^a+$"
+      },
+      "name": "regex_rejection",
+      "rule": "accounts.regex"
+    },
+    {
+      "before": {
+        "owner": {
+          "type": "text",
+          "value": "alice"
+        }
+      },
+      "budget": {
+        "arena_bytes": 4096,
+        "depth": 16,
+        "steps": 5
+      },
+      "expect": {
+        "arena_used": 1,
+        "budget": {
+          "depth": 1,
+          "kind": "step",
+          "limit": 5,
+          "used": 7
+        },
+        "canonical_hex": "6f786b762f706f6c6963792d6173742f76310001000e000000000000006163636f756e74732e6f776e6572050000000000000010000000001000000000000003000100010000000000000005000000000000006f776e657200030500000000000000616c696365",
+        "depth_used": 0,
+        "explanation_hex": "6f786b762f706f6c6963792d6578706c61696e2f7631000100000000000000060e000000000000006163636f756e74732e6f776e6572020005000000000000000700000000000000010000001700000000000000706f6c6963792e6275646765745f6578686175737465640100010000000000000005000000000000006f776e6572",
+        "path": "before.owner",
+        "policy_version": "f68e62cc098e20dbb8127c53f81c8824f1c10b40226d5a7c5d558b2db123406e",
+        "reason": "policy.budget_exhausted",
+        "status": "budget_exhausted",
+        "steps_used": 1
+      },
+      "expr": {
+        "kind": "compare",
+        "left": {
+          "kind": "path",
+          "root": "before",
+          "segments": [
+            "owner"
+          ]
+        },
+        "op": "eq",
+        "right": {
+          "kind": "literal",
+          "value": {
+            "type": "text",
+            "value": "alice"
+          }
+        }
+      },
+      "mode": "read",
+      "name": "budget_exhaustion_step",
+      "row_key": "06",
+      "rule": "accounts.owner"
+    },
+    {
+      "before": {
+        "owner": {
+          "type": "text",
+          "value": "alice"
+        }
+      },
+      "budget": {
+        "arena_bytes": 4096,
+        "depth": 1,
+        "steps": 256
+      },
+      "expect": {
+        "arena_used": 2,
+        "budget": {
+          "depth": 2,
+          "kind": "depth",
+          "limit": 1,
+          "used": 2
+        },
+        "canonical_hex": "6f786b762f706f6c6963792d6173742f76310001000e000000000000006163636f756e74732e646570746800010000000000000100000000100000000000000403000100010000000000000005000000000000006f776e657200030500000000000000616c69636503000101010000000000000005000000000000006f776e657200030500000000000000616c696365",
+        "depth_used": 1,
+        "explanation_hex": "6f786b762f706f6c6963792d6578706c61696e2f7631000100000000000000070e000000000000006163636f756e74732e6465707468020101000000000000000200000000000000020000001700000000000000706f6c6963792e6275646765745f6578686175737465640100010000000000000005000000000000006f776e6572",
+        "path": "before.owner",
+        "policy_version": "75ff9bbf092c565fd4c008d7a537de610e2c77301b600454aa6df68c7d63107d",
+        "reason": "policy.budget_exhausted",
+        "status": "budget_exhausted",
+        "steps_used": 2
+      },
+      "expr": {
+        "kind": "and",
+        "left": {
+          "kind": "compare",
+          "left": {
+            "kind": "path",
+            "root": "before",
+            "segments": [
+              "owner"
+            ]
+          },
+          "op": "eq",
+          "right": {
+            "kind": "literal",
+            "value": {
+              "type": "text",
+              "value": "alice"
+            }
+          }
+        },
+        "right": {
+          "kind": "compare",
+          "left": {
+            "kind": "path",
+            "root": "after",
+            "segments": [
+              "owner"
+            ]
+          },
+          "op": "eq",
+          "right": {
+            "kind": "literal",
+            "value": {
+              "type": "text",
+              "value": "alice"
+            }
+          }
+        }
+      },
+      "mode": "read",
+      "name": "depth_exhaustion",
+      "row_key": "07",
+      "rule": "accounts.depth"
+    },
+    {
+      "before": {
+        "owner": {
+          "type": "text",
+          "value": "alice"
+        }
+      },
+      "budget": {
+        "arena_bytes": 7,
+        "depth": 16,
+        "steps": 256
+      },
+      "expect": {
+        "arena_used": 7,
+        "budget": {
+          "depth": 1,
+          "kind": "memory",
+          "limit": 7,
+          "used": 13
+        },
+        "canonical_hex": "6f786b762f706f6c6963792d6173742f76310001000f000000000000006163636f756e74732e6d656d6f7279000100000000000010000000070000000000000003000100010000000000000005000000000000006f776e657200030500000000000000616c696365",
+        "depth_used": 1,
+        "explanation_hex": "6f786b762f706f6c6963792d6578706c61696e2f7631000100000000000000080f000000000000006163636f756e74732e6d656d6f7279020207000000000000000d00000000000000010000001700000000000000706f6c6963792e6275646765745f6578686175737465640100010000000000000005000000000000006f776e6572",
+        "path": "before.owner",
+        "policy_version": "d0a1a52f4d471639e976f090aedbb6b41bd8407f54996e1292986734f3c5ee84",
+        "reason": "policy.budget_exhausted",
+        "status": "budget_exhausted",
+        "steps_used": 13
+      },
+      "expr": {
+        "kind": "compare",
+        "left": {
+          "kind": "path",
+          "root": "before",
+          "segments": [
+            "owner"
+          ]
+        },
+        "op": "eq",
+        "right": {
+          "kind": "literal",
+          "value": {
+            "type": "text",
+            "value": "alice"
+          }
+        }
+      },
+      "mode": "read",
+      "name": "budget_exhaustion_memory",
+      "row_key": "08",
+      "rule": "accounts.memory"
+    },
+    {
+      "after": {
+        "status": {
+          "type": "text",
+          "value": "active"
+        }
+      },
+      "before": {
+        "status": {
+          "type": "text",
+          "value": "active"
+        }
+      },
+      "budget": {
+        "arena_bytes": 4096,
+        "depth": 16,
+        "steps": 256
+      },
+      "expect": {
+        "arena_used": 31,
+        "canonical_hex": "6f786b762f706f6c6963792d6173742f763100010013000000000000006163636f756e74732e7472616e736974696f6e000100000000000010000000001000000000000004030001000100000000000000060000000000000073746174757300030600000000000000616374697665030001010100000000000000060000000000000073746174757300030600000000000000616374697665",
+        "depth_used": 2,
+        "explanation_hex": "6f786b762f706f6c6963792d6578706c61696e2f76310001000000000000000913000000000000006163636f756e74732e7472616e736974696f6e000c00000000000000706f6c6963792e616c6c6f77010101000000000000000600000000000000737461747573",
+        "path": "after.status",
+        "policy_version": "b129969b055598b7893e91401d3782762d9306fa6ee0f05375d066f1df9ccfa6",
+        "reason": "policy.allow",
+        "status": "allow",
+        "steps_used": 31
+      },
+      "expr": {
+        "kind": "and",
+        "left": {
+          "kind": "compare",
+          "left": {
+            "kind": "path",
+            "root": "before",
+            "segments": [
+              "status"
+            ]
+          },
+          "op": "eq",
+          "right": {
+            "kind": "literal",
+            "value": {
+              "type": "text",
+              "value": "active"
+            }
+          }
+        },
+        "right": {
+          "kind": "compare",
+          "left": {
+            "kind": "path",
+            "root": "after",
+            "segments": [
+              "status"
+            ]
+          },
+          "op": "eq",
+          "right": {
+            "kind": "literal",
+            "value": {
+              "type": "text",
+              "value": "active"
+            }
+          }
+        }
+      },
+      "mode": "write",
+      "name": "write_before_after_allow",
+      "row_key": "09",
+      "rule": "accounts.transition"
+    },
+    {
+      "after": {
+        "status": {
+          "type": "text",
+          "value": "suspended"
+        }
+      },
+      "before": {
+        "status": {
+          "type": "text",
+          "value": "active"
+        }
+      },
+      "budget": {
+        "arena_bytes": 4096,
+        "depth": 16,
+        "steps": 256
+      },
+      "expect": {
+        "arena_used": 31,
+        "canonical_hex": "6f786b762f706f6c6963792d6173742f763100010013000000000000006163636f756e74732e7472616e736974696f6e000100000000000010000000001000000000000004030001000100000000000000060000000000000073746174757300030600000000000000616374697665030001010100000000000000060000000000000073746174757300030600000000000000616374697665",
+        "depth_used": 2,
+        "explanation_hex": "6f786b762f706f6c6963792d6578706c61696e2f76310001000000000000001013000000000000006163636f756e74732e7472616e736974696f6e010b00000000000000706f6c6963792e64656e79010101000000000000000600000000000000737461747573",
+        "path": "after.status",
+        "policy_version": "b129969b055598b7893e91401d3782762d9306fa6ee0f05375d066f1df9ccfa6",
+        "reason": "policy.deny",
+        "status": "deny",
+        "steps_used": 31
+      },
+      "expr": {
+        "kind": "and",
+        "left": {
+          "kind": "compare",
+          "left": {
+            "kind": "path",
+            "root": "before",
+            "segments": [
+              "status"
+            ]
+          },
+          "op": "eq",
+          "right": {
+            "kind": "literal",
+            "value": {
+              "type": "text",
+              "value": "active"
+            }
+          }
+        },
+        "right": {
+          "kind": "compare",
+          "left": {
+            "kind": "path",
+            "root": "after",
+            "segments": [
+              "status"
+            ]
+          },
+          "op": "eq",
+          "right": {
+            "kind": "literal",
+            "value": {
+              "type": "text",
+              "value": "active"
+            }
+          }
+        }
+      },
+      "mode": "write",
+      "name": "write_before_after_deny",
+      "row_key": "10",
+      "rule": "accounts.transition"
+    },
+    {
+      "before": {
+        "owner": {
+          "type": "text",
+          "value": "alice"
+        }
+      },
+      "budget": {
+        "arena_bytes": 4096,
+        "depth": 16,
+        "steps": 256
+      },
+      "expect": {
+        "arena_used": 13,
+        "canonical_hex": "6f786b762f706f6c6963792d6173742f763100010011000000000000006163636f756e74732e73616d655f726f77000100000000000010000000001000000000000003000100010000000000000005000000000000006f776e65720101010000000000000005000000000000006f776e6572",
+        "depth_used": 1,
+        "explanation_hex": "6f786b762f706f6c6963792d6578706c61696e2f76310001000000000000001111000000000000006163636f756e74732e73616d655f726f77000c00000000000000706f6c6963792e616c6c6f770101010000000000000005000000000000006f776e6572",
+        "path": "after.owner",
+        "policy_version": "3c34af5662c82122b74ae673e921e40be76c68eedc8e41e3ce560e027ce3fe35",
+        "reason": "policy.allow",
+        "status": "allow",
+        "steps_used": 13
+      },
+      "expr": {
+        "kind": "compare",
+        "left": {
+          "kind": "path",
+          "root": "before",
+          "segments": [
+            "owner"
+          ]
+        },
+        "op": "eq",
+        "right": {
+          "kind": "path",
+          "root": "after",
+          "segments": [
+            "owner"
+          ]
+        }
+      },
+      "mode": "read",
+      "name": "read_scope_same_row_binding",
+      "row_key": "11",
+      "rule": "accounts.same_row"
+    },
+    {
+      "after": {
+        "owner": {
+          "type": "text",
+          "value": "bob"
+        }
+      },
+      "before": {
+        "owner": {
+          "type": "text",
+          "value": "alice"
+        }
+      },
+      "budget": {
+        "arena_bytes": 4096,
+        "depth": 16,
+        "steps": 256
+      },
+      "expect": {
+        "arena_used": 13,
+        "canonical_hex": "6f786b762f706f6c6963792d6173742f763100010011000000000000006163636f756e74732e73616d655f726f77000100000000000010000000001000000000000003000100010000000000000005000000000000006f776e65720101010000000000000005000000000000006f776e6572",
+        "depth_used": 1,
+        "explanation_hex": "6f786b762f706f6c6963792d6578706c61696e2f76310001000000000000001211000000000000006163636f756e74732e73616d655f726f77010b00000000000000706f6c6963792e64656e790101010000000000000005000000000000006f776e6572",
+        "path": "after.owner",
+        "policy_version": "3c34af5662c82122b74ae673e921e40be76c68eedc8e41e3ce560e027ce3fe35",
+        "reason": "policy.deny",
+        "status": "deny",
+        "steps_used": 13
+      },
+      "expr": {
+        "kind": "compare",
+        "left": {
+          "kind": "path",
+          "root": "before",
+          "segments": [
+            "owner"
+          ]
+        },
+        "op": "eq",
+        "right": {
+          "kind": "path",
+          "root": "after",
+          "segments": [
+            "owner"
+          ]
+        }
+      },
+      "mode": "write",
+      "name": "write_scope_binding_differs",
+      "row_key": "12",
+      "rule": "accounts.same_row"
+    },
+    {
+      "before": {
+        "owner": {
+          "type": "text",
+          "value": "alice"
+        }
+      },
+      "budget": {
+        "arena_bytes": 4096,
+        "depth": 16,
+        "steps": 256
+      },
+      "expect": {
+        "arena_used": 9,
+        "canonical_hex": "6f786b762f706f6c6963792d6173742f76310001000e000000000000006163636f756e74732e7479706573000100000000000010000000001000000000000003000100010000000000000005000000000000006f776e657200020700000000000000",
+        "depth_used": 1,
+        "explanation_hex": "6f786b762f706f6c6963792d6578706c61696e2f7631000100000000000000130e000000000000006163636f756e74732e7479706573011000000000000000706f6c6963792e6e6f745f746f74616c0100010000000000000005000000000000006f776e6572",
+        "path": "before.owner",
+        "policy_version": "04447249600ce861f9e3b9868f8ad12cd354b52cd2c23b28592fadfe2625f4e6",
+        "reason": "policy.not_total",
+        "status": "deny",
+        "steps_used": 9
+      },
+      "expr": {
+        "kind": "compare",
+        "left": {
+          "kind": "path",
+          "root": "before",
+          "segments": [
+            "owner"
+          ]
+        },
+        "op": "eq",
+        "right": {
+          "kind": "literal",
+          "value": {
+            "type": "u64",
+            "value": 7
+          }
+        }
+      },
+      "mode": "read",
+      "name": "type_mismatch_denies",
+      "row_key": "13",
+      "rule": "accounts.types"
+    },
+    {
+      "batch": [
+        {
+          "before": {
+            "owner": {
+              "type": "text",
+              "value": "alice"
+            }
+          },
+          "expect": {
+            "arena_used": 13,
+            "depth_used": 1,
+            "explanation_hex": "6f786b762f706f6c6963792d6578706c61696e2f7631000100000000000000140e000000000000006163636f756e74732e6f776e6572000c00000000000000706f6c6963792e616c6c6f770100010000000000000005000000000000006f776e6572",
+            "path": "before.owner",
+            "reason": "policy.allow",
+            "status": "allow",
+            "steps_used": 13
+          },
+          "row_key": "14"
+        },
+        {
+          "before": {
+            "owner": {
+              "type": "text",
+              "value": "bob"
+            }
+          },
+          "expect": {
+            "arena_used": 13,
+            "depth_used": 1,
+            "explanation_hex": "6f786b762f706f6c6963792d6578706c61696e2f7631000100000000000000150e000000000000006163636f756e74732e6f776e6572010b00000000000000706f6c6963792e64656e790100010000000000000005000000000000006f776e6572",
+            "path": "before.owner",
+            "reason": "policy.deny",
+            "status": "deny",
+            "steps_used": 13
+          },
+          "row_key": "15"
+        }
+      ],
+      "budget": {
+        "arena_bytes": 4096,
+        "depth": 16,
+        "steps": 256
+      },
+      "expect": {
+        "canonical_hex": "6f786b762f706f6c6963792d6173742f76310001000e000000000000006163636f756e74732e6f776e6572000100000000000010000000001000000000000003000100010000000000000005000000000000006f776e657200030500000000000000616c696365",
+        "policy_version": "2cb463274bf735d4c0b2b5e4918f2e654b77df330994a4c0268e175c1093225a",
+        "verdict": "deny"
+      },
+      "expr": {
+        "kind": "compare",
+        "left": {
+          "kind": "path",
+          "root": "before",
+          "segments": [
+            "owner"
+          ]
+        },
+        "op": "eq",
+        "right": {
+          "kind": "literal",
+          "value": {
+            "type": "text",
+            "value": "alice"
+          }
+        }
+      },
+      "mode": "read",
+      "name": "batch_conjunction",
+      "rule": "accounts.owner"
+    },
+    {
+      "before": {
+        "owner": {
+          "type": "text",
+          "value": "alice"
+        }
+      },
+      "budget": {
+        "arena_bytes": 4096,
+        "depth": 16,
+        "steps": 256
+      },
+      "expect": {
+        "arena_used": 24,
+        "canonical_hex": "6f786b762f706f6c6963792d6173742f763100010012000000000000006163636f756e74732e73746162696c6974790001000000000000100000000010000000000000040200010000000000000005000000000000006f776e6572070100010000000000000005000000000000006f776e65720200000000000000030500000000000000616c696365030300000000000000626f62",
+        "depth_used": 2,
+        "explanation_hex": "6f786b762f706f6c6963792d6578706c61696e2f76310001000000000000001612000000000000006163636f756e74732e73746162696c697479000c00000000000000706f6c6963792e616c6c6f770100010000000000000005000000000000006f776e6572",
+        "path": "before.owner",
+        "policy_version": "0f96ebb2f747ccba3b8172f2775192507b6346e0b81f897075d74b2cc294aa4b",
+        "reason": "policy.allow",
+        "status": "allow",
+        "steps_used": 24
+      },
+      "expr": {
+        "kind": "and",
+        "left": {
+          "kind": "exists",
+          "root": "before",
+          "segments": [
+            "owner"
+          ]
+        },
+        "right": {
+          "kind": "in",
+          "set": [
+            {
+              "type": "text",
+              "value": "alice"
+            },
+            {
+              "type": "text",
+              "value": "bob"
+            }
+          ],
+          "value": {
+            "kind": "path",
+            "root": "before",
+            "segments": [
+              "owner"
+            ]
+          }
+        }
+      },
+      "mode": "read",
+      "name": "native_wasm_stability",
+      "row_key": "16",
+      "rule": "accounts.stability"
+    }
+  ],
+  "contract": "policy-ast/v1"
+}
