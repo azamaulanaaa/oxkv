@@ -25,6 +25,7 @@ members = [
   "crates/oxkv-opfs",
   "crates/oxkv-cached",
   "crates/oxkv-write",
+  "crates/oxkv-search",
 ]
 resolver = "3"
 

@@ -1,0 +1,94 @@
+{
+  "contract": "search-result/v1",
+  "cases": [
+    {
+      "name": "relevance-ties-use-canonical-key-order",
+      "order": "relevance",
+      "pin_version": 10,
+      "limit": 10,
+      "shards": [
+        {
+          "id": "01",
+          "hits": [
+            { "key": "01", "score": 5, "commit_version": 3 },
+            { "key": "0b", "score": 5, "commit_version": 4 }
+          ]
+        },
+        {
+          "id": "02",
+          "hits": [
+            { "key": "04", "score": 5, "commit_version": 5 },
+            { "key": "0c", "score": 5, "commit_version": 6 }
+          ]
+        },
+        {
+          "id": "03",
+          "hits": [
+            { "key": "02", "score": 5, "commit_version": 7 },
+            { "key": "03", "score": 5, "commit_version": 8 }
+          ]
+        }
+      ],
+      "expected": ["01", "02", "03", "04", "0b", "0c"]
+    },
+    {
+      "name": "relevance-scores-descend",
+      "order": "relevance",
+      "pin_version": 10,
+      "limit": 10,
+      "shards": [
+        {
+          "id": "01",
+          "hits": [
+            { "key": "01", "score": 9, "commit_version": 1 },
+            { "key": "0a", "score": 4, "commit_version": 2 }
+          ]
+        },
+        {
+          "id": "02",
+          "hits": [
+            { "key": "02", "score": 9, "commit_version": 3 },
+            { "key": "09", "score": 4, "commit_version": 4 }
+          ]
+        },
+        {
+          "id": "03",
+          "hits": [
+            { "key": "03", "score": 9, "commit_version": 5 }
+          ]
+        }
+      ],
+      "expected": ["01", "02", "03", "09", "0a"]
+    },
+    {
+      "name": "declared-order-uses-sort-value-then-key",
+      "order": "declared",
+      "pin_version": 10,
+      "limit": 10,
+      "shards": [
+        {
+          "id": "01",
+          "hits": [
+            { "key": "03", "sort": 1, "score": 0, "commit_version": 1 },
+            { "key": "0b", "sort": 2, "score": 0, "commit_version": 2 }
+          ]
+        },
+        {
+          "id": "02",
+          "hits": [
+            { "key": "05", "sort": 1, "score": 0, "commit_version": 3 },
+            { "key": "0a", "sort": 2, "score": 0, "commit_version": 4 }
+          ]
+        },
+        {
+          "id": "03",
+          "hits": [
+            { "key": "01", "sort": 1, "score": 0, "commit_version": 5 },
+            { "key": "02", "sort": 1, "score": 0, "commit_version": 6 }
+          ]
+        }
+      ],
+      "expected": ["01", "02", "03", "05", "0a", "0b"]
+    }
+  ]
+}

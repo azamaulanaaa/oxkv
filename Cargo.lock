@@ -1407,6 +1407,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxkv-search"
+version = "0.11.0"
+dependencies = [
+ "blake3",
+ "oxkv-contracts",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "oxkv-snapshot"
 version = "0.11.0"
 dependencies = [
