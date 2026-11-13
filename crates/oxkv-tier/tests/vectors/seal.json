@@ -1,0 +1,34 @@
+{
+  "contract": "content-seal/v1",
+  "cases": [
+    {
+      "name": "content digest ignores the lease term",
+      "expected": {
+        "digest_term_1": "1dea5f506e6bf3a083ad24693596bb1018b0aa629fee5fd26eb6595f02bdae8c",
+        "digest_term_2": "1dea5f506e6bf3a083ad24693596bb1018b0aa629fee5fd26eb6595f02bdae8c",
+        "equal": true
+      }
+    },
+    {
+      "name": "sealed page survives a lease change",
+      "expected": {
+        "bytes": "page-bytes",
+        "read_code": null
+      }
+    },
+    {
+      "name": "stale seal after a valid digest",
+      "expected": {
+        "read_code": null,
+        "write_code": "replication.stale_epoch"
+      }
+    },
+    {
+      "name": "checksum failure before the stale seal",
+      "expected": {
+        "read_code": "format.corrupt_page",
+        "write_code": "format.corrupt_page"
+      }
+    }
+  ]
+}

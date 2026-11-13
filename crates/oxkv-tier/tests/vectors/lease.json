@@ -1,0 +1,37 @@
+{
+  "contract": "lease/v1",
+  "cases": [
+    {
+      "name": "stale writer after a handover",
+      "expected": {
+        "code": "replication.stale_epoch",
+        "lease_term": 2
+      }
+    },
+    {
+      "name": "expired authority lease",
+      "expected": {
+        "code": "replication.lease_expired"
+      }
+    },
+    {
+      "name": "held authority lease",
+      "expected": {
+        "code": "replication.lease_held"
+      }
+    },
+    {
+      "name": "replica authority lease refused",
+      "expected": {
+        "code": "internal.invariant_violation"
+      }
+    },
+    {
+      "name": "term advances after release",
+      "expected": {
+        "code": null,
+        "lease_term": 2
+      }
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "contract": "placement/v1",
+  "cases": [
+    {
+      "name": "hot access stays in ram",
+      "expected": {
+        "tier": "ram",
+        "durability": "volatile"
+      }
+    },
+    {
+      "name": "pinned segment stays in ram",
+      "expected": {
+        "tier": "ram",
+        "durability": "volatile"
+      }
+    },
+    {
+      "name": "cold large segment lands in object",
+      "expected": {
+        "tier": "object",
+        "durability": "durable-object"
+      }
+    },
+    {
+      "name": "a contradicting plan is refused",
+      "expected": {
+        "code": "replication.placement_violation"
+      }
+    }
+  ]
+}

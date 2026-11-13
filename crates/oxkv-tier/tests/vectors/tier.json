@@ -1,0 +1,34 @@
+{
+  "contract": "tier-movement/v1",
+  "cases": [
+    {
+      "name": "only copy eviction is refused",
+      "expected": {
+        "code": "replication.only_copy_eviction"
+      }
+    },
+    {
+      "name": "unavailable tier falls back to object",
+      "expected": {
+        "tier": "object",
+        "bytes": "page-bytes"
+      }
+    },
+    {
+      "name": "warmup budget keeps a cursor",
+      "expected": {
+        "code": "replication.warmup_budget_exceeded",
+        "cursor": 1,
+        "promoted": 1
+      }
+    },
+    {
+      "name": "move preserves identity and bytes",
+      "expected": {
+        "source": "disk",
+        "target": "object",
+        "bytes": "page-bytes"
+      }
+    }
+  ]
+}
