@@ -1,0 +1,17 @@
+[package]
+name = "oxkv-manifest"
+version = "0.11.0"
+edition = "2024"
+description = "Manifest v1 schema, canonical JSON, validation, and deterministic descriptor compilation for oxkv."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/azamaulanaaa/oxkv"
+readme = "../../README.md"
+keywords = ["manifest", "canonical-json", "keyvalue", "database", "descriptor"]
+categories = ["database"]
+
+[dependencies]
+blake3 = "1.8"
+oxkv-contracts = { path = "../oxkv-contracts" }
+
+[lints]
+workspace = true

@@ -1253,6 +1253,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxkv-manifest"
+version = "0.11.0"
+dependencies = [
+ "blake3",
+ "oxkv-contracts",
+]
+
+[[package]]
 name = "oxkv-opfs"
 version = "0.11.0"
 dependencies = [

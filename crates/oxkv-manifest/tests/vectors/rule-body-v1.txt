@@ -1,0 +1,1 @@
+allow if account_status is true and amount is at most 100
