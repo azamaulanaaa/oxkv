@@ -1,0 +1,28 @@
+{
+  "contract": "security/v1",
+  "errors": [
+    { "code": "auth.unauthenticated", "receipt": null },
+    { "code": "auth.stale_credentials", "receipt": null },
+    { "code": "auth.forbidden", "receipt": "Rejected" },
+    { "code": "auth.replayed_request", "receipt": null },
+    { "code": "audit.unavailable", "receipt": "Rejected" },
+    { "code": "audit.chain_invalid", "receipt": null },
+    { "code": "audit.export_denied", "receipt": null },
+    { "code": "policy.regex_not_supported", "receipt": null },
+    { "code": "policy.budget_exhausted", "receipt": "Rejected" },
+    { "code": "write.idempotency_key_reuse", "receipt": null },
+    { "code": "internal.invariant_violation", "receipt": null }
+  ],
+  "request": {
+    "body_digest_hex": "2992962aaf8730be37a096224f899bc848f701591979767461c40fca287a992f",
+    "input_digest_hex": "6f7bf396d8f28aa0599277b3d26171ed09c931eab4d528afdd60601eceda2cec",
+    "signature_hex": "9c1e75f3142c5b1940635303533e9f0064644a8ca3215ad26b07320f3398c7b0"
+  },
+  "audit_record": {
+    "record_hash_hex": "dae105ff5b10634fa408d334aae367735a69514830d5d7dda2fc5ef45f730bef"
+  },
+  "checkpoint": {
+    "checkpoint_hash_hex": "c8e254a7f8f45e8ce973783e298c2001a91d5445bc2127365f37b95b4a49c787",
+    "signature_hex": "260709360f011e11563d41f4894be231f1cb1649cc6ce1ece1120551076898155603cd18c473cd2731628d4171cee301ad75e13c40127e3065d2042d8e48ff79"
+  }
+}
