@@ -3,6 +3,7 @@
 //! The request never names the policy version, the principal, or the shard
 //! map. The authority supplies those values at commit.
 
+use oxkv_contracts::keyspace::{KEY_ENCODING_VERSION, SYSTEM_ID_PROJECTION, SYSTEM_MARKER};
 use oxkv_contracts::receipt::{IdempotencyKey, RequestId};
 use oxkv_contracts::version::{Hash32, KeyVersion, ShardId};
 
@@ -32,6 +33,23 @@ impl RowKey {
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
+
+    /// Returns true when the key is in the projection system namespace.
+    ///
+    /// A projection key has the form `0x01 || table || 0x00 || 0xFF || 0x04`.
+    #[must_use]
+    pub fn is_projection(&self) -> bool {
+        let Some(separator) = self.0.iter().skip(1).position(|byte| *byte == 0x00) else {
+            return false;
+        };
+        if separator == 0 {
+            return false;
+        }
+        let marker = separator + 2;
+        self.0.first() == Some(&KEY_ENCODING_VERSION)
+            && self.0.get(marker) == Some(&SYSTEM_MARKER)
+            && self.0.get(marker + 1) == Some(&SYSTEM_ID_PROJECTION)
+    }
 }
 
 impl From<Vec<u8>> for RowKey {
@@ -41,23 +59,46 @@ impl From<Vec<u8>> for RowKey {
 }
 
 /// One proposed row change.
+///
+/// Each row carries its own base version. A batch can mutate keys at
+/// different versions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RowMutation {
     /// The row key inside the target shard.
     pub key: RowKey,
     /// The shard that owns the row.
     pub shard_id: ShardId,
+    /// The base version of the row.
+    ///
+    /// A value of `None` means the request is malformed. The authority
+    /// rejects the request with `write.missing_base_version`.
+    pub base_version: Option<KeyVersion>,
     /// The proposed value bytes.
     pub value: Vec<u8>,
 }
 
 impl RowMutation {
-    /// Creates one proposed row change.
+    /// Creates one proposed row change with a base version.
     #[must_use]
-    pub fn new(key: RowKey, shard_id: ShardId, value: Vec<u8>) -> Self {
+    pub fn new(key: RowKey, shard_id: ShardId, base_version: KeyVersion, value: Vec<u8>) -> Self {
         Self {
             key,
             shard_id,
+            base_version: Some(base_version),
+            value,
+        }
+    }
+
+    /// Creates one proposed row change without a base version.
+    ///
+    /// Use this constructor only to model a malformed request. The authority
+    /// rejects the request with `write.missing_base_version`.
+    #[must_use]
+    pub fn without_base(key: RowKey, shard_id: ShardId, value: Vec<u8>) -> Self {
+        Self {
+            key,
+            shard_id,
+            base_version: None,
             value,
         }
     }
@@ -65,46 +106,25 @@ impl RowMutation {
 
 /// One client write request.
 ///
-/// The request carries an idempotency key and one base version. The base
-/// version applies to every mutated key.
+/// The request carries an idempotency key and one base version for each row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteRequest {
     request_id: RequestId,
     idempotency_key: IdempotencyKey,
-    base_version: Option<KeyVersion>,
     rows: Vec<RowMutation>,
 }
 
 impl WriteRequest {
-    /// Creates a request with a base version.
+    /// Creates a request from its parts.
     #[must_use]
     pub fn new(
         request_id: RequestId,
         idempotency_key: IdempotencyKey,
-        base_version: KeyVersion,
         rows: Vec<RowMutation>,
     ) -> Self {
         Self {
             request_id,
             idempotency_key,
-            base_version: Some(base_version),
-            rows,
-        }
-    }
-
-    /// Creates a request without a base version.
-    ///
-    /// The authority rejects this request with `write.missing_base_version`.
-    #[must_use]
-    pub fn without_base_version(
-        request_id: RequestId,
-        idempotency_key: IdempotencyKey,
-        rows: Vec<RowMutation>,
-    ) -> Self {
-        Self {
-            request_id,
-            idempotency_key,
-            base_version: None,
             rows,
         }
     }
@@ -121,10 +141,10 @@ impl WriteRequest {
         &self.idempotency_key
     }
 
-    /// Returns the base version.
+    /// Returns the first row that has no base version.
     #[must_use]
-    pub const fn base_version(&self) -> Option<KeyVersion> {
-        self.base_version
+    pub fn first_missing_base(&self) -> Option<&RowMutation> {
+        self.rows.iter().find(|row| row.base_version.is_none())
     }
 
     /// Returns the proposed row changes.
@@ -133,18 +153,17 @@ impl WriteRequest {
         &self.rows
     }
 
-    /// Returns the canonical input digest.
+    /// Returns the canonical body digest.
     ///
-    /// The digest covers the request identity, the idempotency key, the base
-    /// version, and every row. The digest does not cover the principal, the
-    /// policy version, or the shard map.
+    /// The digest covers the idempotency key and every row with its base
+    /// version. The digest does not cover the request identity, the principal,
+    /// the policy version, or the shard map. A retry with the same key and
+    /// body matches, even when the request identity changes.
     #[must_use]
     pub fn input_digest(&self) -> Hash32 {
         let mut buffer = Vec::new();
         push_tag(&mut buffer, INPUT_TAG);
-        push_bytes(&mut buffer, self.request_id.as_bytes());
         push_bytes(&mut buffer, self.idempotency_key.as_bytes());
-        push_option_u64(&mut buffer, self.base_version.map(KeyVersion::get));
         push_u64(
             &mut buffer,
             u64::try_from(self.rows.len()).unwrap_or(u64::MAX),
@@ -152,8 +171,35 @@ impl WriteRequest {
         for row in &self.rows {
             push_bytes(&mut buffer, row.shard_id.as_bytes());
             push_bytes(&mut buffer, row.key.as_bytes());
+            push_option_u64(&mut buffer, row.base_version.map(KeyVersion::get));
             push_bytes(&mut buffer, &row.value);
         }
         Hash32::of(&buffer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_body_digest_ignores_the_request_identity() {
+        let row = RowMutation::new(
+            RowKey::new(b"row:1".to_vec()),
+            ShardId::new(vec![1]),
+            KeyVersion::new(0),
+            b"value".to_vec(),
+        );
+        let first = WriteRequest::new(
+            RequestId::from_bytes([1; 32]),
+            IdempotencyKey::new(vec![1]),
+            vec![row.clone()],
+        );
+        let second = WriteRequest::new(
+            RequestId::from_bytes([2; 32]),
+            IdempotencyKey::new(vec![1]),
+            vec![row],
+        );
+        assert_eq!(first.input_digest(), second.input_digest());
     }
 }

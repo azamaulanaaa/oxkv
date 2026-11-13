@@ -15,20 +15,20 @@
 use std::collections::BTreeMap;
 
 use oxkv_contracts::receipt::{
-    AuditReference, AuditSequence, IdempotencyKey, ReceiptEnvelope, ReceiptId, ReceiptOutcome,
-    ReceiptState,
+    IdempotencyKey, ReceiptEnvelope, ReceiptId, ReceiptOutcome, ReceiptState,
 };
 use oxkv_contracts::version::{
     CommitVersion, DigestDomain, Hash32, KeyVersion, ManifestDigest, PolicyVersion, ShardId,
 };
 
+use crate::audit::{AuditChain, AuditRecord, AuditRecordBody, AuditVerdict};
 use crate::conflict::ConflictDetail;
 use crate::hook::{CommitHook, HookEffect};
 use crate::policy::{Policy, PolicyRow, PolicyVerdict};
 use crate::receipt::{ReceiptLedger, ReceiptLedgerError};
 use crate::record::{CommitSummary, CommitView, KeyChange, KeyRecord, KeyValue};
 use crate::request::{Key, WriteOperation, WriteRequest};
-use crate::util::{push_bytes, push_u64};
+use crate::util::push_bytes;
 
 const REASON_CROSS_SHARD: &str = "shard.cross_mutation_rejected";
 const REASON_STALE_BASE: &str = "write.stale_base_version";
@@ -195,7 +195,7 @@ pub struct Authority {
     records: BTreeMap<Key, KeyRecord>,
     receipts: ReceiptLedger,
     commit_version: CommitVersion,
-    audit_sequence: u64,
+    audit: AuditChain,
 }
 
 impl Authority {
@@ -213,7 +213,7 @@ impl Authority {
             records: BTreeMap::new(),
             receipts: ReceiptLedger::new(),
             commit_version: CommitVersion::new(0),
-            audit_sequence: 0,
+            audit: AuditChain::new(),
         }
     }
 
@@ -259,6 +259,24 @@ impl Authority {
     #[must_use]
     pub const fn receipts(&self) -> &ReceiptLedger {
         &self.receipts
+    }
+
+    /// Returns the audit records in chain order.
+    #[must_use]
+    pub fn audit_records(&self) -> &[AuditRecord] {
+        self.audit.records()
+    }
+
+    /// Returns the number of audit records.
+    #[must_use]
+    pub fn audit_record_count(&self) -> usize {
+        self.audit.len()
+    }
+
+    /// Checks the audit chain.
+    #[must_use]
+    pub fn verify_audit_chain(&self) -> bool {
+        self.audit.verify()
     }
 
     /// Returns one receipt envelope.
@@ -463,35 +481,54 @@ impl Authority {
         }
     }
 
-    /// Builds, stores, and returns one terminal receipt.
+    /// Builds and stores one audit record and its terminal receipt.
     fn finish_receipt(
         &mut self,
         request: &WriteRequest,
         body_digest: Hash32,
         outcome: ReceiptOutcome,
     ) -> Result<ReceiptEnvelope, SubmitError> {
-        let sequence = AuditSequence::new(self.audit_sequence.saturating_add(1));
-        let receipt = self.build_receipt(request, body_digest, sequence, outcome)?;
-        self.receipts
-            .insert_terminal(body_digest, receipt.clone())
-            .map_err(|source| SubmitError::Receipt { source })?;
-        self.audit_sequence = sequence.get();
-        Ok(receipt)
-    }
-
-    /// Builds one terminal receipt without storing it.
-    fn build_receipt(
-        &self,
-        request: &WriteRequest,
-        body_digest: Hash32,
-        sequence: AuditSequence,
-        outcome: ReceiptOutcome,
-    ) -> Result<ReceiptEnvelope, SubmitError> {
+        let receipt_id = receipt_id_for(request, body_digest);
+        let verdict = match outcome.state() {
+            ReceiptState::Committed => AuditVerdict::Committed,
+            ReceiptState::Rejected => AuditVerdict::Rejected,
+            ReceiptState::Conflict => AuditVerdict::Conflict,
+            ReceiptState::Queued => {
+                return Err(SubmitError::Receipt {
+                    source: ReceiptLedgerError::NotTerminal {
+                        state: ReceiptState::Queued,
+                    },
+                });
+            }
+        };
+        let reason = match outcome {
+            ReceiptOutcome::Committed { .. } => None,
+            ReceiptOutcome::Rejected { reason } | ReceiptOutcome::Conflict { reason, .. } => {
+                Some(reason)
+            }
+        };
+        let body = AuditRecordBody {
+            request_id: request.request_id(),
+            idempotency_key: request.idempotency_key().clone(),
+            shard_id: self.shard_id.clone(),
+            base_versions: request
+                .mutations()
+                .iter()
+                .map(|mutation| (mutation.key().clone(), mutation.base_version()))
+                .collect(),
+            policy_version: self.policy_version,
+            manifest_digest: self.manifest_digest,
+            receipt_id,
+            verdict,
+            reason,
+            input_digest: body_digest,
+        };
+        let record = self.audit.seal_next(body);
         let mut receipt = ReceiptEnvelope::queued(
-            receipt_id_for(&self.shard_id, request),
+            receipt_id,
             request.request_id(),
             request.idempotency_key().clone(),
-            self.audit_reference(request, body_digest, sequence),
+            record.audit_reference(),
             self.policy_version,
             self.manifest_digest,
             REASON_QUEUED,
@@ -501,26 +538,11 @@ impl Authority {
             .map_err(|source| SubmitError::Receipt {
                 source: ReceiptLedgerError::from(source),
             })?;
+        self.receipts
+            .insert_terminal(body_digest, receipt.clone())
+            .map_err(|source| SubmitError::Receipt { source })?;
+        self.audit.push(record);
         Ok(receipt)
-    }
-
-    /// Builds one deterministic audit reference for the simulator.
-    fn audit_reference(
-        &self,
-        request: &WriteRequest,
-        body_digest: Hash32,
-        sequence: AuditSequence,
-    ) -> AuditReference {
-        let mut bytes = Vec::new();
-        push_bytes(&mut bytes, self.shard_id.as_bytes());
-        push_bytes(&mut bytes, request.request_id().as_bytes());
-        push_bytes(&mut bytes, body_digest.as_bytes());
-        push_u64(&mut bytes, sequence.get());
-        AuditReference::new(
-            self.shard_id.clone(),
-            sequence,
-            Hash32::of_domain(DigestDomain::AuditRecord, &bytes),
-        )
     }
 }
 
@@ -542,10 +564,12 @@ enum VersionCheck {
 }
 
 /// Returns the deterministic receipt identity for one request.
-fn receipt_id_for(shard_id: &ShardId, request: &WriteRequest) -> ReceiptId {
+///
+/// The receipt id covers the idempotency key and the request body digest.
+/// This authority has no client identity, so the id has no client id.
+fn receipt_id_for(request: &WriteRequest, body_digest: Hash32) -> ReceiptId {
     let mut bytes = Vec::new();
-    push_bytes(&mut bytes, shard_id.as_bytes());
-    push_bytes(&mut bytes, request.request_id().as_bytes());
     push_bytes(&mut bytes, request.idempotency_key().as_bytes());
+    push_bytes(&mut bytes, body_digest.as_bytes());
     ReceiptId::from_bytes(*Hash32::of_domain(DigestDomain::ReceiptId, &bytes).as_bytes())
 }

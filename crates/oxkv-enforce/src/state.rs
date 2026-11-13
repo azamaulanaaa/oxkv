@@ -5,7 +5,8 @@
 
 use std::collections::BTreeMap;
 
-use oxkv_contracts::version::{CommitVersion, Hash32, KeyVersion};
+use oxkv_contracts::version::{CommitVersion, Hash32, KeyVersion, PolicyVersion, ShardId};
+use oxkv_event::{EmissionIndex, EventId, RuleId, compute_event_id};
 
 use crate::request::RowKey;
 
@@ -46,14 +47,60 @@ pub struct IndexEntry {
 }
 
 /// One business event that a committed row produces.
+///
+/// The event carries the envelope identity fields. The event id is a
+/// deterministic hash of the shard, the key, the commit version, the rule
+/// identity, and the emission index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BusinessEvent {
+    /// The deterministic event identity.
+    pub event_id: EventId,
+    /// The shard that owns the commit.
+    pub shard_id: ShardId,
     /// The row key.
     pub key: RowKey,
     /// The digest of the row value.
     pub value_digest: Hash32,
     /// The shard commit version.
     pub commit_version: CommitVersion,
+    /// The manifest rule identity.
+    pub rule_id: RuleId,
+    /// The pinned policy version.
+    pub policy_version: PolicyVersion,
+    /// The emission index inside one commit.
+    pub emission_index: EmissionIndex,
+}
+
+impl BusinessEvent {
+    /// Creates one business event and computes its event id.
+    #[must_use]
+    pub fn new(
+        shard_id: ShardId,
+        key: RowKey,
+        value_digest: Hash32,
+        commit_version: CommitVersion,
+        rule_id: RuleId,
+        policy_version: PolicyVersion,
+        emission_index: EmissionIndex,
+    ) -> Self {
+        let event_id = compute_event_id(
+            &shard_id,
+            key.as_bytes(),
+            commit_version,
+            &rule_id,
+            emission_index,
+        );
+        Self {
+            event_id,
+            shard_id,
+            key,
+            value_digest,
+            commit_version,
+            rule_id,
+            policy_version,
+            emission_index,
+        }
+    }
 }
 
 /// The data, index, and event changes of one committed write.
@@ -142,5 +189,93 @@ impl ShardState {
 impl Default for ShardState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event() -> BusinessEvent {
+        BusinessEvent::new(
+            ShardId::new(vec![1]),
+            RowKey::new(b"row:1".to_vec()),
+            Hash32::of(b"value"),
+            CommitVersion::new(4),
+            RuleId::new("rule.payload"),
+            PolicyVersion::from_bytes([4; 32]),
+            EmissionIndex::new(0),
+        )
+    }
+
+    #[test]
+    fn a_business_event_id_is_stable() {
+        assert_eq!(event().event_id, event().event_id);
+    }
+
+    #[test]
+    fn a_business_event_carries_the_envelope_fields() {
+        let event = event();
+        assert_eq!(event.shard_id, ShardId::new(vec![1]));
+        assert_eq!(event.key.as_bytes(), b"row:1");
+        assert_eq!(event.commit_version, CommitVersion::new(4));
+        assert_eq!(event.rule_id.as_str(), "rule.payload");
+        assert_eq!(event.policy_version, PolicyVersion::from_bytes([4; 32]));
+        assert_eq!(event.emission_index, EmissionIndex::new(0));
+    }
+
+    #[test]
+    fn a_business_event_id_covers_each_identity_field() {
+        let base = event();
+        let changed_shard = BusinessEvent::new(
+            ShardId::new(vec![2]),
+            base.key.clone(),
+            base.value_digest,
+            base.commit_version,
+            base.rule_id.clone(),
+            base.policy_version,
+            base.emission_index,
+        );
+        let changed_key = BusinessEvent::new(
+            base.shard_id.clone(),
+            RowKey::new(b"row:2".to_vec()),
+            base.value_digest,
+            base.commit_version,
+            base.rule_id.clone(),
+            base.policy_version,
+            base.emission_index,
+        );
+        let changed_commit = BusinessEvent::new(
+            base.shard_id.clone(),
+            base.key.clone(),
+            base.value_digest,
+            CommitVersion::new(5),
+            base.rule_id.clone(),
+            base.policy_version,
+            base.emission_index,
+        );
+        let changed_rule = BusinessEvent::new(
+            base.shard_id.clone(),
+            base.key.clone(),
+            base.value_digest,
+            base.commit_version,
+            RuleId::new("rule.other"),
+            base.policy_version,
+            base.emission_index,
+        );
+        let changed_index = BusinessEvent::new(
+            base.shard_id.clone(),
+            base.key.clone(),
+            base.value_digest,
+            base.commit_version,
+            base.rule_id.clone(),
+            base.policy_version,
+            EmissionIndex::new(1),
+        );
+        assert_ne!(base.event_id, changed_shard.event_id);
+        assert_ne!(base.event_id, changed_key.event_id);
+        assert_ne!(base.event_id, changed_commit.event_id);
+        assert_ne!(base.event_id, changed_rule.event_id);
+        assert_ne!(base.event_id, changed_index.event_id);
     }
 }

@@ -1,5 +1,6 @@
 #![allow(missing_docs)]
 #![allow(dead_code)]
+#![allow(clippy::struct_excessive_bools)]
 
 //! Shared scenarios for the enforcement tests and golden vectors.
 
@@ -70,10 +71,10 @@ fn request(
     WriteRequest::new(
         RequestId::from_bytes([identity; 32]),
         IdempotencyKey::new(vec![identity]),
-        KeyVersion::new(base_version),
         vec![RowMutation::new(
             RowKey::new(key.to_vec()),
             row_shard.clone(),
+            KeyVersion::new(base_version),
             value.to_vec(),
         )],
     )
@@ -84,7 +85,6 @@ fn batch_request(identity: u8, rows: Vec<RowMutation>) -> WriteRequest {
     WriteRequest::new(
         RequestId::from_bytes([identity; 32]),
         IdempotencyKey::new(vec![identity]),
-        KeyVersion::new(0),
         rows,
     )
 }
@@ -178,6 +178,12 @@ pub(crate) struct ScenarioOutcome {
     pub queued_reason: Option<String>,
     /// The audit count before the queue deadline.
     pub queued_audit_count: Option<usize>,
+    /// The state of a valid batch in a multi-step scenario.
+    pub valid_batch_state: Option<String>,
+    /// True when the valid batch changed a row.
+    pub valid_batch_data_changed: bool,
+    /// True when a retry returned the original receipt.
+    pub receipt_matches_first: bool,
 }
 
 impl ScenarioOutcome {
@@ -227,6 +233,9 @@ impl ScenarioOutcome {
             queued_state: None,
             queued_reason: None,
             queued_audit_count: None,
+            valid_batch_state: None,
+            valid_batch_data_changed: false,
+            receipt_matches_first: false,
         }
     }
 
@@ -253,6 +262,9 @@ impl ScenarioOutcome {
             queued_state: None,
             queued_reason: None,
             queued_audit_count: None,
+            valid_batch_state: None,
+            valid_batch_data_changed: false,
+            receipt_matches_first: false,
         }
     }
 
@@ -279,6 +291,9 @@ impl ScenarioOutcome {
             "queued_state": self.queued_state,
             "queued_reason": self.queued_reason,
             "queued_audit_count": self.queued_audit_count,
+            "valid_batch_state": self.valid_batch_state,
+            "valid_batch_data_changed": self.valid_batch_data_changed,
+            "receipt_matches_first": self.receipt_matches_first,
         })
     }
 }
@@ -304,6 +319,9 @@ pub(crate) fn run(name: &str) -> ScenarioOutcome {
         "idempotency_key_reuse" => idempotency_key_reuse(),
         "stale_base_version" => stale_base_version(),
         "missing_base_version" => missing_base_version(),
+        "per_row_base_versions" => per_row_base_versions(),
+        "projection_commit_write" => projection_commit_write(),
+        "idempotency_retry_new_request_id" => idempotency_retry_new_request_id(),
         _ => panic!("the scenario {name} is unknown"),
     }
 }
@@ -511,11 +529,13 @@ fn batch_conjunction() -> ScenarioOutcome {
             RowMutation::new(
                 RowKey::new(b"row:8a".to_vec()),
                 shard.clone(),
+                KeyVersion::new(0),
                 b"ok".to_vec(),
             ),
             RowMutation::new(
                 RowKey::new(b"row:8b".to_vec()),
                 shard.clone(),
+                KeyVersion::new(0),
                 b"deny".to_vec(),
             ),
         ],
@@ -726,10 +746,10 @@ fn idempotency_key_reuse() -> ScenarioOutcome {
     let second = WriteRequest::new(
         RequestId::from_bytes([15; 32]),
         IdempotencyKey::new(vec![15]),
-        KeyVersion::new(0),
         vec![RowMutation::new(
             RowKey::new(b"row:15".to_vec()),
             shard,
+            KeyVersion::new(0),
             b"other".to_vec(),
         )],
     );
@@ -786,22 +806,208 @@ fn missing_base_version() -> ScenarioOutcome {
         authorization: &authorization,
         queue_deadline: deadline(),
     };
-    let request = WriteRequest::without_base_version(
+    let request = WriteRequest::new(
         RequestId::from_bytes([18; 32]),
         IdempotencyKey::new(vec![18]),
-        vec![RowMutation::new(
+        vec![RowMutation::without_base(
             RowKey::new(b"row:18".to_vec()),
             shard,
             b"ok".to_vec(),
         )],
     );
+    let error = engine
+        .commit(&request, &AlwaysAuth, &PayloadRules, &context, &mut chain)
+        .err()
+        .map_or("none", |error| error.code());
+    ScenarioOutcome::from_error(error, &engine, &chain, false)
+}
+
+/// Each row is checked against its own base version.
+#[allow(clippy::too_many_lines)]
+fn per_row_base_versions() -> ScenarioOutcome {
+    let shard = shard();
+    let mut engine = Enforcement::new(shard.clone());
+    let mut chain = InMemoryAuditChain::new();
+    let projection = projection_with(10);
+    let current = facts(11);
+    let authorization = default_authorization();
+    let context = CommitContext {
+        catalog: catalog(),
+        projection: &projection,
+        current_facts: &current,
+        authorization: &authorization,
+        queue_deadline: deadline(),
+    };
+    engine
+        .commit(
+            &request(19, b"row:pa", 0, b"a1", &shard),
+            &AlwaysAuth,
+            &PayloadRules,
+            &context,
+            &mut chain,
+        )
+        .expect("the first setup write commits");
+    engine
+        .commit(
+            &request(20, b"row:pb", 0, b"b1", &shard),
+            &AlwaysAuth,
+            &PayloadRules,
+            &context,
+            &mut chain,
+        )
+        .expect("the second setup write commits");
+    engine
+        .commit(
+            &request(21, b"row:pb", 1, b"b2", &shard),
+            &AlwaysAuth,
+            &PayloadRules,
+            &context,
+            &mut chain,
+        )
+        .expect("the third setup write commits");
+
+    let valid = engine
+        .commit(
+            &batch_request(
+                22,
+                vec![
+                    RowMutation::new(
+                        RowKey::new(b"row:pa".to_vec()),
+                        shard.clone(),
+                        KeyVersion::new(1),
+                        b"a2".to_vec(),
+                    ),
+                    RowMutation::new(
+                        RowKey::new(b"row:pb".to_vec()),
+                        shard.clone(),
+                        KeyVersion::new(2),
+                        b"b3".to_vec(),
+                    ),
+                ],
+            ),
+            &AlwaysAuth,
+            &PayloadRules,
+            &context,
+            &mut chain,
+        )
+        .expect("the valid batch commits");
+    let first = RowKey::new(b"row:pa".to_vec());
+    let second = RowKey::new(b"row:pb".to_vec());
+    let valid_changed = engine
+        .state()
+        .row(&first)
+        .is_some_and(|row| row.value() == b"a2")
+        && engine
+            .state()
+            .row(&second)
+            .is_some_and(|row| row.value() == b"b3");
+
+    let invalid = engine
+        .commit(
+            &batch_request(
+                23,
+                vec![
+                    RowMutation::new(
+                        RowKey::new(b"row:pa".to_vec()),
+                        shard.clone(),
+                        KeyVersion::new(1),
+                        b"bad-a".to_vec(),
+                    ),
+                    RowMutation::new(
+                        RowKey::new(b"row:pb".to_vec()),
+                        shard.clone(),
+                        KeyVersion::new(3),
+                        b"bad-b".to_vec(),
+                    ),
+                ],
+            ),
+            &AlwaysAuth,
+            &PayloadRules,
+            &context,
+            &mut chain,
+        )
+        .expect("the invalid batch returns a conflict");
+    let changed = engine
+        .state()
+        .row(&first)
+        .is_some_and(|row| row.value() == b"bad-a")
+        || engine
+            .state()
+            .row(&second)
+            .is_some_and(|row| row.value() == b"bad-b");
+    let mut result = ScenarioOutcome::from_outcome(&invalid, &engine, &chain, changed);
+    result.valid_batch_state = Some(valid.state().name().to_owned());
+    result.valid_batch_data_changed = valid_changed;
+    result
+}
+
+/// A client write to the projection namespace rejects on the commit path.
+fn projection_commit_write() -> ScenarioOutcome {
+    let shard = shard();
+    let mut engine = Enforcement::new(shard.clone());
+    let mut chain = InMemoryAuditChain::new();
+    let projection = projection_with(10);
+    let current = facts(11);
+    let authorization = default_authorization();
+    let context = CommitContext {
+        catalog: catalog(),
+        projection: &projection,
+        current_facts: &current,
+        authorization: &authorization,
+        queue_deadline: deadline(),
+    };
+    let mut key = vec![0x01];
+    key.extend_from_slice(b"accounts");
+    key.extend_from_slice(&[0x00, 0xFF, 0x04, 0x00]);
+    let request = request(24, &key, 0, b"client", &shard);
     let outcome = engine
         .commit(&request, &AlwaysAuth, &PayloadRules, &context, &mut chain)
-        .expect("the missing base rejection writes a receipt");
-    let key = RowKey::new(b"row:18".to_vec());
+        .expect("the projection write rejects");
+    let changed = engine
+        .state()
+        .row(&RowKey::new(key))
+        .is_some_and(|row| row.value() == b"client");
+    ScenarioOutcome::from_outcome(&outcome, &engine, &chain, changed)
+}
+
+/// A retry with a new request id and the same body returns the first receipt.
+fn idempotency_retry_new_request_id() -> ScenarioOutcome {
+    let shard = shard();
+    let mut engine = Enforcement::new(shard.clone());
+    let mut chain = InMemoryAuditChain::new();
+    let projection = projection_with(10);
+    let current = facts(11);
+    let authorization = default_authorization();
+    let context = CommitContext {
+        catalog: catalog(),
+        projection: &projection,
+        current_facts: &current,
+        authorization: &authorization,
+        queue_deadline: deadline(),
+    };
+    let first = request(25, b"row:25", 0, b"ok", &shard);
+    let first_outcome = engine
+        .commit(&first, &AlwaysAuth, &PayloadRules, &context, &mut chain)
+        .expect("the first delivery commits");
+    let retry = WriteRequest::new(
+        RequestId::from_bytes([26; 32]),
+        IdempotencyKey::new(vec![25]),
+        vec![RowMutation::new(
+            RowKey::new(b"row:25".to_vec()),
+            shard,
+            KeyVersion::new(0),
+            b"ok".to_vec(),
+        )],
+    );
+    let outcome = engine
+        .commit(&retry, &AlwaysAuth, &PayloadRules, &context, &mut chain)
+        .expect("the retry returns the first receipt");
+    let key = RowKey::new(b"row:25".to_vec());
     let changed = engine
         .state()
         .row(&key)
         .is_some_and(|row| row.value() == b"ok");
-    ScenarioOutcome::from_outcome(&outcome, &engine, &chain, changed)
+    let mut result = ScenarioOutcome::from_outcome(&outcome, &engine, &chain, changed);
+    result.receipt_matches_first = first_outcome.receipt() == outcome.receipt();
+    result
 }

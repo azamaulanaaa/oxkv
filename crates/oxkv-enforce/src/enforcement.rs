@@ -18,6 +18,7 @@ use oxkv_contracts::version::{
     CommitVersion, DigestDomain, Hash32, KeyVersion, ManifestDigest, MapVersion, PolicyVersion,
     ProjectionEpoch, ProjectionWatermarks, ShardId,
 };
+use oxkv_event::{EmissionIndex, RuleId as EventRuleId};
 
 use crate::audit::{AuditRecord, AuditRecordBody, AuditSink, AuditVerdict};
 use crate::auth::{AuthError, Authenticator, Principal};
@@ -238,10 +239,21 @@ pub enum EnforcementError {
     /// The request is not authenticated.
     #[error("The request failed authentication.")]
     Authentication(#[source] AuthError),
+    /// A row has no base version.
+    #[error("The row mutation has no base version.")]
+    MissingBaseVersion {
+        /// The row key.
+        key: RowKey,
+    },
     /// The idempotency key already names a different body.
     #[error("The idempotency key already names a different body.")]
     IdempotencyKeyReuse,
     /// The audit append failed.
+    ///
+    /// The error registry maps `audit.unavailable` to a `Rejected` receipt.
+    /// A `Rejected` receipt must name an audit record. A failed audit append
+    /// cannot produce that record, so this path returns an error with no
+    /// receipt.
     #[error("The audit append is unavailable.")]
     AuditUnavailable,
 }
@@ -252,6 +264,7 @@ impl EnforcementError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::Authentication(error) => error.code(),
+            Self::MissingBaseVersion { .. } => "write.missing_base_version",
             Self::IdempotencyKeyReuse => "write.idempotency_key_reuse",
             Self::AuditUnavailable => "audit.unavailable",
         }
@@ -379,9 +392,10 @@ impl Enforcement {
     /// # Errors
     ///
     /// Returns [`EnforcementError::Authentication`] when authentication fails.
-    /// Returns [`EnforcementError::IdempotencyKeyReuse`] when the key names a
-    /// different body. Returns [`EnforcementError::AuditUnavailable`] when the
-    /// audit append fails. A failed audit append changes no state.
+    /// Returns [`EnforcementError::MissingBaseVersion`] when a row has no base
+    /// version. Returns [`EnforcementError::IdempotencyKeyReuse`] when the key
+    /// names a different body. Returns [`EnforcementError::AuditUnavailable`]
+    /// when the audit append fails. A failed audit append changes no state.
     #[allow(clippy::too_many_lines)]
     pub fn commit(
         &mut self,
@@ -405,7 +419,7 @@ impl Enforcement {
 
         let shard_id = self.shard_id.clone();
         let pin = PolicyPin::pin(context.catalog, context.projection);
-        let receipt_id = receipt_id_for(request);
+        let receipt_id = receipt_id_for(&principal, request, input_digest);
 
         if request.rows().len() > MAX_BATCH_ROWS {
             let decisions = request.rows().first().map_or_else(Vec::new, |row| {
@@ -461,14 +475,12 @@ impl Enforcement {
             );
         }
 
-        let Some(base_version) = request.base_version() else {
-            let decisions = request.rows().first().map_or_else(Vec::new, |row| {
-                vec![Decision::reject(
-                    row.key.clone(),
-                    RuleId::version(),
-                    ReasonCode::MISSING_BASE_VERSION,
-                )]
-            });
+        if let Some(row) = request.rows().iter().find(|row| row.key.is_projection()) {
+            let decisions = vec![Decision::reject(
+                row.key.clone(),
+                RuleId::projection(),
+                ReasonCode::PROJECTION_CLIENT_WRITE,
+            )];
             return self.finish_terminal(
                 AuditDraft {
                     shard_id: &shard_id,
@@ -478,20 +490,25 @@ impl Enforcement {
                     input_digest,
                     receipt_id,
                     verdict: AuditVerdict::Rejected,
-                    reason: ReasonCode::MISSING_BASE_VERSION,
+                    reason: ReasonCode::PROJECTION_CLIENT_WRITE,
                     staleness: None,
                     decisions,
                     conflict_version: None,
                 },
                 audit,
             );
-        };
+        }
 
-        if let Some(row) = request
-            .rows()
-            .iter()
-            .find(|row| base_version > self.current_key_version(&row.key))
-        {
+        if let Some(row) = request.first_missing_base() {
+            return Err(EnforcementError::MissingBaseVersion {
+                key: row.key.clone(),
+            });
+        }
+
+        if let Some(row) = request.rows().iter().find(|row| {
+            row.base_version
+                .is_some_and(|base_version| base_version > self.current_key_version(&row.key))
+        }) {
             let decisions = vec![Decision::reject(
                 row.key.clone(),
                 RuleId::version(),
@@ -515,11 +532,10 @@ impl Enforcement {
             );
         }
 
-        if let Some(row) = request
-            .rows()
-            .iter()
-            .find(|row| self.current_key_version(&row.key) != base_version)
-        {
+        if let Some(row) = request.rows().iter().find(|row| {
+            row.base_version
+                .is_some_and(|base_version| self.current_key_version(&row.key) != base_version)
+        }) {
             let current_key_version = self.current_key_version(&row.key);
             let decisions = vec![Decision::reject(
                 row.key.clone(),
@@ -909,7 +925,7 @@ impl Enforcement {
         let mut rows = Vec::with_capacity(draft.request.rows().len());
         let mut index = Vec::with_capacity(draft.request.rows().len());
         let mut events = Vec::with_capacity(draft.request.rows().len());
-        for row in draft.request.rows() {
+        for (row_index, row) in draft.request.rows().iter().enumerate() {
             let value_digest = Hash32::of(&row.value);
             rows.push((
                 row.key.clone(),
@@ -919,11 +935,19 @@ impl Enforcement {
                 row_key: row.key.clone(),
                 value_digest,
             });
-            events.push(BusinessEvent {
-                key: row.key.clone(),
+            let rule_id = draft.decisions.get(row_index).map_or_else(
+                || EventRuleId::new("policy"),
+                |decision| EventRuleId::new(decision.rule.as_str()),
+            );
+            events.push(BusinessEvent::new(
+                draft.shard_id.clone(),
+                row.key.clone(),
                 value_digest,
                 commit_version,
-            });
+                rule_id,
+                draft.pin.policy_version(),
+                EmissionIndex::new(u64::try_from(row_index).unwrap_or(u64::MAX)),
+            ));
         }
 
         let record = append_audit(&draft, audit)?;
@@ -1004,7 +1028,11 @@ fn append_audit(
         idempotency_key: draft.request.idempotency_key().clone(),
         principal: draft.principal.clone(),
         shard_id: draft.shard_id.clone(),
-        base_version: draft.request.base_version(),
+        base_version: draft
+            .request
+            .rows()
+            .first()
+            .and_then(|row| row.base_version),
         policy_version: draft.pin.policy_version(),
         manifest_digest: draft.pin.manifest_digest(),
         map_version: draft.pin.map_version(),
@@ -1049,10 +1077,18 @@ fn pending_audit_reference(shard_id: &ShardId) -> AuditReference {
 }
 
 /// Computes the deterministic receipt identity.
-fn receipt_id_for(request: &WriteRequest) -> ReceiptId {
+///
+/// The receipt id covers the client identity, the idempotency key, and the
+/// request digest.
+fn receipt_id_for(
+    principal: &Principal,
+    request: &WriteRequest,
+    input_digest: Hash32,
+) -> ReceiptId {
     let mut buffer = Vec::new();
     push_tag(&mut buffer, b"oxkv/enforce-receipt/v1");
-    push_bytes(&mut buffer, request.request_id().as_bytes());
+    push_bytes(&mut buffer, principal.as_bytes());
     push_bytes(&mut buffer, request.idempotency_key().as_bytes());
+    push_bytes(&mut buffer, input_digest.as_bytes());
     ReceiptId::from_bytes(*Hash32::of_domain(DigestDomain::ReceiptId, &buffer).as_bytes())
 }

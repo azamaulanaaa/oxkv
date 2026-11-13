@@ -54,6 +54,12 @@ impl RuleId {
         Self::new("batch")
     }
 
+    /// Returns the system projection rule.
+    #[must_use]
+    pub fn projection() -> Self {
+        Self::new("projection")
+    }
+
     /// Returns the system budget rule.
     #[must_use]
     pub fn budget() -> Self {

@@ -48,6 +48,7 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::module_name_repetitions)]
 
+pub mod audit;
 pub mod authority;
 pub mod conflict;
 pub mod hook;
@@ -57,6 +58,7 @@ pub mod record;
 pub mod request;
 mod util;
 
+pub use audit::{AuditChain, AuditRecord, AuditRecordBody, AuditVerdict};
 pub use authority::{Authority, SubmitError, SubmitOutcome};
 pub use conflict::{ConflictDetail, RebaseError, rebase_request};
 pub use hook::{CommitHook, HookEffect, HookError};

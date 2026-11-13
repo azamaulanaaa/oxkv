@@ -3,9 +3,9 @@
 use oxkv_contracts::receipt::{IdempotencyKey, ReceiptOutcome, ReceiptState, RequestId};
 use oxkv_contracts::version::{KeyVersion, ManifestDigest, PolicyVersion, ShardId};
 use oxkv_write::{
-    AllowAll, Authority, CommitHook, CommitView, HookEffect, HookError, Key, Mutation, Policy,
-    PolicyRow, PolicyVerdict, ReceiptLedger, SubmitError, SubmitOutcome, WriteOperation,
-    WriteRequest, rebase_request,
+    AllowAll, AuditVerdict, Authority, CommitHook, CommitView, HookEffect, HookError, Key,
+    Mutation, Policy, PolicyRow, PolicyVerdict, ReceiptLedger, SubmitError, SubmitOutcome,
+    WriteOperation, WriteRequest, rebase_request,
 };
 
 struct RejectPolicy;
@@ -384,6 +384,43 @@ fn a_stale_base_with_a_policy_violation_returns_conflict() {
 }
 
 #[test]
+fn a_committed_write_writes_one_audit_record() {
+    let mut authority = authority();
+    let request = put_request(1, "account", 0, "one");
+    let outcome = run(&mut authority, &request);
+
+    assert_eq!(outcome.state(), ReceiptState::Committed);
+    assert_eq!(authority.audit_record_count(), 1);
+    let record = &authority.audit_records()[0];
+    assert_eq!(record.body().verdict, AuditVerdict::Committed);
+    assert_eq!(record.body().reason, None);
+    assert_eq!(record.body().receipt_id, outcome.receipt().receipt_id());
+    assert_eq!(outcome.receipt().audit().record_hash, record.record_hash());
+    assert_eq!(outcome.receipt().audit().audit_sequence, record.sequence());
+    assert!(authority.verify_audit_chain());
+}
+
+#[test]
+fn a_rejected_write_writes_one_receipt_and_one_audit_record() {
+    let mut authority = authority();
+    let request = put_request(1, "account", 0, "bad");
+    let outcome = authority
+        .submit(&request, &RejectPolicy, &[])
+        .expect("the rejection returns an outcome");
+
+    assert_eq!(outcome.state(), ReceiptState::Rejected);
+    assert_eq!(authority.receipts().len(), 1);
+    assert_eq!(authority.audit_record_count(), 1);
+    let record = &authority.audit_records()[0];
+    assert_eq!(record.body().verdict, AuditVerdict::Rejected);
+    assert_eq!(record.body().reason, Some("policy.budget_exhausted"));
+    assert_eq!(record.body().receipt_id, outcome.receipt().receipt_id());
+    assert_eq!(outcome.receipt().audit().record_hash, record.record_hash());
+    assert_eq!(outcome.receipt().audit().audit_sequence, record.sequence());
+    assert!(authority.verify_audit_chain());
+}
+
+#[test]
 fn a_missing_base_changes_no_data() {
     let mut authority = authority();
     let request = WriteRequest::new(
@@ -410,6 +447,7 @@ fn a_missing_base_changes_no_data() {
     assert!(authority.record(&key("account")).is_none());
     assert_eq!(authority.commit_version().get(), 0);
     assert!(authority.receipts().is_empty());
+    assert_eq!(authority.audit_record_count(), 0);
 }
 
 #[test]

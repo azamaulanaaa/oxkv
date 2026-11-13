@@ -19,7 +19,7 @@
         ],
         "chain_verified": true,
         "receipt_names_audit": true,
-        "record_hash_hex": "7d200d22f6b9f7f03b977e3643c0059ed0d6cdd7f747692199920bad7ffd07c4",
+        "record_hash_hex": "7b38e9edd78f43f4c4bbdfb628df5fe66aab2fdbc1d5760a6a713fecf6cefc2a",
         "previous_hash_hex": "0000000000000000000000000000000000000000000000000000000000000000",
         "error_code": null,
         "staleness_distance": 1
@@ -194,8 +194,8 @@
         ],
         "chain_verified": true,
         "receipt_names_audit": true,
-        "record_hash_hex": "35a40d79b2368728355b645e9095972c681ced2595406a92610f0165d83fd2ba",
-        "previous_hash_hex": "009da77d3826e1c246699d2bdc01fc62c9a76772a4e655e81081a4032e6bf643",
+        "record_hash_hex": "5116b5d7bd8fffab703b4d3dfc50adfc1611d32aca673efb7fce617834f10059",
+        "previous_hash_hex": "d7b124632714482c7cf24c442c10d4c769db9a04a7d270cd29b8f9bae2ba6ecd",
         "staleness_distance": 1
       }
     },
@@ -342,22 +342,15 @@
     {
       "name": "missing_base_version",
       "expected": {
-        "receipt_state": "Rejected",
-        "reason": "write.missing_base_version",
-        "audit_count": 1,
-        "receipt_count": 1,
+        "receipt_state": null,
+        "reason": null,
+        "audit_count": 0,
+        "receipt_count": 0,
         "data_changed": false,
-        "decisions": [
-          {
-            "row_key": "row:18",
-            "rule": "version",
-            "verdict": "reject",
-            "reason": "write.missing_base_version"
-          }
-        ],
+        "decisions": [],
         "chain_verified": true,
-        "receipt_names_audit": true,
-        "staleness_distance": null
+        "receipt_names_audit": false,
+        "error_code": "write.missing_base_version"
       }
     }
   ]

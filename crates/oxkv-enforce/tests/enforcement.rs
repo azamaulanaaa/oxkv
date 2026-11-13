@@ -172,13 +172,46 @@ fn a_base_version_ahead_of_the_current_version_rejects() {
 }
 
 #[test]
-fn a_request_without_a_base_version_rejects() {
+fn a_request_without_a_base_version_returns_the_named_error_and_no_receipt() {
     let outcome = support::run("missing_base_version");
+    assert_eq!(
+        outcome.error_code.as_deref(),
+        Some("write.missing_base_version")
+    );
+    assert_eq!(outcome.receipt_count, 0);
+    assert_eq!(outcome.audit_count, 0);
+    assert!(!outcome.data_changed);
+}
+
+#[test]
+fn a_base_version_is_checked_for_each_row() {
+    let outcome = support::run("per_row_base_versions");
+    assert_eq!(outcome.valid_batch_state.as_deref(), Some("Committed"));
+    assert!(outcome.valid_batch_data_changed);
+    assert_eq!(state(&outcome), "Conflict");
+    assert_eq!(outcome.reason.as_deref(), Some("write.version_conflict"));
+    assert!(!outcome.data_changed);
+}
+
+#[test]
+fn a_retry_with_a_new_request_id_and_the_same_body_returns_the_first_receipt() {
+    let outcome = support::run("idempotency_retry_new_request_id");
+    assert_eq!(state(&outcome), "Committed");
+    assert!(outcome.receipt_matches_first);
+    assert_eq!(outcome.receipt_count, 1);
+    assert_eq!(outcome.audit_count, 1);
+}
+
+#[test]
+fn a_client_write_to_a_projection_rejects_on_the_commit_path() {
+    let outcome = support::run("projection_commit_write");
     assert_eq!(state(&outcome), "Rejected");
     assert_eq!(
         outcome.reason.as_deref(),
-        Some("write.missing_base_version")
+        Some("projection.client_write_rejected")
     );
+    assert_eq!(outcome.decisions[0].rule, "projection");
     assert_eq!(outcome.audit_count, 1);
+    assert_eq!(outcome.receipt_count, 1);
     assert!(!outcome.data_changed);
 }
