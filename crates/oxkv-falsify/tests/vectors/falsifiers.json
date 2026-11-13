@@ -1,0 +1,52 @@
+{
+  "contract": "falsifier/v1",
+  "spec_hash": "62d7991395209f5d1a1378c45cdc4a595dcc806e93d36c3f5d2676ab7b0bb4f4",
+  "operation_hash": "1e7c033dc0be8a5a6290915a846c079284a9a047f220ecfe7d93a3e50bb08fca",
+  "cases": [
+    {
+      "name": "sync_amplification",
+      "threshold_micros": 50000,
+      "unit": "per_decade",
+      "candidate": true,
+      "definition": "Bytes one replica receives per committed batch, divided by the encoded bytes of the matching rows plus the index deltas.",
+      "workload": "N = 1e5, 1e6, 1e7 at fixed s = 1%, 10%, 50%.",
+      "action": "Add per-scope materialized views at the authority. Change items 13 and 14."
+    },
+    {
+      "name": "policy_cost",
+      "threshold_micros": 5000000,
+      "unit": "ratio",
+      "candidate": true,
+      "definition": "p99 evaluation time and steps per write at a pinned policy version, plus the RPC count for a single-prefix write.",
+      "workload": "r = 5 to 200, f = 1e2 to 1e5, cold and warm policy.",
+      "action": "Co-locate facts or widen the projection. Do not use 2PC."
+    },
+    {
+      "name": "conflict_rate",
+      "threshold_micros": 50000,
+      "unit": "fraction",
+      "candidate": true,
+      "definition": "Conflict divided by the sum of committed, rejected, and conflict. Queued writes are excluded. A retry counts once.",
+      "workload": "C = 8, 64, 256 on Zipf and replay.",
+      "action": "Revisit the base-version check and the per-key FIFO guarantee. Publish the retry contract."
+    },
+    {
+      "name": "cold_start",
+      "threshold_micros": 1500000,
+      "unit": "ratio",
+      "candidate": true,
+      "definition": "Seconds and bytes from an empty replica to a readable and searchable scope at a pinned version. Hydration and diff attach are included.",
+      "workload": "Scope 10 MB to 1 GB, native and wasm.",
+      "action": "Add a per-scope snapshot path before the freeze."
+    },
+    {
+      "name": "read_p99",
+      "threshold_micros": 100000,
+      "unit": "per_decade",
+      "candidate": true,
+      "definition": "Replica latency at p50, p99, and p999 for a point read, one scope page, and one search page.",
+      "workload": "N varies 10x at fixed scope, warm and cold.",
+      "action": "Find the dataset walk in the plan or the index. Remove it."
+    }
+  ]
+}

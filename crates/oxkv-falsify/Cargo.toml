@@ -1,0 +1,27 @@
+[package]
+name = "oxkv-falsify"
+version = "0.11.0"
+edition = "2024"
+description = "Deterministic falsifier workload, measurement, gate, and report contract for oxkv 1.0."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/azamaulanaaa/oxkv"
+readme = "../../README.md"
+keywords = ["benchmark", "falsifier", "keyvalue", "database"]
+categories = ["development-tools::testing"]
+
+[dependencies]
+oxkv-contracts = { path = "../oxkv-contracts" }
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = "0.7"
+
+[[bench]]
+name = "falsify"
+harness = false
+
+[lints]
+workspace = true

@@ -1264,6 +1264,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxkv-falsify"
+version = "0.11.0"
+dependencies = [
+ "criterion",
+ "oxkv-contracts",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "oxkv-hooks"
 version = "0.11.0"
 dependencies = [

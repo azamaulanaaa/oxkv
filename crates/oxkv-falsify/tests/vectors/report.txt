@@ -1,0 +1,87 @@
+oxkv falsifier report v1
+spec_hash: 62d7991395209f5d1a1378c45cdc4a595dcc806e93d36c3f5d2676ab7b0bb4f4
+hardware_class: ci
+toolchain_version: rustc 1.99.1
+commit: 0123456
+result_mode: exact
+coverage: none
+gate: pass
+scope_budget:
+  declared_device_budget_bytes: 1000
+  scope_bytes: 900
+  peak_hydration_bytes: 50
+  total_bytes: 950
+  fits_declared_device_budget: true
+ranking_cost:
+  scored_documents: 100
+  document_local_terms: 50
+  total_term_visits: 5000
+  document_local_only: true
+falsifiers:
+  [pass] sync_amplification
+    workload: N = 1e5, 1e6, 1e7 at fixed s = 1%, 10%, 50%.
+    definition: Bytes one replica receives per committed batch, divided by the encoded bytes of the matching rows plus the index deltas.
+    action: Add per-scope materialized views at the authority. Change items 13 and 14.
+    slope: 0.020000 per_decade
+    interval: 0.019000..0.021000 per_decade
+    verdict: pass
+    hardware_class: ci
+    toolchain_version: rustc 1.99.1
+    commit: 0123456
+    sample_count: 30
+    threshold: 0.050000 per_decade candidate
+  [pass] policy_cost
+    workload: r = 5 to 200, f = 1e2 to 1e5, cold and warm policy.
+    definition: p99 evaluation time and steps per write at a pinned policy version, plus the RPC count for a single-prefix write.
+    action: Co-locate facts or widen the projection. Do not use 2PC.
+    slope: 4.000000 ratio
+    interval: 3.999000..4.001000 ratio
+    verdict: pass
+    hardware_class: ci
+    toolchain_version: rustc 1.99.1
+    commit: 0123456
+    sample_count: 30
+    threshold: 5.000000 ratio candidate
+  [pass] conflict_rate
+    workload: C = 8, 64, 256 on Zipf and replay.
+    definition: Conflict divided by the sum of committed, rejected, and conflict. Queued writes are excluded. A retry counts once.
+    action: Revisit the base-version check and the per-key FIFO guarantee. Publish the retry contract.
+    slope: 0.020000 fraction
+    interval: 0.019000..0.021000 fraction
+    verdict: pass
+    hardware_class: ci
+    toolchain_version: rustc 1.99.1
+    commit: 0123456
+    sample_count: 30
+    threshold: 0.050000 fraction candidate
+  [pass] cold_start
+    workload: Scope 10 MB to 1 GB, native and wasm.
+    definition: Seconds and bytes from an empty replica to a readable and searchable scope at a pinned version. Hydration and diff attach are included.
+    action: Add a per-scope snapshot path before the freeze.
+    slope: 1.200000 ratio
+    interval: 1.199000..1.201000 ratio
+    verdict: pass
+    hardware_class: ci
+    toolchain_version: rustc 1.99.1
+    commit: 0123456
+    sample_count: 30
+    threshold: 1.500000 ratio candidate
+  [pass] read_p99
+    workload: N varies 10x at fixed scope, warm and cold.
+    definition: Replica latency at p50, p99, and p999 for a point read, one scope page, and one search page.
+    action: Find the dataset walk in the plan or the index. Remove it.
+    slope: 0.050000 per_decade
+    interval: 0.049000..0.051000 per_decade
+    verdict: pass
+    hardware_class: ci
+    toolchain_version: rustc 1.99.1
+    commit: 0123456
+    sample_count: 30
+    threshold: 0.100000 per_decade candidate
+gate_detail:
+  gate: pass
+  sync_amplification: pass: measured 0.020000 per_decade. threshold 0.050000 per_decade candidate.
+  policy_cost: pass: measured 4.000000 ratio. threshold 5.000000 ratio candidate.
+  conflict_rate: pass: measured 0.020000 fraction. threshold 0.050000 fraction candidate.
+  cold_start: pass: measured 1.200000 ratio. threshold 1.500000 ratio candidate.
+  read_p99: pass: measured 0.050000 per_decade. threshold 0.100000 per_decade candidate.
