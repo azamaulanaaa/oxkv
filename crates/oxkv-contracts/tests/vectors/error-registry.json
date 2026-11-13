@@ -398,6 +398,15 @@
     },
     {
       "expected": {
+        "kind": "rule",
+        "receipt": "Rejected",
+        "retry": "After rollout",
+        "terminal": true
+      },
+      "name": "rule.rollout_missing"
+    },
+    {
+      "expected": {
         "kind": "write",
         "receipt": null,
         "retry": "Never",

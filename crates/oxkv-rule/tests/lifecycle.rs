@@ -482,6 +482,21 @@ fn a_third_live_version_returns_the_rollout_limit() {
 }
 
 #[test]
+fn a_missing_rollout_returns_rule_rollout_missing() {
+    let (mut lifecycle, fixture) = seeded();
+    let error = lifecycle
+        .promote(&PromotionRequest {
+            cohort: fixture.canary.clone(),
+            actor: "operator-1".to_owned(),
+            role: Role::PlatformOperator,
+            at: InjectedTime::new(100),
+        })
+        .expect_err("the cohort has no rollout");
+    assert_eq!(error.code(), "rule.rollout_missing");
+    assert_ne!(error.code(), "rule.rollout_limit");
+}
+
+#[test]
 fn a_stale_base_version_returns_conflict() {
     let (mut lifecycle, fixture) = seeded();
     let mut request = request(&fixture, fixture.control.clone());

@@ -142,6 +142,12 @@
         "reason": "rule.rollout_limit",
         "prior_pointer_restored": true
       }
+    },
+    {
+      "name": "rollout_missing",
+      "expected": {
+        "reason": "rule.rollout_missing"
+      }
     }
   ]
 }

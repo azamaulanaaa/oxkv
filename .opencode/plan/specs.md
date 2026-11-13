@@ -1630,6 +1630,7 @@ The receipt state column applies when the error occurs in an admitted write requ
 | `rule.dry_run_failed` | Rule | Rejected | After fix |
 | `rule.approval_required` | Rule | Rejected | After approval |
 | `rule.rollout_limit` | Rule | Rejected | After rollout |
+| `rule.rollout_missing` | Rule | Rejected | After rollout |
 | `write.missing_base_version` | Write | None | Never |
 | `write.stale_base_version` | Write | Rejected | After re-read |
 | `write.version_conflict` | Write | Conflict | After rebase |

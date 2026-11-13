@@ -412,6 +412,13 @@ pub(crate) fn run_case(name: &str) -> CaseResult {
             let change = lifecycle.activate(request);
             CaseResult::empty().receipt(change.receipt.state(), change.receipt.reason_code())
         }
+        "rollout_missing" => {
+            let (mut lifecycle, fixture) = seeded();
+            let error = lifecycle
+                .promote(&promotion_request(&fixture))
+                .expect_err("the cohort has no rollout");
+            CaseResult::empty().code(error.code())
+        }
         "stale_base" => {
             let (mut lifecycle, fixture) = seeded();
             let mut request = request(&fixture, fixture.control.clone());

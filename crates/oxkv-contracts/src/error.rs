@@ -678,6 +678,12 @@ error_registry!(
         Some(ReceiptState::Rejected),
         AfterRollout
     ),
+    (
+        "rule.rollout_missing",
+        Rule,
+        Some(ReceiptState::Rejected),
+        AfterRollout
+    ),
     ("write.missing_base_version", Write, None, Never),
     (
         "write.stale_base_version",
@@ -1093,7 +1099,7 @@ mod tests {
 
     #[test]
     fn the_registry_has_one_row_per_code() {
-        assert_eq!(ERROR_REGISTRY.len(), 233);
+        assert_eq!(ERROR_REGISTRY.len(), 234);
         assert_eq!(find_duplicate_code(ERROR_REGISTRY), None);
     }
 
