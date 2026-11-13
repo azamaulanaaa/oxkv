@@ -1,0 +1,54 @@
+{
+  "contract": "descriptor/v1",
+  "namespace": "control",
+  "operations": [
+    {
+      "path": "control/audit_export",
+      "request": "AuditExportRequest",
+      "response": "AuditExportResponse",
+      "streaming": "server_stream"
+    },
+    {
+      "path": "control/backup",
+      "request": "BackupRequest",
+      "response": "BackupResponse",
+      "streaming": "unary"
+    },
+    {
+      "path": "control/dlq_redrive",
+      "request": "DlqRedriveRequest",
+      "response": "DlqRedriveResponse",
+      "streaming": "unary"
+    },
+    {
+      "path": "control/migrate",
+      "request": "MigrateRequest",
+      "response": "MigrateResponse",
+      "streaming": "unary"
+    },
+    {
+      "path": "control/quota",
+      "request": "QuotaRequest",
+      "response": "QuotaResponse",
+      "streaming": "unary"
+    },
+    {
+      "path": "control/restore",
+      "request": "RestoreRequest",
+      "response": "RestoreResponse",
+      "streaming": "unary"
+    },
+    {
+      "path": "control/rule_activate",
+      "request": "RuleActivateRequest",
+      "response": "RuleActivateResponse",
+      "streaming": "unary"
+    },
+    {
+      "path": "control/rule_rollback",
+      "request": "RuleRollbackRequest",
+      "response": "RuleRollbackResponse",
+      "streaming": "unary"
+    }
+  ]
+}

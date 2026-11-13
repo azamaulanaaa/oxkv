@@ -1,0 +1,131 @@
+oxkv-descriptor/v1
+descriptor_version descriptor/v1
+manifest_digest 2525252525252525252525252525252525252525252525252525252525252525
+methods 18
+"control/audit_export" control "AuditExportRequest" "AuditExportResponse" server_stream operator audit.export_denied,auth.forbidden,ops.rate_limited
+"control/backup" control "BackupRequest" "BackupResponse" unary operator auth.forbidden,ops.backup_pin_lost,ops.rate_limited
+"control/dlq_redrive" control "DlqRedriveRequest" "DlqRedriveResponse" unary operator auth.forbidden,consumer.cursor_expired,consumer.dead_lettered
+"control/migrate" control "MigrateRequest" "MigrateResponse" unary operator auth.forbidden,ops.downgrade_not_allowed,ops.migration_incomplete,shard.frozen_for_maintenance
+"control/quota" control "QuotaRequest" "QuotaResponse" unary operator auth.forbidden,ops.quota_exceeded,ops.rate_limited
+"control/restore" control "RestoreRequest" "RestoreResponse" unary operator auth.forbidden,ops.downgrade_not_allowed,ops.restore_checksum_mismatch
+"control/rule_activate" control "RuleActivateRequest" "RuleActivateResponse" unary operator auth.forbidden,receipt.state_invalid,rule.approval_required,rule.compile_failed
+"control/rule_rollback" control "RuleRollbackRequest" "RuleRollbackResponse" unary operator auth.forbidden,receipt.state_invalid,rule.approval_required,rule.rollout_limit
+"data/delete" data "DeleteRequest" "DeleteResponse" unary authenticated auth.unauthenticated,shard.cross_mutation_rejected,write.idempotency_key_reuse,write.missing_base_version,write.version_conflict
+"data/get" data "GetRequest" "GetResponse" unary authenticated key.not_found,read.pin_expired,read.stale
+"data/put" data "PutRequest" "PutResponse" unary authenticated auth.unauthenticated,shard.cross_mutation_rejected,write.idempotency_key_reuse,write.missing_base_version,write.version_conflict
+"data/query" data "QueryRequest" "QueryResponse" server_stream authenticated auth.unauthenticated,query.budget_exceeded,read.stale
+"data/receipt_get" data "ReceiptGetRequest" "ReceiptGetResponse" unary authenticated auth.unauthenticated,receipt.expired,receipt.not_found
+"data/search" data "SearchRequest" "SearchResponse" server_stream authenticated auth.unauthenticated,search.cursor_invalid,search.fanout_exceeded
+"sync/ack" sync "ResumeRequest" "ResumeResponse" unary authenticated sync.negotiation_required,sync.unauthorized
+"sync/receipts" sync "ReceiptGetRequest" "ReceiptFrame" server_stream authenticated receipt.expired,receipt.not_found,sync.negotiation_required
+"sync/resume" sync "ResumeRequest" "ResumeResponse" server_stream authenticated sync.cursor_expired,sync.cursor_invalid,sync.negotiation_required,sync.unauthorized
+"sync/subscribe" sync "SubscribeRequest" "SubscribeResponse" server_stream authenticated auth.unauthenticated,scope.device_budget_exceeded,scope.over_limit,sync.negotiation_required,sync.scope_rejected,sync.unauthorized
+messages 35
+"AuditExportRequest" 2
+1 "since_sequence" optional uint64 -
+2 "shard_id" optional bytes -
+"AuditExportResponse" 1
+1 "page" required bytes -
+"BackupRequest" 2
+1 "backup_id" required bytes -
+2 "retention_pin" optional uint64 -
+"BackupResponse" 1
+1 "backup_pin" required bytes -
+"DeleteRequest" 4
+1 "table" required string -
+2 "key" required bytes -
+3 "idempotency_key" required bytes -
+4 "base_version" required uint64 -
+"DeleteResponse" 3
+1 "receipt_id" required bytes -
+2 "receipt_state" required uint32 -
+3 "commit_version" optional uint64 -
+"DiffFrame" 1
+1 "frame" required bytes -
+"DlqRedriveRequest" 2
+1 "dead_letter_id" required bytes -
+2 "cursor" optional bytes -
+"DlqRedriveResponse" 1
+1 "cursor" required bytes -
+"GetRequest" 3
+1 "table" required string -
+2 "key" required bytes -
+3 "read_pin" optional bytes -
+"GetResponse" 2
+1 "value" optional bytes -
+2 "commit_version" required uint64 -
+"MigrateRequest" 2
+1 "target_epoch" required uint64 -
+2 "quiesce" required bool -
+"MigrateResponse" 1
+1 "migration_id" required bytes -
+"PutRequest" 5
+1 "table" required string -
+2 "key" required bytes -
+3 "value" required bytes -
+4 "idempotency_key" required bytes -
+5 "base_version" required uint64 -
+"PutResponse" 3
+1 "receipt_id" required bytes -
+2 "receipt_state" required uint32 -
+3 "commit_version" optional uint64 -
+"QueryRequest" 3
+1 "scope" required bytes -
+2 "cursor" optional bytes -
+3 "limit" required uint32 -
+"QueryResponse" 2
+1 "page" required bytes -
+2 "cursor" optional bytes -
+"QuotaRequest" 2
+1 "shard_id" required bytes -
+2 "quota_bytes" required uint64 -
+"QuotaResponse" 1
+1 "quota_version" required uint64 -
+"ReceiptFrame" 1
+1 "receipt" required bytes -
+"ReceiptGetRequest" 1
+1 "receipt_id" required bytes -
+"ReceiptGetResponse" 3
+1 "receipt_state" required uint32 -
+2 "commit_version" optional uint64 -
+3 "reason_code" optional string -
+"RestoreRequest" 2
+1 "backup_id" required bytes -
+2 "verify_only" optional bool -
+"RestoreResponse" 1
+1 "restored_epoch" required uint64 -
+"ResumeRequest" 2
+1 "subscription_id" required bytes -
+2 "cursor" required bytes -
+"ResumeResponse" 1
+1 "cursor" required bytes -
+"RuleActivateRequest" 2
+1 "rule_id" required string -
+2 "policy_version" required bytes -
+"RuleActivateResponse" 1
+1 "receipt_id" required bytes -
+"RuleRollbackRequest" 2
+1 "rule_id" required string -
+2 "policy_version" required bytes -
+"RuleRollbackResponse" 1
+1 "receipt_id" required bytes -
+"SearchRequest" 4
+1 "index" required string -
+2 "text" required string -
+3 "cursor" optional bytes -
+4 "limit" required uint32 -
+"SearchResponse" 2
+1 "page" required bytes -
+2 "cursor" optional bytes -
+"SnapshotPage" 2
+1 "page" required bytes -
+2 "page_sequence" required uint64 -
+"SubscribeRequest" 4
+1 "scope" required bytes -
+2 "policy_version" required bytes -
+3 "cursor" optional bytes -
+4 "scope_pin" optional bytes -
+"SubscribeResponse" 2
+1 "subscription_id" required bytes -
+2 "cursor" required bytes -
+end

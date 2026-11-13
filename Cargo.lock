@@ -1423,6 +1423,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxkv-rpc"
+version = "0.11.0"
+dependencies = [
+ "blake3",
+ "oxkv-contracts",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "oxkv-s3"
 version = "0.11.0"
 dependencies = [
