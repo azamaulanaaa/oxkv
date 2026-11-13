@@ -12,6 +12,7 @@ categories = ["database", "development-tools::testing"]
 [dependencies]
 blake3 = "1.8"
 oxkv-contracts = { path = "../oxkv-contracts" }
+oxkv-index = { path = "../oxkv-index" }
 serde_json = "1"
 
 [dev-dependencies]

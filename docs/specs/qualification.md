@@ -78,8 +78,9 @@ One case definition runs on native, browser-shaped, and native again.
 A scenario has no target-specific branch. The target label enters the report
 only. A test asserts that every case has one trace digest on all three targets.
 
-The browser-shaped target runs the same core with the same code path. The real
-headless browser run is a tier responsibility. See section 9.
+The browser-shaped target runs the same core with the same code path. The
+real browser run uses headless Chrome and headless Firefox in CI. See
+sections 11 and 12.
 
 ## 5. Faults
 
@@ -144,7 +145,12 @@ The fuzz entry points cover every decoder and the policy evaluator:
 - The error-code lookup.
 - The table-name parser.
 - The receipt tag decoder.
+- The index artifact decoder, the segment decoder, and the posting-key decoder.
 - The policy parser and evaluator.
+
+The index probes call the real `oxkv-index` decoder on a valid fixture. The
+corpus then corrupts the index digest, the segment header, and the posting
+list. A corrupt input must return a named error. It must not panic.
 
 The oracle checks five properties:
 
@@ -176,12 +182,17 @@ The tiers are policy data in `crates/oxkv-qualify/policy/tiers.json`.
 | `nightly` | Full matrix | Yes | Yes | No |
 | `release_candidate` | Full matrix | Yes | Yes | Yes |
 
-The release candidate includes the full logical browser matrix. The
-checked-in CI runs one real headless Chrome target in the `wasm-browser` job
-of `ci.yml`. The release workflow calls `ci.yml`, so a failed browser job
-blocks the tag. The qualification suite itself runs the browser-shaped target
-on the native host. The real browser job proves the wasm binding and OPFS
-paths. It does not run the qualification vectors.
+The release candidate includes the full logical browser matrix. The checked-in
+CI runs two real headless browser targets in the `wasm-browser` job of
+`ci.yml`: Chrome and Firefox. The job is a matrix with one leg per browser.
+The release workflow calls `ci.yml`, so a failed Chrome leg or a failed
+Firefox leg blocks the tag. The qualification suite itself runs the
+browser-shaped target on the native host. The real browser job proves the wasm
+binding and OPFS paths on both engines. It does not run the qualification
+vectors.
+
+The `pull_request` row names the minimum browser work for the tier. The
+checked-in CI runs both browser legs on a pull request.
 
 ## 12. Continuous integration
 
@@ -195,12 +206,17 @@ a push to `main`:
 
 `.github/workflows/ci.yml` runs the `qualification` job with
 `cargo run -p oxkv-qualify --locked -- --tier release_candidate`. It also runs
-the `wasm-browser` job with headless Chrome. `.github/workflows/release.yml`
+the `wasm-browser` job as a matrix over headless Chrome and headless Firefox.
+The Chrome leg installs `chromium` and `chromium-driver`. The Firefox leg
+installs `firefox-esr` and a pinned `geckodriver` release. Each leg runs
+`wasm-pack test --headless --chrome` or `wasm-pack test --headless --firefox`
+for the core, the OPFS crate, and the wasm bindings. `.github/workflows/release.yml`
 calls `ci.yml` and gates both publish jobs on `checks`. The browser tier and
 the qualification matrix therefore gate the release.
 
 `.github/scripts/check-release-gates.sh` fails when a release gate is absent
-from the workflows.
+from the workflows. It requires both browser legs, the Firefox and geckodriver
+installation, and the qualification matrix.
 
 The workflow uses locked dependencies and pinned action revisions. It starts
 no service.
@@ -217,8 +233,9 @@ no service.
 ## 14. Deviations and open questions
 
 - The browser-shaped target runs the shared core on the native host. The real
-  headless browser run belongs to the nightly tier. This branch does not run
-  a browser container.
+  headless browser run belongs to the browser tier. The workflow now runs
+  Chrome and Firefox. This branch did not execute the browser workflow
+  locally. The workflow change stays unverified until CI runs it.
 - The wave-0 corpus pins the registries and the sample decoders. A later
   contract adds behavioural vectors for its full frozen surface.
 - Open question: who approves a vector corpus for release?

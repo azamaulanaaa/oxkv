@@ -3,8 +3,8 @@
 # Check that the release gates are wired into CI.
 #
 # The release must require the browser tier and the qualification matrix. The
-# qualification workflow must run the freeze gate, the receipt gate, and the
-# vector immutability gate.
+# browser tier must run Chrome and Firefox. The qualification workflow must run
+# the freeze gate, the receipt gate, and the vector immutability gate.
 set -uo pipefail
 
 CI=.github/workflows/ci.yml
@@ -26,6 +26,24 @@ grep -Fq 'uses: ./.github/workflows/ci.yml' "$RELEASE" \
 grep -Fq 'wasm-browser:' "$CI" \
   || fail "$CI has no wasm-browser job"
 
+grep -Fq 'browser: Chrome' "$CI" \
+  || fail "$CI has no Chrome matrix leg"
+
+grep -Fq 'browser: Firefox' "$CI" \
+  || fail "$CI has no Firefox matrix leg"
+
+grep -Fq -- '--chrome' "$CI" \
+  || fail "$CI does not run wasm-pack with headless Chrome"
+
+grep -Fq -- '--firefox' "$CI" \
+  || fail "$CI does not run wasm-pack with headless Firefox"
+
+grep -Fq 'firefox-esr' "$CI" \
+  || fail "$CI does not install Firefox"
+
+grep -Fq 'geckodriver' "$CI" \
+  || fail "$CI does not install geckodriver"
+
 grep -Fq 'qualification:' "$CI" \
   || fail "$CI has no qualification job"
 
@@ -44,4 +62,4 @@ grep -Fq 'cargo test -p oxkv-manifest --locked' "$QUALIFICATION" \
 grep -Fq 'cargo test -p oxkv-qualify --locked --test release_gate' "$QUALIFICATION" \
   || fail "$QUALIFICATION does not run the register agreement test"
 
-printf 'PASS: the release gates include the browser tier and the qualification matrix.\n'
+printf 'PASS: the release gates include the Chrome and Firefox browser tiers and the qualification matrix.\n'

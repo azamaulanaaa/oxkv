@@ -1426,6 +1426,7 @@ dependencies = [
  "blake3",
  "oxkv-contracts",
  "oxkv-freeze",
+ "oxkv-index",
  "serde_json",
 ]
 

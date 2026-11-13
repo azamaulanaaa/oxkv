@@ -65,7 +65,7 @@ jobs:
         run: wasm-pack test --node
       - name: Test OPFS wasm (Node)
         # The OPFS crate covers browser storage. Node has no window, so these
-        # tests announce a skip here. The Chrome job runs them for real.
+        # tests announce a skip here. The browser job runs them for real.
         run: wasm-pack test --node
         working-directory: crates/oxkv-opfs
       - name: Test wasm bindings (Node)
@@ -80,15 +80,24 @@ jobs:
         run: cargo clippy -p oxkv -p oxkv-opfs -p oxkv-wasm --target wasm32-unknown-unknown --all-features --locked -- -D warnings
 
   wasm-browser:
-    name: Test (wasm32 headless Chrome)
+    name: Test (wasm32 headless ${{ matrix.browser }})
     runs-on: ubuntu-latest
     # Skip the weekly scheduled run. A browser test does not check advisories.
     if: github.event_name != 'schedule'
-    # This job is the one exception. It needs Debian's chromium package. It
-    # runs in the rust:1 container. It does not set CARGO_HOME, so the image's
-    # default applies.
+    # This job is the one exception. It needs Debian's Chromium and Firefox
+    # packages. It runs in the rust:1 container. It does not set CARGO_HOME, so
+    # the image's default applies.
     container:
       image: rust:1
+    strategy:
+      # One browser failure must not hide the other browser result.
+      fail-fast: false
+      matrix:
+        include:
+          - browser: Chrome
+            wasm_args: --chrome
+          - browser: Firefox
+            wasm_args: --firefox
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Add wasm32 target
@@ -97,44 +106,58 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: target/
-          key: ${{ runner.os }}-wasm-browser-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-wasm-browser-cargo-
+          key: ${{ runner.os }}-wasm-browser-${{ matrix.browser }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-wasm-browser-${{ matrix.browser }}-cargo-
       - name: Install wasm-pack if missing
         run: command -v wasm-pack >/dev/null 2>&1 || cargo install wasm-pack --locked
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22
       - name: Install Chromium and its matching driver
+        if: matrix.browser == 'Chrome'
         # Install both packages from the same Debian repository so the
         # chromedriver version matches the installed Chromium.
         run: |
           apt-get update -qq
           apt-get install -y -qq chromium chromium-driver
+      - name: Install Firefox and geckodriver
+        if: matrix.browser == 'Firefox'
+        # Install both packages from the same Debian repository so the
+        # geckodriver version matches the installed Firefox.
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq firefox-esr geckodriver
       - name: Print browser and driver versions
         run: |
-          chromium --version
-          chromedriver --version
-      - name: Test core wasm (headless Chrome)
+          if [ "${{ matrix.browser }}" = "Chrome" ]; then
+            chromium --version
+            chromedriver --version
+          else
+            firefox-esr --version
+            geckodriver --version
+          fi
+      - name: Select the browser environment
+        run: |
+          if [ "${{ matrix.browser }}" = "Chrome" ]; then
+            echo "CHROME_BIN=/usr/bin/chromium" >> "$GITHUB_ENV"
+            echo "CHROMEDRIVER=/usr/bin/chromedriver" >> "$GITHUB_ENV"
+          else
+            echo "FIREFOX_BIN=/usr/bin/firefox-esr" >> "$GITHUB_ENV"
+            echo "GECKODRIVER=/usr/bin/geckodriver" >> "$GITHUB_ENV"
+            echo "MOZ_HEADLESS=1" >> "$GITHUB_ENV"
+          fi
+      - name: Test core wasm (headless ${{ matrix.browser }})
         # The core covers its cache and LSM wasm tests.
-        run: wasm-pack test --headless --chrome
-        env:
-          CHROME_BIN: /usr/bin/chromium
-          CHROMEDRIVER: /usr/bin/chromedriver
-      - name: Test OPFS wasm (headless Chrome)
+        run: wasm-pack test --headless ${{ matrix.wasm_args }}
+      - name: Test OPFS wasm (headless ${{ matrix.browser }})
         # Real browser execution: the OPFS persistence and Web Lock tests
         # need a real browser, so only this step proves them.
-        run: wasm-pack test --headless --chrome
+        run: wasm-pack test --headless ${{ matrix.wasm_args }}
         working-directory: crates/oxkv-opfs
-        env:
-          CHROME_BIN: /usr/bin/chromium
-          CHROMEDRIVER: /usr/bin/chromedriver
-      - name: Test wasm bindings (headless Chrome)
+      - name: Test wasm bindings (headless ${{ matrix.browser }})
         # The binding crate covers the JavaScript wrappers.
-        run: wasm-pack test --headless --chrome
+        run: wasm-pack test --headless ${{ matrix.wasm_args }}
         working-directory: crates/oxkv-wasm
-        env:
-          CHROME_BIN: /usr/bin/chromium
-          CHROMEDRIVER: /usr/bin/chromedriver
 
   qualification:
     name: Qualification release candidate
