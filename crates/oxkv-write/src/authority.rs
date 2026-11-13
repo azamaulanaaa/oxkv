@@ -9,8 +9,10 @@
 //! 4. policy check;
 //! 5. commit.
 //!
-//! Authentication is outside this crate. The simulator has no clock,
-//! randomness, or I/O.
+//! Authentication is outside this crate. The request carries the client
+//! identity as an explicit value. The receipt id covers the client identity,
+//! the idempotency key, and the request body digest. The simulator has no
+//! clock, randomness, or I/O.
 
 use std::collections::BTreeMap;
 
@@ -18,13 +20,14 @@ use oxkv_contracts::receipt::{
     IdempotencyKey, ReceiptEnvelope, ReceiptId, ReceiptOutcome, ReceiptState,
 };
 use oxkv_contracts::version::{
-    CommitVersion, DigestDomain, Hash32, KeyVersion, ManifestDigest, PolicyVersion, ShardId,
+    CommitVersion, DigestDomain, Hash32, KeyVersion, ManifestDigest, MapVersion, PolicyVersion,
+    ProjectionEpoch, ProjectionWatermarks, ShardId,
 };
 
 use crate::audit::{AuditChain, AuditRecord, AuditRecordBody, AuditVerdict};
 use crate::conflict::ConflictDetail;
 use crate::hook::{CommitHook, HookEffect};
-use crate::policy::{Policy, PolicyRow, PolicyVerdict};
+use crate::policy::{Policy, PolicyDecision, PolicyRow, PolicyVerdict, RuleIdentity};
 use crate::receipt::{ReceiptLedger, ReceiptLedgerError};
 use crate::record::{CommitSummary, CommitView, KeyChange, KeyRecord, KeyValue};
 use crate::request::{Key, WriteOperation, WriteRequest};
@@ -34,6 +37,9 @@ const REASON_CROSS_SHARD: &str = "shard.cross_mutation_rejected";
 const REASON_STALE_BASE: &str = "write.stale_base_version";
 const REASON_VERSION_CONFLICT: &str = "write.version_conflict";
 const REASON_QUEUED: &str = "projection.lagging";
+const RULE_CROSS_SHARD: &str = "write.cross_shard_check";
+const RULE_STALE_BASE: &str = "write.stale_base_check";
+const RULE_VERSION: &str = "write.version_check";
 
 /// The result of one authority submission.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,12 +192,87 @@ impl SubmitError {
     }
 }
 
+/// The configuration of one authority.
+///
+/// Every value is explicit. The simulator supplies no default value. The
+/// configuration pins the provenance that the audit record carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorityConfig {
+    shard_id: ShardId,
+    policy_version: PolicyVersion,
+    manifest_digest: ManifestDigest,
+    map_version: MapVersion,
+    projection_epoch: ProjectionEpoch,
+    fact_versions: ProjectionWatermarks,
+}
+
+impl AuthorityConfig {
+    /// Creates an authority configuration.
+    #[must_use]
+    pub fn new(
+        shard_id: ShardId,
+        policy_version: PolicyVersion,
+        manifest_digest: ManifestDigest,
+        map_version: MapVersion,
+        projection_epoch: ProjectionEpoch,
+        fact_versions: ProjectionWatermarks,
+    ) -> Self {
+        Self {
+            shard_id,
+            policy_version,
+            manifest_digest,
+            map_version,
+            projection_epoch,
+            fact_versions,
+        }
+    }
+
+    /// Returns the shard identity.
+    #[must_use]
+    pub const fn shard_id(&self) -> &ShardId {
+        &self.shard_id
+    }
+
+    /// Returns the pinned policy version.
+    #[must_use]
+    pub const fn policy_version(&self) -> PolicyVersion {
+        self.policy_version
+    }
+
+    /// Returns the pinned manifest digest.
+    #[must_use]
+    pub const fn manifest_digest(&self) -> ManifestDigest {
+        self.manifest_digest
+    }
+
+    /// Returns the pinned shard map version.
+    #[must_use]
+    pub const fn map_version(&self) -> MapVersion {
+        self.map_version
+    }
+
+    /// Returns the pinned projection epoch.
+    #[must_use]
+    pub const fn projection_epoch(&self) -> ProjectionEpoch {
+        self.projection_epoch
+    }
+
+    /// Returns the pinned fact versions.
+    #[must_use]
+    pub const fn fact_versions(&self) -> &ProjectionWatermarks {
+        &self.fact_versions
+    }
+}
+
 /// The in-memory authority for one shard.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Authority {
     shard_id: ShardId,
     policy_version: PolicyVersion,
     manifest_digest: ManifestDigest,
+    map_version: MapVersion,
+    projection_epoch: ProjectionEpoch,
+    fact_versions: ProjectionWatermarks,
     records: BTreeMap<Key, KeyRecord>,
     receipts: ReceiptLedger,
     commit_version: CommitVersion,
@@ -201,15 +282,14 @@ pub struct Authority {
 impl Authority {
     /// Creates an authority for one shard.
     #[must_use]
-    pub fn new(
-        shard_id: ShardId,
-        policy_version: PolicyVersion,
-        manifest_digest: ManifestDigest,
-    ) -> Self {
+    pub fn new(config: AuthorityConfig) -> Self {
         Self {
-            shard_id,
-            policy_version,
-            manifest_digest,
+            shard_id: config.shard_id,
+            policy_version: config.policy_version,
+            manifest_digest: config.manifest_digest,
+            map_version: config.map_version,
+            projection_epoch: config.projection_epoch,
+            fact_versions: config.fact_versions,
             records: BTreeMap::new(),
             receipts: ReceiptLedger::new(),
             commit_version: CommitVersion::new(0),
@@ -233,6 +313,24 @@ impl Authority {
     #[must_use]
     pub const fn manifest_digest(&self) -> ManifestDigest {
         self.manifest_digest
+    }
+
+    /// Returns the pinned shard map version.
+    #[must_use]
+    pub const fn map_version(&self) -> MapVersion {
+        self.map_version
+    }
+
+    /// Returns the pinned projection epoch.
+    #[must_use]
+    pub const fn projection_epoch(&self) -> ProjectionEpoch {
+        self.projection_epoch
+    }
+
+    /// Returns the pinned fact versions.
+    #[must_use]
+    pub const fn fact_versions(&self) -> &ProjectionWatermarks {
+        &self.fact_versions
     }
 
     /// Returns the current shard commit version.
@@ -314,15 +412,8 @@ impl Authority {
             return Ok(SubmitOutcome::duplicate(stored.envelope().clone()));
         }
 
-        if request.cross_shard_key(&self.shard_id).is_some() {
-            let receipt = self.finish_receipt(
-                request,
-                body_digest,
-                ReceiptOutcome::Rejected {
-                    reason: REASON_CROSS_SHARD,
-                },
-            )?;
-            return Ok(SubmitOutcome::rejected(receipt));
+        if let Some(key) = request.cross_shard_key(&self.shard_id) {
+            return self.reject_cross_shard(request, body_digest, key);
         }
 
         if let Some(key) = request.first_missing_base() {
@@ -331,40 +422,36 @@ impl Authority {
 
         match self.check_versions(request) {
             VersionCheck::Pass => {}
-            VersionCheck::Stale => {
-                let receipt = self.finish_receipt(
-                    request,
-                    body_digest,
-                    ReceiptOutcome::Rejected {
-                        reason: REASON_STALE_BASE,
-                    },
-                )?;
-                return Ok(SubmitOutcome::rejected(receipt));
+            VersionCheck::Stale { key } => {
+                return self.reject_stale_base(request, body_digest, key);
             }
             VersionCheck::Conflict {
                 key,
                 base_version,
                 current_key_version,
             } => {
-                let receipt = self.finish_receipt(
+                return self.conflict_version(
                     request,
                     body_digest,
-                    ReceiptOutcome::Conflict {
-                        current_key_version,
-                        reason: REASON_VERSION_CONFLICT,
-                    },
-                )?;
-                return Ok(SubmitOutcome::conflict_outcome(
-                    receipt,
-                    ConflictDetail::new(key, base_version, current_key_version),
-                ));
+                    key,
+                    base_version,
+                    current_key_version,
+                );
             }
         }
 
         let rows = self.policy_rows(request);
-        if let PolicyVerdict::Reject { reason } = policy.evaluate(request, &rows) {
-            let receipt =
-                self.finish_receipt(request, body_digest, ReceiptOutcome::Rejected { reason })?;
+        let evaluation = policy.evaluate(request, &rows);
+        let rule = evaluation.rule_identity().clone();
+        let decisions = evaluation.decisions().to_vec();
+        if let PolicyVerdict::Reject { reason } = evaluation.verdict() {
+            let receipt = self.finish_receipt(
+                request,
+                body_digest,
+                ReceiptOutcome::Rejected { reason },
+                rule,
+                decisions,
+            )?;
             return Ok(SubmitOutcome::rejected(receipt));
         }
 
@@ -390,6 +477,8 @@ impl Authority {
             ReceiptOutcome::Committed {
                 commit_version: next_commit_version,
             },
+            rule,
+            decisions,
         )?;
         self.apply_changes(&changes);
         self.commit_version = next_commit_version;
@@ -397,6 +486,83 @@ impl Authority {
             receipt,
             CommitSummary::new(self.shard_id.clone(), next_commit_version, changes),
             effects,
+        ))
+    }
+
+    /// Builds a rejected outcome for a cross-shard mutation.
+    fn reject_cross_shard(
+        &mut self,
+        request: &WriteRequest,
+        body_digest: Hash32,
+        key: &Key,
+    ) -> Result<SubmitOutcome, SubmitError> {
+        let rule = RuleIdentity::new(RULE_CROSS_SHARD);
+        let decisions = vec![PolicyDecision::reject(
+            key.clone(),
+            rule.clone(),
+            REASON_CROSS_SHARD,
+        )];
+        let receipt = self.finish_receipt(
+            request,
+            body_digest,
+            ReceiptOutcome::Rejected {
+                reason: REASON_CROSS_SHARD,
+            },
+            rule,
+            decisions,
+        )?;
+        Ok(SubmitOutcome::rejected(receipt))
+    }
+
+    /// Builds a rejected outcome for a stale base version.
+    fn reject_stale_base(
+        &mut self,
+        request: &WriteRequest,
+        body_digest: Hash32,
+        key: Key,
+    ) -> Result<SubmitOutcome, SubmitError> {
+        let rule = RuleIdentity::new(RULE_STALE_BASE);
+        let decisions = vec![PolicyDecision::reject(key, rule.clone(), REASON_STALE_BASE)];
+        let receipt = self.finish_receipt(
+            request,
+            body_digest,
+            ReceiptOutcome::Rejected {
+                reason: REASON_STALE_BASE,
+            },
+            rule,
+            decisions,
+        )?;
+        Ok(SubmitOutcome::rejected(receipt))
+    }
+
+    /// Builds a conflict outcome for a base version mismatch.
+    fn conflict_version(
+        &mut self,
+        request: &WriteRequest,
+        body_digest: Hash32,
+        key: Key,
+        base_version: KeyVersion,
+        current_key_version: KeyVersion,
+    ) -> Result<SubmitOutcome, SubmitError> {
+        let rule = RuleIdentity::new(RULE_VERSION);
+        let decisions = vec![PolicyDecision::reject(
+            key.clone(),
+            rule.clone(),
+            REASON_VERSION_CONFLICT,
+        )];
+        let receipt = self.finish_receipt(
+            request,
+            body_digest,
+            ReceiptOutcome::Conflict {
+                current_key_version,
+                reason: REASON_VERSION_CONFLICT,
+            },
+            rule,
+            decisions,
+        )?;
+        Ok(SubmitOutcome::conflict_outcome(
+            receipt,
+            ConflictDetail::new(key, base_version, current_key_version),
         ))
     }
 
@@ -417,7 +583,9 @@ impl Authority {
             };
             let current_key_version = self.key_version(mutation.key());
             if base_version > current_key_version {
-                return VersionCheck::Stale;
+                return VersionCheck::Stale {
+                    key: mutation.key().clone(),
+                };
             }
             if base_version < current_key_version {
                 return VersionCheck::Conflict {
@@ -487,6 +655,8 @@ impl Authority {
         request: &WriteRequest,
         body_digest: Hash32,
         outcome: ReceiptOutcome,
+        rule_identity: RuleIdentity,
+        decisions: Vec<PolicyDecision>,
     ) -> Result<ReceiptEnvelope, SubmitError> {
         let receipt_id = receipt_id_for(request, body_digest);
         let verdict = match outcome.state() {
@@ -510,6 +680,7 @@ impl Authority {
         let body = AuditRecordBody {
             request_id: request.request_id(),
             idempotency_key: request.idempotency_key().clone(),
+            principal: request.client_id().clone(),
             shard_id: self.shard_id.clone(),
             base_versions: request
                 .mutations()
@@ -518,6 +689,11 @@ impl Authority {
                 .collect(),
             policy_version: self.policy_version,
             manifest_digest: self.manifest_digest,
+            map_version: self.map_version,
+            projection_epoch: self.projection_epoch,
+            fact_versions: self.fact_versions.clone(),
+            rule_identity,
+            decisions,
             receipt_id,
             verdict,
             reason,
@@ -552,7 +728,10 @@ enum VersionCheck {
     /// Every base matches the current key version.
     Pass,
     /// A base is ahead of the current key version.
-    Stale,
+    Stale {
+        /// The stale key.
+        key: Key,
+    },
     /// A base is behind the current key version.
     Conflict {
         /// The conflicting key.
@@ -566,10 +745,11 @@ enum VersionCheck {
 
 /// Returns the deterministic receipt identity for one request.
 ///
-/// The receipt id covers the idempotency key and the request body digest.
-/// This authority has no client identity, so the id has no client id.
+/// The receipt id covers the client identity, the idempotency key, and the
+/// request body digest.
 fn receipt_id_for(request: &WriteRequest, body_digest: Hash32) -> ReceiptId {
     let mut bytes = Vec::new();
+    push_bytes(&mut bytes, request.client_id().as_bytes());
     push_bytes(&mut bytes, request.idempotency_key().as_bytes());
     push_bytes(&mut bytes, body_digest.as_bytes());
     ReceiptId::from_bytes(*Hash32::of_domain(DigestDomain::ReceiptId, &bytes).as_bytes())

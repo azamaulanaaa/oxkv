@@ -1,0 +1,41 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "client_id_hex": "a1",
+        "idempotency_key_hex": "c3",
+        "input_digest_hex": "fd41a9730db56a79db402b978c0bf09d5672f1840575f5bb983c9e1edddb5eeb",
+        "receipt_id_hex": "594ffdcf2c71739725f97a5e6a3e1f7a40ddfbadb47c4152e944a4c76ae6b366"
+      },
+      "name": "client_a"
+    },
+    {
+      "expected": {
+        "client_id_hex": "a2",
+        "idempotency_key_hex": "c3",
+        "input_digest_hex": "fd41a9730db56a79db402b978c0bf09d5672f1840575f5bb983c9e1edddb5eeb",
+        "receipt_id_hex": "d2b3be22732dfde2015499922e7af25f454fcfb2759ce30e98b2b9e2eb700ce3"
+      },
+      "name": "client_b"
+    },
+    {
+      "expected": {
+        "client_id_hex": "a1",
+        "idempotency_key_hex": "c3",
+        "input_digest_hex": "815500cf016a390bc99eb4c8edab47a091a323b47934905ea427e71e5dc3ea22",
+        "receipt_id_hex": "624e25244319d587a9cbaabeb1459cb1394b1c12d5d40488c11254b36faed402"
+      },
+      "name": "other_body"
+    },
+    {
+      "expected": {
+        "client_id_hex": "a1",
+        "idempotency_key_hex": "c4",
+        "input_digest_hex": "fd41a9730db56a79db402b978c0bf09d5672f1840575f5bb983c9e1edddb5eeb",
+        "receipt_id_hex": "051cf0b6e5e97cae5d5f3f4649626c07fe60d2a9775550adcb4d83ed09da7005"
+      },
+      "name": "other_key"
+    }
+  ],
+  "contract": "write/receipt-id/v1"
+}

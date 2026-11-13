@@ -1,18 +1,23 @@
 //! The per-shard, hash-linked audit record.
 //!
 //! One terminal verdict writes one audit record. The record carries the
-//! request identity, the idempotency key, the base version of each row, the
-//! pinned policy version, the manifest digest, the verdict, and the reason.
-//! The chain links each record to the previous record in the same shard.
+//! request identity, the idempotency key, the authenticated principal, the
+//! shard, the base version of each row, the pinned policy version, the
+//! manifest digest, the map version, the projection epoch, the fact versions,
+//! the rule identity, the bounded decision list, the verdict, the reason, and
+//! the input digest. The chain links each record to the previous record in the
+//! same shard.
 
 use oxkv_contracts::receipt::{
     AuditReference, AuditSequence, IdempotencyKey, ReceiptId, RequestId,
 };
 use oxkv_contracts::version::{
-    DigestDomain, Hash32, KeyVersion, ManifestDigest, PolicyVersion, ShardId,
+    DigestDomain, Hash32, KeyVersion, ManifestDigest, MapVersion, PolicyVersion, ProjectionEpoch,
+    ProjectionWatermarks, ShardId,
 };
 
-use crate::request::Key;
+use crate::policy::{PolicyDecision, RuleIdentity};
+use crate::request::{ClientId, Key};
 use crate::util::{push_bytes, push_u64};
 
 /// The genesis hash of one audit chain.
@@ -58,6 +63,11 @@ pub struct AuditRecordBody {
     pub request_id: RequestId,
     /// The client idempotency key.
     pub idempotency_key: IdempotencyKey,
+    /// The authenticated principal.
+    ///
+    /// The simulator has no authentication layer. The explicit client identity
+    /// from the request is the principal.
+    pub principal: ClientId,
     /// The shard that owns the audit chain.
     pub shard_id: ShardId,
     /// The base version of each row.
@@ -66,6 +76,16 @@ pub struct AuditRecordBody {
     pub policy_version: PolicyVersion,
     /// The manifest digest at commit.
     pub manifest_digest: ManifestDigest,
+    /// The shard map version at commit.
+    pub map_version: MapVersion,
+    /// The projection epoch at commit.
+    pub projection_epoch: ProjectionEpoch,
+    /// The version of each fact that the evaluation read.
+    pub fact_versions: ProjectionWatermarks,
+    /// The rule identity of the evaluation.
+    pub rule_identity: RuleIdentity,
+    /// The bounded decision list for the rows.
+    pub decisions: Vec<PolicyDecision>,
     /// The receipt that this record justifies.
     pub receipt_id: ReceiptId,
     /// The overall verdict.
@@ -155,6 +175,7 @@ impl AuditRecord {
 fn push_body(buffer: &mut Vec<u8>, body: &AuditRecordBody) {
     push_bytes(buffer, body.request_id.as_bytes());
     push_bytes(buffer, body.idempotency_key.as_bytes());
+    push_bytes(buffer, body.principal.as_bytes());
     push_bytes(buffer, body.shard_id.as_bytes());
     push_u64(
         buffer,
@@ -172,6 +193,33 @@ fn push_body(buffer: &mut Vec<u8>, body: &AuditRecordBody) {
     }
     push_bytes(buffer, body.policy_version.as_bytes());
     push_bytes(buffer, body.manifest_digest.as_bytes());
+    push_u64(buffer, body.map_version.get());
+    push_u64(buffer, body.projection_epoch.get());
+    push_u64(
+        buffer,
+        u64::try_from(body.fact_versions.iter().count()).unwrap_or(u64::MAX),
+    );
+    for (source, fact_version) in body.fact_versions.iter() {
+        push_bytes(buffer, source.as_str().as_bytes());
+        push_u64(buffer, fact_version.get());
+    }
+    push_bytes(buffer, body.rule_identity.as_str().as_bytes());
+    push_u64(
+        buffer,
+        u64::try_from(body.decisions.len()).unwrap_or(u64::MAX),
+    );
+    for decision in &body.decisions {
+        push_bytes(buffer, decision.key().as_bytes());
+        push_bytes(buffer, decision.rule().as_str().as_bytes());
+        buffer.push(decision.verdict().wire_tag());
+        match decision.reason() {
+            Some(reason) => {
+                buffer.push(1);
+                push_bytes(buffer, reason.as_bytes());
+            }
+            None => buffer.push(0),
+        }
+    }
     push_bytes(buffer, body.receipt_id.as_bytes());
     buffer.push(body.verdict.wire_tag());
     match body.reason {

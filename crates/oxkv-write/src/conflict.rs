@@ -117,5 +117,10 @@ pub fn rebase_request(
         })
         .collect::<Result<Vec<_>, RebaseError>>()?;
 
-    Ok(WriteRequest::new(request_id, idempotency_key, mutations))
+    Ok(WriteRequest::new(
+        request_id,
+        request.client_id().clone(),
+        idempotency_key,
+        mutations,
+    ))
 }

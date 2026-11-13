@@ -1,27 +1,36 @@
 //! Acceptance tests for versioned writes.
 
 use oxkv_contracts::receipt::{IdempotencyKey, ReceiptOutcome, ReceiptState, RequestId};
-use oxkv_contracts::version::{KeyVersion, ManifestDigest, PolicyVersion, ShardId};
+use oxkv_contracts::version::{
+    KeyVersion, ManifestDigest, MapVersion, PolicyVersion, ProjectionEpoch, ProjectionWatermarks,
+    ShardId,
+};
 use oxkv_write::{
-    AllowAll, AuditVerdict, Authority, CommitHook, CommitView, HookEffect, HookError, Key,
-    Mutation, Policy, PolicyRow, PolicyVerdict, ReceiptLedger, SubmitError, SubmitOutcome,
-    WriteOperation, WriteRequest, rebase_request,
+    AllowAll, AuditVerdict, Authority, AuthorityConfig, ClientId, CommitHook, CommitView,
+    HookEffect, HookError, Key, Mutation, Policy, PolicyDecision, PolicyEvaluation, PolicyRow,
+    ReceiptLedger, RuleIdentity, SubmitError, SubmitOutcome, WriteOperation, WriteRequest,
+    rebase_request,
 };
 
 struct RejectPolicy;
 
 impl Policy for RejectPolicy {
-    fn evaluate(&self, _request: &WriteRequest, _rows: &[PolicyRow<'_>]) -> PolicyVerdict {
-        PolicyVerdict::Reject {
-            reason: "policy.budget_exhausted",
-        }
+    fn evaluate(&self, _request: &WriteRequest, rows: &[PolicyRow<'_>]) -> PolicyEvaluation {
+        let rule = RuleIdentity::new("reject-all");
+        let decisions = rows
+            .iter()
+            .map(|row| {
+                PolicyDecision::reject(row.key().clone(), rule.clone(), "policy.budget_exhausted")
+            })
+            .collect();
+        PolicyEvaluation::reject(rule, "policy.budget_exhausted", decisions)
     }
 }
 
 struct PanicPolicy;
 
 impl Policy for PanicPolicy {
-    fn evaluate(&self, _request: &WriteRequest, _rows: &[PolicyRow<'_>]) -> PolicyVerdict {
+    fn evaluate(&self, _request: &WriteRequest, _rows: &[PolicyRow<'_>]) -> PolicyEvaluation {
         panic!("the authority called policy before the version check")
     }
 }
@@ -85,16 +94,20 @@ fn key(name: &str) -> Key {
 }
 
 fn authority() -> Authority {
-    Authority::new(
+    Authority::new(AuthorityConfig::new(
         shard(),
         PolicyVersion::from_bytes([4; 32]),
         ManifestDigest::from_bytes([5; 32]),
-    )
+        MapVersion::new(6),
+        ProjectionEpoch::new(7),
+        ProjectionWatermarks::new(),
+    ))
 }
 
 fn put_request(id: u8, name: &str, base: u64, value: &str) -> WriteRequest {
     WriteRequest::new(
         RequestId::from_bytes([id; 32]),
+        ClientId::new(vec![1]),
         IdempotencyKey::new(vec![id]),
         [Mutation::put(
             key(name),
@@ -108,6 +121,7 @@ fn put_request(id: u8, name: &str, base: u64, value: &str) -> WriteRequest {
 fn delete_request(id: u8, name: &str, base: u64) -> WriteRequest {
     WriteRequest::new(
         RequestId::from_bytes([id; 32]),
+        ClientId::new(vec![1]),
         IdempotencyKey::new(vec![id]),
         [Mutation::delete(key(name), shard(), KeyVersion::new(base))],
     )
@@ -210,6 +224,7 @@ fn a_retry_with_a_new_request_identity_returns_the_same_receipt() {
     let first = run(&mut authority, &request);
     let retry = WriteRequest::new(
         RequestId::from_bytes([9; 32]),
+        ClientId::new(vec![1]),
         IdempotencyKey::new(vec![1]),
         [Mutation::put(
             key("account"),
@@ -233,6 +248,7 @@ fn a_reused_key_with_a_different_body_fails() {
 
     let reuse = WriteRequest::new(
         first.request_id(),
+        first.client_id().clone(),
         first.idempotency_key().clone(),
         [Mutation::put(
             key("account"),
@@ -333,6 +349,7 @@ fn a_cross_shard_mutation_fails_before_the_version_check() {
     let mut authority = authority();
     let request = WriteRequest::new(
         RequestId::from_bytes([1; 32]),
+        ClientId::new(vec![1]),
         IdempotencyKey::new(vec![1]),
         [
             Mutation::put(
@@ -425,6 +442,7 @@ fn a_missing_base_changes_no_data() {
     let mut authority = authority();
     let request = WriteRequest::new(
         RequestId::from_bytes([1; 32]),
+        ClientId::new(vec![1]),
         IdempotencyKey::new(vec![1]),
         [Mutation::without_base(
             key("account"),
@@ -458,6 +476,7 @@ fn a_batch_conflict_changes_no_key() {
 
     let batch = WriteRequest::new(
         RequestId::from_bytes([3; 32]),
+        ClientId::new(vec![1]),
         IdempotencyKey::new(vec![3]),
         [
             Mutation::put(key("alpha"), shard(), KeyVersion::new(1), b"a2".to_vec()),

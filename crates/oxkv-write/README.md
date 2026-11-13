@@ -4,7 +4,8 @@ Versioned write requests and an in-memory authority commit simulator for oxkv.
 
 ## What it does
 
-- A request carries one idempotency key and one base version for each mutated key.
+- A request carries one client identity, one idempotency key, and one base
+  version for each mutated key.
 - The authority owns the per-key version sequence and the shard commit sequence.
 - The authority compares each base version at commit. The comparison is exact.
 - A mismatch returns `Conflict` with `write.version_conflict`.
@@ -27,9 +28,10 @@ derives index or event effects only at the commit step.
 
 ## Boundaries
 
-This crate does not implement the scheduler, the outbox, audit, the search
-index, or the event stream. It exposes pure policy and commit hook seams for
-those crates.
+This crate does not implement the scheduler, the outbox, the external audit
+witness, the search index, or the event stream. It exposes pure policy and
+commit hook seams for those crates. The audit chain is in memory and hash
+linked per shard. It carries no checkpoint signature and no key material.
 
 The crate is portable and pure. It uses no clock, randomness, I/O, floating
 point, or `unsafe`.
@@ -38,16 +40,23 @@ point, or `unsafe`.
 
 ```rust
 use oxkv_contracts::receipt::{IdempotencyKey, RequestId};
-use oxkv_contracts::version::{KeyVersion, ManifestDigest, PolicyVersion, ShardId};
-use oxkv_write::{AllowAll, Authority, Key, Mutation, WriteRequest};
+use oxkv_contracts::version::{
+    KeyVersion, ManifestDigest, MapVersion, PolicyVersion, ProjectionEpoch, ProjectionWatermarks,
+    ShardId,
+};
+use oxkv_write::{AllowAll, Authority, AuthorityConfig, ClientId, Key, Mutation, WriteRequest};
 
-let mut authority = Authority::new(
+let mut authority = Authority::new(AuthorityConfig::new(
     ShardId::new(vec![1]),
     PolicyVersion::from_bytes([4; 32]),
     ManifestDigest::from_bytes([5; 32]),
-);
+    MapVersion::new(6),
+    ProjectionEpoch::new(7),
+    ProjectionWatermarks::new(),
+));
 let request = WriteRequest::new(
     RequestId::from_bytes([2; 32]),
+    ClientId::new(vec![7]),
     IdempotencyKey::new(vec![1]),
     [Mutation::put(
         Key::new(b"alpha".to_vec()),

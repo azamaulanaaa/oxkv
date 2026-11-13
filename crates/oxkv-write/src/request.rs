@@ -1,8 +1,8 @@
 //! Write request types.
 //!
-//! A request carries one idempotency key and one base version for each mutated
-//! key. The client never assigns a version. The authority assigns a new key
-//! version at commit.
+//! A request carries one client identity, one idempotency key, and one base
+//! version for each mutated key. The client never assigns a version. The
+//! authority assigns a new key version at commit.
 //!
 //! A mutation without a base version is malformed. The authority rejects it
 //! with `write.missing_base_version` before it changes data.
@@ -56,6 +56,40 @@ impl fmt::Display for Key {
             write!(formatter, "{byte:02x}")?;
         }
         Ok(())
+    }
+}
+
+/// A client identity.
+///
+/// The authority takes the client identity from the request. The simulator has
+/// no authentication layer, so the request carries the identity as an explicit
+/// value. The receipt id covers this value.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ClientId(Vec<u8>);
+
+impl ClientId {
+    /// Creates a client identity from raw bytes.
+    #[must_use]
+    pub fn new(bytes: impl Into<Vec<u8>>) -> Self {
+        Self(bytes.into())
+    }
+
+    /// Returns the raw identity bytes.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl From<Vec<u8>> for ClientId {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self::new(bytes)
+    }
+}
+
+impl From<&[u8]> for ClientId {
+    fn from(bytes: &[u8]) -> Self {
+        Self::new(bytes.to_vec())
     }
 }
 
@@ -218,20 +252,26 @@ impl Mutation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteRequest {
     request_id: RequestId,
+    client_id: ClientId,
     idempotency_key: IdempotencyKey,
     mutations: Vec<Mutation>,
 }
 
 impl WriteRequest {
     /// Creates a write request.
+    ///
+    /// The caller supplies the client identity. The constructor has no
+    /// default identity.
     #[must_use]
     pub fn new(
         request_id: RequestId,
+        client_id: ClientId,
         idempotency_key: IdempotencyKey,
         mutations: impl IntoIterator<Item = Mutation>,
     ) -> Self {
         Self {
             request_id,
+            client_id,
             idempotency_key,
             mutations: mutations.into_iter().collect(),
         }
@@ -241,6 +281,12 @@ impl WriteRequest {
     #[must_use]
     pub const fn request_id(&self) -> RequestId {
         self.request_id
+    }
+
+    /// Returns the client identity.
+    #[must_use]
+    pub const fn client_id(&self) -> &ClientId {
+        &self.client_id
     }
 
     /// Returns the idempotency key.
