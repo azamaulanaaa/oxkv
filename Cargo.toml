@@ -33,6 +33,7 @@ members = [
   "crates/oxkv-cached",
   "crates/oxkv-write",
   "crates/oxkv-search",
+  "crates/oxkv-rule",
 ]
 resolver = "3"
 

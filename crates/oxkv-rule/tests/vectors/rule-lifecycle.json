@@ -1,0 +1,147 @@
+{
+  "contract": "rule-lifecycle/v1",
+  "cases": [
+    {
+      "name": "rule_body_change",
+      "expected": {
+        "policy_version_changed": true,
+        "manifest_digest_unchanged": true,
+        "canonical_bytes_stable": true
+      }
+    },
+    {
+      "name": "content_address",
+      "expected": {
+        "policy_version_changed": true,
+        "manifest_digest_unchanged": true,
+        "canonical_bytes_stable": true
+      }
+    },
+    {
+      "name": "dry_run_failure",
+      "expected": {
+        "receipt": "Rejected",
+        "reason": "rule.dry_run_failed",
+        "active_unchanged": true
+      }
+    },
+    {
+      "name": "approval_gate",
+      "expected": {
+        "receipt": "Rejected",
+        "reason": "rule.approval_required",
+        "control_unchanged": true
+      }
+    },
+    {
+      "name": "canary_and_control",
+      "expected": {
+        "receipt": "Committed",
+        "canary_differs": true,
+        "control_epoch_is_base": true,
+        "canary_epoch_includes_version": true
+      }
+    },
+    {
+      "name": "promotion",
+      "expected": {
+        "receipt": "Committed",
+        "control_promoted": true
+      }
+    },
+    {
+      "name": "deadline_promotion",
+      "expected": {
+        "receipt": "Committed",
+        "control_promoted": true
+      }
+    },
+    {
+      "name": "rollback",
+      "expected": {
+        "receipt": "Committed",
+        "catalog_unchanged": true,
+        "old_record_unchanged": true,
+        "audit_grew": true
+      }
+    },
+    {
+      "name": "notice_feed",
+      "expected": {
+        "receipt": "Committed",
+        "operational_feed": true,
+        "not_business_event": true
+      }
+    },
+    {
+      "name": "catalog_immutable",
+      "expected": {
+        "record_unchanged": true,
+        "record_count_is_two": true
+      }
+    },
+    {
+      "name": "unknown_policy_version",
+      "expected": {
+        "receipt": "Rejected",
+        "reason": "scope.policy_version_unknown"
+      }
+    },
+    {
+      "name": "rollout_limit",
+      "expected": {
+        "receipt": "Rejected",
+        "reason": "rule.rollout_limit"
+      }
+    },
+    {
+      "name": "stale_base",
+      "expected": {
+        "receipt": "Conflict",
+        "reason": "write.version_conflict"
+      }
+    },
+    {
+      "name": "compile_failure",
+      "expected": {
+        "receipt": "Rejected",
+        "reason": "rule.compile_failed"
+      }
+    },
+    {
+      "name": "unknown_path",
+      "expected": {
+        "receipt": "Rejected",
+        "reason": "manifest.rule_unknown_path"
+      }
+    },
+    {
+      "name": "unbounded",
+      "expected": {
+        "receipt": "Rejected",
+        "reason": "manifest.rule_unbounded"
+      }
+    },
+    {
+      "name": "policy_parse_error",
+      "expected": {
+        "reason": "policy.parse_error",
+        "is_error": true
+      }
+    },
+    {
+      "name": "policy_ast_unsupported",
+      "expected": {
+        "reason": "policy.ast_unsupported"
+      }
+    },
+    {
+      "name": "over_budget_abort",
+      "expected": {
+        "receipt": "Rejected",
+        "reason": "rule.rollout_limit",
+        "prior_pointer_restored": true
+      }
+    }
+  ]
+}

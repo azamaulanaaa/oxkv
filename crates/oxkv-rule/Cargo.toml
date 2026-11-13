@@ -1,0 +1,20 @@
+[package]
+name = "oxkv-rule"
+version = "0.11.0"
+edition = "2024"
+description = "Portable rule lifecycle for oxkv: immutable policy catalog, dry run, staged rollout, canary, promotion, and rollback."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/azamaulanaaa/oxkv"
+readme = "../../README.md"
+keywords = ["policy", "rule", "lifecycle", "keyvalue"]
+categories = ["database"]
+
+[dependencies]
+oxkv-contracts = { path = "../oxkv-contracts", version = "0.11.0" }
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true
