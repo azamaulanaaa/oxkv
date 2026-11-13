@@ -1,0 +1,104 @@
+{
+  "assignments": [
+    {
+      "shard_id_hex": "01",
+      "table": "accounts"
+    },
+    {
+      "shard_id_hex": "02",
+      "table": "ledger_entry"
+    },
+    {
+      "shard_id_hex": "03",
+      "table": "sessions"
+    }
+  ],
+  "canonical_hex": "4f584b564d415000010000000b6f786b762f6d61702f7631000000000000000700000004000000010001000000085f636174616c6f670000000a015f636174616c6f67000000000a015f636174616c6f6701000000010100000000086163636f756e74730000000a016163636f756e7473000000000a016163636f756e7473010000000102000000000c6c65646765725f656e7472790000000e016c65646765725f656e747279000000000e016c65646765725f656e747279010000000103000000000873657373696f6e730000000a0173657373696f6e73000000000a0173657373696f6e7301",
+  "catalog_shard_id_hex": "00",
+  "contract": "oxkv/map/v1",
+  "digest_hex": "3fb66d087423465ec98fd7026fbf263c304ea0cc717cabab7972ed8cb59c166b",
+  "entries": [
+    {
+      "lower_hex": "015f636174616c6f6700",
+      "shard_id_hex": "00",
+      "table": "_catalog",
+      "upper_hex": "015f636174616c6f6701"
+    },
+    {
+      "lower_hex": "016163636f756e747300",
+      "shard_id_hex": "01",
+      "table": "accounts",
+      "upper_hex": "016163636f756e747301"
+    },
+    {
+      "lower_hex": "016c65646765725f656e74727900",
+      "shard_id_hex": "02",
+      "table": "ledger_entry",
+      "upper_hex": "016c65646765725f656e74727901"
+    },
+    {
+      "lower_hex": "0173657373696f6e7300",
+      "shard_id_hex": "03",
+      "table": "sessions",
+      "upper_hex": "0173657373696f6e7301"
+    }
+  ],
+  "map_version": 7,
+  "routes": [
+    {
+      "key_hex": "015f636174616c6f6700106d616e69666573740000",
+      "name": "catalog_manifest",
+      "shard_id_hex": "00"
+    },
+    {
+      "key_hex": "015f636174616c6f6700ff0100",
+      "name": "catalog_receipt",
+      "shard_id_hex": "00"
+    },
+    {
+      "key_hex": "016163636f756e74730010616c6963650000",
+      "name": "accounts_text",
+      "shard_id_hex": "01"
+    },
+    {
+      "key_hex": "016163636f756e747300100000",
+      "name": "accounts_empty_text",
+      "shard_id_hex": "01"
+    },
+    {
+      "key_hex": "016163636f756e74730020000000000000002a",
+      "name": "accounts_u64",
+      "shard_id_hex": "01"
+    },
+    {
+      "key_hex": "016163636f756e747300ff0200",
+      "name": "accounts_event",
+      "shard_id_hex": "01"
+    },
+    {
+      "key_hex": "016c65646765725f656e7472790010780000",
+      "name": "ledger_entry_text",
+      "shard_id_hex": "02"
+    },
+    {
+      "key_hex": "016c65646765725f656e74727900ff0600",
+      "name": "ledger_entry_lease",
+      "shard_id_hex": "02"
+    },
+    {
+      "key_hex": "0173657373696f6e730011ff0000",
+      "name": "sessions_bytes",
+      "shard_id_hex": "03"
+    },
+    {
+      "key_hex": "0173657373696f6e73003001",
+      "name": "sessions_bool",
+      "shard_id_hex": "03"
+    },
+    {
+      "key_hex": "0173657373696f6e7300217fffffffffffffff",
+      "name": "sessions_i64",
+      "shard_id_hex": "03"
+    }
+  ]
+}
