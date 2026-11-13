@@ -26,7 +26,41 @@ jobs:
         with:
           components: ''
       - name: Verify crate packaging
-        run: cargo publish --dry-run
+        run: |
+          set -euo pipefail
+          # A tag release publishes a version that crates.io does not have
+          # yet. A dependent crate cannot resolve that version from the
+          # registry during `cargo publish --dry-run`. Patch the registry to
+          # the local workspace paths so the gate checks the package contents
+          # and the build for every crate. The real publish uses the registry.
+          patch="$RUNNER_TEMP/oxkv-workspace-patch.toml"
+          {
+            echo '[patch.crates-io]'
+            echo "oxkv = { path = \"$GITHUB_WORKSPACE\" }"
+            for crate in oxkv-query oxkv-opfs oxkv-s3 oxkv-otel oxkv-cached oxkv-wasm; do
+              echo "$crate = { path = \"$GITHUB_WORKSPACE/crates/$crate\" }"
+            done
+          } > "$patch"
+
+          crates=(oxkv oxkv-query oxkv-opfs oxkv-s3 oxkv-otel oxkv-cached oxkv-wasm)
+
+          # Guard: the list must cover every workspace crate. A new crate must
+          # join this list before the release can pass the gate.
+          expected="$(printf '%s\n' "${crates[@]}" | sort)"
+          actual="$(cargo tree --workspace --depth 0 --prefix none \
+            | awk 'NF { print $1 }' \
+            | sort)"
+          if [ "$expected" != "$actual" ]; then
+            echo "error: the crate list does not match the workspace." >&2
+            printf 'crate list:\n%s\nworkspace:\n%s\n' "$expected" "$actual" >&2
+            exit 1
+          fi
+
+          for crate in "${crates[@]}"; do
+            echo "::group::cargo publish --dry-run -p $crate"
+            cargo publish --dry-run -p "$crate" --config "$patch"
+            echo "::endgroup::"
+          done
       - name: Add wasm32 target
         run: rustup target add wasm32-unknown-unknown
       - name: Install wasm-pack if missing
@@ -38,6 +72,20 @@ jobs:
         working-directory: crates/oxkv-wasm
         run: |
           rm -rf pkg && wasm-pack build --target web --release --out-dir pkg --out-name oxkv
+          # wasm-pack derives the npm package name from the Cargo crate
+          # (`oxkv-wasm`). The release publishes the existing `oxkv` package,
+          # so set the generated name again before any publish.
+          (cd pkg && npm pkg set \
+            name=oxkv \
+            repository.type=git \
+            repository.url=git+https://github.com/azamaulanaaa/oxkv.git)
+          # Guard: a crate or workflow change must not silently create a new
+          # npm package. The publish job uses the same name.
+          name="$(node -p "require('./pkg/package.json').name")"
+          if [ "$name" != "oxkv" ]; then
+            echo "error: pkg/package.json has name '$name', expected 'oxkv'." >&2
+            exit 1
+          fi
           npm publish ./pkg --dry-run
 
   publish-crate:
@@ -49,9 +97,47 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           components: ''
-      - run: cargo publish
+      - name: Publish crates in dependency order
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The order follows the dependency graph. A crate is published only
+          # after every workspace crate that it depends on is on the index.
+          crates=(oxkv oxkv-query oxkv-opfs oxkv-s3 oxkv-otel oxkv-cached oxkv-wasm)
+          last="${crates[${#crates[@]}-1]}"
+          for crate in "${crates[@]}"; do
+            pkgid="$(cargo pkgid -p "$crate")"
+            version="${pkgid##*#}"
+            version="${version##*@}"
+            if [ -z "$version" ]; then
+              echo "error: cannot read the version of $crate." >&2
+              exit 1
+            fi
+
+            echo "::group::cargo publish -p $crate"
+            cargo publish -p "$crate"
+            echo "::endgroup::"
+
+            if [ "$crate" = "$last" ]; then
+              break
+            fi
+
+            # The next crate resolves crates.io, not the workspace path. Wait
+            # until the index lists the version that this job published.
+            echo "waiting for $crate $version on the crates.io index"
+            for attempt in $(seq 1 60); do
+              if cargo info "$crate@$version" --registry crates-io >/dev/null 2>&1; then
+                echo "$crate $version is available on the crates.io index"
+                break
+              fi
+              if [ "$attempt" -eq 60 ]; then
+                echo "error: $crate $version is absent from the crates.io index after 5 minutes." >&2
+                exit 1
+              fi
+              sleep 5
+            done
+          done
 
   publish-npm:
     name: Publish WASM to npm
@@ -80,8 +166,16 @@ jobs:
       # github.blog 2026-07-08), making OIDC the only automated path.
       - name: Install recent npm
         run: npm install -g npm@latest
-      - run: rm -rf pkg && wasm-pack build --target web --release --out-dir pkg --out-name oxkv
+      - name: Build npm package
         working-directory: crates/oxkv-wasm
+        run: |
+          rm -rf pkg && wasm-pack build --target web --release --out-dir pkg --out-name oxkv
+          # Use the existing `oxkv` npm package, not the crate name that
+          # wasm-pack puts in pkg/package.json.
+          (cd pkg && npm pkg set \
+            name=oxkv \
+            repository.type=git \
+            repository.url=git+https://github.com/azamaulanaaa/oxkv.git)
       - name: Publish to npm
         run: npm publish ./pkg --provenance
         working-directory: crates/oxkv-wasm

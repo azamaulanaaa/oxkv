@@ -58,7 +58,7 @@ use oxkv::internals::{Manifest, ManifestCache, decode_wal_records, load_manifest
 use oxkv::{
     BTreeStore, Cache, ChangeEvent, Direction, GetSet, Hooks, KeyValue, LruCache, ObjectPath,
     Observer, OxKvStore, OxKvStoreBuilder, OxKvTx, Result, Scope, SstFile, Store, StoreError,
-    Transaction, Validator,
+    Transaction, TxCas, Validator,
 };
 
 /// Locks a mutex, continuing through poisoning.
@@ -123,7 +123,7 @@ impl BuildCachedExt for OxKvStoreBuilder {
 }
 
 /// Batch size for the paged scans behind [`CachedOxKvStore::rebuild`].
-const SCAN_BATCH: u32 = 256;
+const SCAN_BATCH: usize = 256;
 
 /// Staleness bound for [`CachedOxKvStore`] when none is configured.
 ///
@@ -686,7 +686,7 @@ where
                 return Ok((true, applied));
             }
             let last = batch.last().map(|kv| kv.key.clone());
-            let short = batch.len() < SCAN_BATCH as usize;
+            let short = batch.len() < SCAN_BATCH;
             let mut state = self.state.lock().await;
             for kv in batch {
                 if cursor.as_deref() == Some(kv.key.as_str()) {
@@ -778,7 +778,7 @@ where
     /// Returns a [`StoreError`] when revalidation fails or the mirror is poisoned.
     pub async fn gets_bytes_checked(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
@@ -860,7 +860,7 @@ where
 
     async fn gets_bytes(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
@@ -901,7 +901,7 @@ fn merge_staged(
     staged: &BTreeMap<String, Option<Vec<u8>>>,
     direction: Direction,
     cursor: &(Option<String>, Option<String>),
-    limit: Option<u32>,
+    limit: Option<usize>,
 ) -> Vec<KeyValue> {
     for (key, value) in staged {
         if !in_window(key, direction, cursor) {
@@ -920,7 +920,7 @@ fn merge_staged(
         Direction::Prev => rows.sort_by(|a, b| b.key.cmp(&a.key)),
     }
     if let Some(bound) = limit {
-        rows.truncate(bound as usize);
+        rows.truncate(bound);
     }
     rows
 }
@@ -1003,7 +1003,7 @@ where
 
     async fn gets_bytes(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
@@ -1017,6 +1017,39 @@ where
             self.tx.gets_bytes(None, direction, cursor.clone()).await?
         };
         Ok(merge_staged(rows, &staged, direction, &cursor, limit))
+    }
+}
+
+#[async_trait]
+impl<C> TxCas for CachedTx<C>
+where
+    C: Cache<String, Arc<SstFile>>,
+{
+    /// Stages a set-if-absent in the inner transaction and in the mirror
+    /// overlay. The inner commit checks the precondition. A failed inner
+    /// commit does not touch the mirror.
+    async fn set_if_absent(&self, key: &str, value: &[u8]) -> Result<()> {
+        self.tx.set_if_absent(key, value).await?;
+        lock_ignore_poison(&self.staged).insert(key.to_string(), Some(value.to_vec()));
+        Ok(())
+    }
+
+    /// Stages a compare-and-set in the inner transaction and in the mirror
+    /// overlay. The inner commit checks the precondition. A failed inner
+    /// commit does not touch the mirror.
+    async fn compare_and_set(&self, key: &str, expected: Option<&[u8]>, new: &[u8]) -> Result<()> {
+        self.tx.compare_and_set(key, expected, new).await?;
+        lock_ignore_poison(&self.staged).insert(key.to_string(), Some(new.to_vec()));
+        Ok(())
+    }
+
+    /// Stages a conditional delete in the inner transaction and in the mirror
+    /// overlay. The inner commit checks the precondition. A failed inner
+    /// commit does not touch the mirror.
+    async fn delete_if(&self, key: &str, expected: &[u8]) -> Result<()> {
+        self.tx.delete_if(key, expected).await?;
+        lock_ignore_poison(&self.staged).insert(key.to_string(), None);
+        Ok(())
     }
 }
 
@@ -1228,6 +1261,54 @@ mod tests {
         assert_eq!(
             cached.get_bytes("keep").await.expect("get"),
             Some(b"9".to_vec())
+        );
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    async fn tx_cas_applies_to_the_mirror_only_after_a_successful_commit() {
+        let (writer, _) = writer("cached-tx-cas").await;
+        writer.put_bytes("claim", b"owner").await.expect("put");
+        let cached = CachedOxKvStore::open(writer).await.expect("open");
+
+        let tx = cached.begin_tx().expect("tx");
+        tx.compare_and_set("claim", Some(b"owner"), b"next")
+            .await
+            .expect("stage");
+        assert_eq!(
+            tx.get_bytes("claim").await.expect("staged read"),
+            Some(b"next".to_vec()),
+            "the transaction must read its own staged write"
+        );
+        tx.commit().await.expect("commit");
+        assert_eq!(
+            cached.get_bytes("claim").await.expect("mirror"),
+            Some(b"next".to_vec())
+        );
+        assert_eq!(
+            cached.inner().get_bytes("claim").await.expect("core"),
+            Some(b"next".to_vec())
+        );
+
+        let tx = cached.begin_tx().expect("tx");
+        tx.set_if_absent("claim", b"other").await.expect("stage");
+        let error = tx.commit().await.expect_err("conflict");
+        assert_eq!(
+            error,
+            StoreError::TxConflict {
+                key: "claim".to_string(),
+                current: Some(b"next".to_vec()),
+            }
+        );
+        assert_eq!(
+            cached.get_bytes("claim").await.expect("mirror"),
+            Some(b"next".to_vec()),
+            "a failed commit must not change the mirror"
+        );
+        assert_eq!(
+            cached.inner().get_bytes("claim").await.expect("core"),
+            Some(b"next".to_vec()),
+            "a failed commit must not change the core"
         );
     }
 

@@ -7,7 +7,9 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::store::storage::{ObjectPath, ObjectVersion, PutMode, Storage};
-use crate::store::{Result, StoreError};
+use crate::store::{Result, StorageCause, StoreError, storage_context};
+
+use super::read::is_not_found;
 
 /// Ownership record stored at `{prefix}/ownership.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,16 +96,20 @@ pub(crate) async fn acquire_ownership(
 
     let (existing, version) = match store.get(&path).await {
         Ok(out) => {
-            let rec: OwnershipRecord = serde_json::from_slice(&out.bytes)
-                .map_err(|e| StoreError::Storage(format!("corrupt ownership.json: {e}")))?;
+            let rec: OwnershipRecord = serde_json::from_slice(&out.bytes).map_err(|e| {
+                StoreError::storage_with_cause(
+                    format!("corrupt ownership.json: {e}"),
+                    StorageCause::Corrupt,
+                )
+            })?;
             let ver = ObjectVersion {
                 e_tag: out.e_tag.clone(),
                 version: out.version.clone(),
             };
             (Some(rec), Some(ver))
         }
-        Err(e) if e.to_string().contains("not found") => (None, None),
-        Err(e) => return Err(StoreError::Storage(format!("get ownership failed: {e}"))),
+        Err(e) if is_not_found(&e) => (None, None),
+        Err(e) => return Err(storage_context("get ownership failed", e)),
     };
 
     // The code uses `saturating_add`, not `+ 1`. At `u64::MAX`, the plain add
@@ -116,7 +122,7 @@ pub(crate) async fn acquire_ownership(
         manifest_etag: None,
     };
     let payload = serde_json::to_vec(&new_rec)
-        .map_err(|e| StoreError::Storage(format!("serialize ownership: {e}")))?;
+        .map_err(|e| StoreError::storage(format!("serialize ownership: {e}")))?;
 
     let put_res = if let Some(ver) = version {
         store.put_opts(&path, payload, PutMode::Update(ver)).await
@@ -129,7 +135,7 @@ pub(crate) async fn acquire_ownership(
         Err(StoreError::CasConflict(_)) => Err(StoreError::Fenced(format!(
             "ownership CAS conflict at epoch {next_epoch} for session {session} — fenced"
         ))),
-        Err(e) => Err(StoreError::Storage(format!("put ownership failed: {e}"))),
+        Err(e) => Err(storage_context("put ownership failed", e)),
     }
 }
 
@@ -141,12 +147,16 @@ pub async fn read_ownership(
     let path = ownership_path(prefix);
     match store.get(&path).await {
         Ok(out) => {
-            let rec: OwnershipRecord = serde_json::from_slice(&out.bytes)
-                .map_err(|e| StoreError::Storage(format!("corrupt ownership.json: {e}")))?;
+            let rec: OwnershipRecord = serde_json::from_slice(&out.bytes).map_err(|e| {
+                StoreError::storage_with_cause(
+                    format!("corrupt ownership.json: {e}"),
+                    StorageCause::Corrupt,
+                )
+            })?;
             Ok(Some(rec))
         }
-        Err(e) if e.to_string().contains("not found") => Ok(None),
-        Err(e) => Err(StoreError::Storage(format!("get ownership failed: {e}"))),
+        Err(e) if is_not_found(&e) => Ok(None),
+        Err(e) => Err(storage_context("get ownership failed", e)),
     }
 }
 

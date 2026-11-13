@@ -207,7 +207,7 @@ pub trait StoreView: Send + Sync {
     /// Returns a [`StoreError`](super::StoreError) if the underlying storage fails.
     async fn gets_bytes(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>>;
@@ -237,7 +237,7 @@ impl<S: GetSet + Send + Sync> StoreView for S {
 
     async fn gets_bytes(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
@@ -423,7 +423,7 @@ impl StoreView for RevalidateView<'_> {
 
     async fn gets_bytes(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
@@ -753,7 +753,7 @@ impl<S: GetSet + Send + Sync> GetSet for Hooked<S> {
 
     async fn gets_bytes(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {

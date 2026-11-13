@@ -37,7 +37,7 @@ const MEDIUM: usize = 100_000;
 const LARGE: usize = 1_000_000;
 /// Point reads measured per iteration against a LARGE store.
 const READ_SAMPLES: usize = 10_000;
-const PAGE: u32 = 100;
+const PAGE: usize = 100;
 const PAYLOAD: [u8; 64] = [b'x'; 64];
 /// Prime stride used for deterministic pseudo-random key selection.
 const STRIDE: usize = 7919;
@@ -123,11 +123,7 @@ fn random_get(rt: &tokio::runtime::Runtime, c: &mut Criterion, n: usize) {
 
 fn page_fetch(rt: &tokio::runtime::Runtime, c: &mut Criterion, n: usize) {
     let mut group = c.benchmark_group(format!("page_fetch_{PAGE}/cached_mem/{n}"));
-    configure(
-        &mut group,
-        n,
-        usize::try_from(PAGE).expect("page size fits"),
-    );
+    configure(&mut group, n, PAGE);
     let keys: Vec<String> = (0..n).map(key).collect();
     let mut store: Option<CachedOxKvStore> = None;
     let starts: Vec<String> = (0..128usize).map(|j| key((j * 7919 + n / 2) % n)).collect();

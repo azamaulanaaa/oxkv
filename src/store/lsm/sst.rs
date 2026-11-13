@@ -9,7 +9,12 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::store::{Result, StoreError};
+use crate::store::{Result, StorageCause, StoreError};
+
+/// Creates a corrupt-SST error with `message`.
+fn corrupt(message: impl Into<String>) -> StoreError {
+    StoreError::storage_with_cause(message, StorageCause::Corrupt)
+}
 
 // ---------------------------------------------------------------------------
 // Constants and types
@@ -198,7 +203,7 @@ pub fn build_sst(
         file_crc,
     };
     let footer_bytes = serde_json::to_vec(&footer)
-        .map_err(|e| StoreError::Storage(format!("serialize footer: {e}")))?;
+        .map_err(|e| StoreError::storage(format!("serialize footer: {e}")))?;
 
     let mut out = Vec::new();
     for block in blocks {
@@ -243,11 +248,11 @@ impl SstFile {
     /// Parses `data` as SST, verifying magic and version.
     pub(crate) fn parse(data: Vec<u8>) -> Result<Self> {
         if data.len() < 12 {
-            return Err(StoreError::Storage("sst too small".to_string()));
+            return Err(corrupt("sst too small"));
         }
         let magic_offset = data.len() - SST_TRAILER_LEN;
         if data[magic_offset..magic_offset + 4] != SST_MAGIC {
-            return Err(StoreError::Storage("sst bad magic".to_string()));
+            return Err(corrupt("sst bad magic"));
         }
         let ver = u32::from_le_bytes([
             data[magic_offset + 4],
@@ -256,9 +261,7 @@ impl SstFile {
             data[magic_offset + 7],
         ]);
         if ver != SST_VERSION {
-            return Err(StoreError::Storage(format!(
-                "unsupported sst version {ver}"
-            )));
+            return Err(corrupt(format!("unsupported sst version {ver}")));
         }
         let footer_len_offset = magic_offset - 4;
         let footer_len = u32::from_le_bytes([
@@ -271,20 +274,20 @@ impl SstFile {
         // A plain subtraction then underflows. The subtraction panics under
         // overflow checks. This happens before the bounds check below can run.
         let Some(footer_start) = footer_len_offset.checked_sub(footer_len) else {
-            return Err(StoreError::Storage("sst footer out of bounds".to_string()));
+            return Err(corrupt("sst footer out of bounds"));
         };
         if footer_start + footer_len != footer_len_offset || footer_start > data.len() {
-            return Err(StoreError::Storage("sst footer out of bounds".to_string()));
+            return Err(corrupt("sst footer out of bounds"));
         }
         let footer_bytes = &data[footer_start..footer_len_offset];
         let footer: SstFooter = serde_json::from_slice(footer_bytes)
-            .map_err(|e| StoreError::Storage(format!("parse footer: {e}")))?;
+            .map_err(|e| corrupt(format!("parse footer: {e}")))?;
         // `bloom_k` drives a loop on the point lookup hot path. `build_sst`
         // always writes 3. Therefore a value that is implausible is corruption
         // or a hostile object. Accepting such a value would turn every read
         // into a CPU denial of service.
         if footer.bloom_k == 0 || footer.bloom_k > 32 {
-            return Err(StoreError::Storage(format!(
+            return Err(corrupt(format!(
                 "sst implausible bloom_k {}",
                 footer.bloom_k
             )));
@@ -345,12 +348,12 @@ impl SstFile {
         let start = meta.offset as usize;
         let end = start + meta.len as usize;
         if end > self.footer_offset {
-            return Err(StoreError::Storage("block out of bounds".to_string()));
+            return Err(corrupt("block out of bounds"));
         }
         let bytes = &self.data[start..end];
         let crc = crc32fast::hash(bytes);
         if crc != meta.crc {
-            return Err(StoreError::Storage(format!(
+            return Err(corrupt(format!(
                 "block crc mismatch for {}..{}: expected {}, got {}",
                 meta.min_key, meta.max_key, meta.crc, crc
             )));
@@ -383,7 +386,7 @@ impl SstFile {
                     break;
                 }
                 let key_in_block = std::str::from_utf8(&bytes[pos + 4..pos + 4 + klen])
-                    .map_err(|e| StoreError::Storage(format!("utf8: {e}")))?;
+                    .map_err(|e| corrupt(format!("utf8: {e}")))?;
                 let v_start = pos + 4 + klen;
                 let vlen = u32::from_le_bytes([
                     bytes[v_start],
@@ -438,7 +441,7 @@ impl SstFile {
                     break;
                 }
                 let key_in_block = std::str::from_utf8(&bytes[pos + 4..pos + 4 + klen])
-                    .map_err(|e| StoreError::Storage(format!("utf8: {e}")))?;
+                    .map_err(|e| corrupt(format!("utf8: {e}")))?;
                 let v_start = pos + 4 + klen;
                 let vlen = u32::from_le_bytes([
                     bytes[v_start],
@@ -501,7 +504,7 @@ impl SstFile {
                     break;
                 }
                 let key_str = std::str::from_utf8(&bytes[pos + 4..pos + 4 + klen])
-                    .map_err(|e| StoreError::Storage(format!("utf8: {e}")))?
+                    .map_err(|e| corrupt(format!("utf8: {e}")))?
                     .to_string();
                 let v_start = pos + 4 + klen;
                 let vlen = u32::from_le_bytes([
@@ -581,7 +584,7 @@ impl SstFile {
                     break;
                 }
                 let key_str = std::str::from_utf8(&bytes[pos + 4..pos + 4 + klen])
-                    .map_err(|e| StoreError::Storage(format!("utf8: {e}")))?
+                    .map_err(|e| corrupt(format!("utf8: {e}")))?
                     .to_string();
                 let v_start = pos + 4 + klen;
                 let vlen = u32::from_le_bytes([
@@ -660,7 +663,7 @@ impl SstFile {
         }
         let got = u64::from(hasher.finalize());
         if got != self.footer.file_crc {
-            return Err(StoreError::Storage(format!(
+            return Err(corrupt(format!(
                 "file crc mismatch: expected {}, got {}",
                 self.footer.file_crc, got
             )));
@@ -683,7 +686,7 @@ fn decode_entry(bytes: &[u8], pos: usize) -> Result<Option<(String, Option<Vec<u
         return Ok(None);
     }
     let key_str = std::str::from_utf8(&bytes[pos + 4..pos + 4 + klen])
-        .map_err(|e| StoreError::Storage(format!("utf8: {e}")))?
+        .map_err(|e| corrupt(format!("utf8: {e}")))?
         .to_string();
     let v_start = pos + 4 + klen;
     let vlen = u32::from_le_bytes([

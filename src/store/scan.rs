@@ -77,8 +77,8 @@ pub struct Page<T> {
 ///
 /// The function adds one row. That extra row tells the caller whether more
 /// rows exist after the page.
-fn fetch_limit(limit: usize) -> u32 {
-    u32::try_from(limit.saturating_add(1)).unwrap_or(u32::MAX)
+fn fetch_limit(limit: usize) -> usize {
+    limit.saturating_add(1)
 }
 
 /// Builds the inclusive start and exclusive end of one page range.
@@ -135,7 +135,6 @@ pub trait ScanExt: GetSet {
         let rows = self
             .gets_keys(Some(fetch), Direction::Next, (Some(start), end.clone()))
             .await?;
-        let fetch = fetch as usize;
         let full = rows.len() == fetch;
         let mut items: Vec<String> = rows
             .into_iter()
@@ -193,7 +192,7 @@ pub trait ScanExt: GetSet {
                 })
                 .collect()
         };
-        let full = items.len() == fetch as usize;
+        let full = items.len() == fetch;
         items.retain(|row| {
             after
                 .as_deref()
@@ -208,6 +207,41 @@ pub trait ScanExt: GetSet {
         } else {
             None
         };
+        Ok(Page { items, next })
+    }
+
+    /// Returns one page of keys that start with `prefix` and are less than
+    /// `cutoff`.
+    ///
+    /// `cutoff` is an exclusive lexicographic bound. A key that is equal to
+    /// `cutoff` or above it is not returned. The caller encodes time in the
+    /// key, for example `timer/000001700000000000/`.
+    ///
+    /// The scan starts after the `after` cursor. The scan returns at most
+    /// `limit` keys. A `limit` of 0 returns an empty page with no cursor.
+    /// Pass [`Page::next`] as the `after` cursor of the next call to read the
+    /// next page.
+    ///
+    /// This method is a cleanup helper. It is not a TTL. The store has no
+    /// expiry metadata and no background expiry job.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`](super::StoreError) if the read fails.
+    async fn scan_older_than(
+        &self,
+        prefix: KeyPrefix<'_>,
+        cutoff: &str,
+        after: Option<String>,
+        limit: usize,
+    ) -> Result<Page<String>> {
+        let page = self.scan_keys(prefix, after, limit).await?;
+        let read = page.items.len();
+        let mut items = page.items;
+        items.retain(|key| key.as_str() < cutoff);
+        // `scan_keys` returns keys in ascending order. If the cutoff removed
+        // any key, no later key can be below the cutoff.
+        let next = if items.len() == read { page.next } else { None };
         Ok(Page { items, next })
     }
 
@@ -242,7 +276,7 @@ pub trait ScanExt: GetSet {
 }
 
 #[async_trait]
-impl<T: GetSet> ScanExt for T {}
+impl<T: GetSet + ?Sized> ScanExt for T {}
 
 #[cfg(test)]
 mod tests {
@@ -418,6 +452,108 @@ mod tests {
         assert_max_scalar_prefix(&store).await;
     }
 
+    async fn assert_scan_older_than<S: GetSet + Sync>(store: &S) {
+        for key in [
+            "timer/0001",
+            "timer/0002",
+            "timer/0003",
+            "timer/0004",
+            "timer/0005",
+            "timerx/0001",
+        ] {
+            store.set_bytes(key, b"v").await.unwrap();
+        }
+
+        // The cutoff is exclusive.
+        let page = store
+            .scan_older_than(KeyPrefix::new("timer/"), "timer/0003", None, 10)
+            .await
+            .unwrap();
+        assert_eq!(key_list(&page.items), ["timer/0001", "timer/0002"]);
+        assert_eq!(page.next, None);
+
+        // A cutoff above every key returns every key in the prefix.
+        let page = store
+            .scan_older_than(KeyPrefix::new("timer/"), "timer/9", None, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            key_list(&page.items),
+            [
+                "timer/0001",
+                "timer/0002",
+                "timer/0003",
+                "timer/0004",
+                "timer/0005"
+            ]
+        );
+
+        // A cutoff at or below the prefix returns no key.
+        for cutoff in ["timer/", "timer/0000", "a"] {
+            let page = store
+                .scan_older_than(KeyPrefix::new("timer/"), cutoff, None, 10)
+                .await
+                .unwrap();
+            assert!(page.items.is_empty(), "cutoff {cutoff:?}");
+            assert_eq!(page.next, None, "cutoff {cutoff:?}");
+        }
+
+        // Paging stops at the cutoff.
+        let mut walked = Vec::new();
+        let mut after = None;
+        let mut pages = 0;
+        loop {
+            let page = store
+                .scan_older_than(KeyPrefix::new("timer/"), "timer/0005", after, 2)
+                .await
+                .unwrap();
+            pages += 1;
+            assert!(pages <= 8, "paging did not stop");
+            assert!(
+                page.items.iter().all(|key| key.as_str() < "timer/0005"),
+                "a page must not pass the cutoff"
+            );
+            walked.extend(page.items);
+            match page.next {
+                Some(next) => after = Some(next),
+                None => break,
+            }
+        }
+        assert_eq!(
+            key_list(&walked),
+            ["timer/0001", "timer/0002", "timer/0003", "timer/0004"],
+            "each key below the cutoff must appear exactly once"
+        );
+
+        // A cursor at or above the cutoff returns no key.
+        for after in ["timer/0005".to_string(), "timer/9".to_string()] {
+            let page = store
+                .scan_older_than(KeyPrefix::new("timer/"), "timer/0005", Some(after), 10)
+                .await
+                .unwrap();
+            assert!(
+                page.items.is_empty(),
+                "a cursor at or above the cutoff must return no key"
+            );
+            assert_eq!(page.next, None);
+        }
+
+        // A limit of 0 returns an empty page.
+        let page = store
+            .scan_older_than(KeyPrefix::new("timer/"), "timer/0005", None, 0)
+            .await
+            .unwrap();
+        assert!(page.items.is_empty(), "limit 0");
+        assert_eq!(page.next, None);
+    }
+
+    #[cfg(feature = "btree")]
+    #[tokio::test]
+    async fn btree_scan_older_than_stops_at_the_cutoff() {
+        let store = crate::store::BTreeStore::default();
+        assert_scan_older_than(&store).await;
+    }
+
     #[cfg(feature = "btree")]
     #[tokio::test]
     async fn btree_tx_prefix_scans_see_staged_writes() {
@@ -461,6 +597,13 @@ mod tests {
         assert_utf8_prefix(&store).await;
         let store = in_memory_oxkv().await;
         assert_max_scalar_prefix(&store).await;
+    }
+
+    #[cfg(feature = "oxkv")]
+    #[tokio::test]
+    async fn oxkv_scan_older_than_stops_at_the_cutoff() {
+        let store = in_memory_oxkv().await;
+        assert_scan_older_than(&store).await;
     }
 
     #[cfg(feature = "oxkv")]

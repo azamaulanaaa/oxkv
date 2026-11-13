@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 
 use super::{
     ChangeEvent, ChangeKind, Direction, GetSet, HookState, Hooks, KeyValue, Observer, Result,
-    Scope, Store, Transaction, Validator, lock_ignore_poison, rwlock_ignore_poison,
+    Scope, Store, Transaction, TxCas, Validator, lock_ignore_poison, rwlock_ignore_poison,
 };
 use futures::channel::mpsc;
 
@@ -78,7 +78,7 @@ impl GetSet for BTreeStore {
 
     async fn gets_bytes(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
@@ -91,7 +91,7 @@ impl GetSet for BTreeStore {
 
     async fn gets_keys(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<String>> {
@@ -114,6 +114,7 @@ impl Store for BTreeStore {
             hooks: self.hooks.clone(),
             validators: self.hooks.validators(),
             staged: std::sync::Mutex::new(Vec::new()),
+            preconditions: std::sync::Mutex::new(BTreeMap::new()),
             post_commit_view: BTreeStore {
                 map: Arc::clone(&self.map),
                 hooks: HookState::default(),
@@ -157,6 +158,9 @@ pub struct BTreeTx {
     hooks: HookState,
     validators: Vec<Arc<dyn Validator>>,
     staged: std::sync::Mutex<Vec<ChangeEvent>>,
+    /// Committed values that the transaction requires at commit time. The
+    /// condition is `None` for an absent key.
+    preconditions: std::sync::Mutex<BTreeMap<String, Option<Vec<u8>>>>,
     post_commit_view: BTreeStore,
 }
 
@@ -213,7 +217,7 @@ impl GetSet for BTreeTx {
 
     async fn gets_bytes(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
@@ -227,7 +231,7 @@ impl GetSet for BTreeTx {
 
     async fn gets_keys(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<String>> {
@@ -250,12 +254,52 @@ impl BTreeTx {
             None => staged.push(event),
         }
     }
+
+    /// Records the committed value that `key` must have at commit time.
+    fn require_committed(&self, key: &str, expected: Option<Vec<u8>>) {
+        lock_ignore_poison(&self.preconditions).insert(key.to_string(), expected);
+    }
+
+    /// Stages a delete without a read of the current overlay state.
+    fn stage_delete(&self, key: &str, old_value: Option<Vec<u8>>) {
+        lock_ignore_poison(&self.overlay).insert(key.to_string(), None);
+        self.stage(ChangeEvent {
+            key: key.to_string(),
+            kind: ChangeKind::Delete,
+            old_value,
+            new_value: None,
+            seq: 0,
+        });
+    }
+}
+
+#[async_trait]
+impl TxCas for BTreeTx {
+    async fn set_if_absent(&self, key: &str, value: &[u8]) -> Result<()> {
+        self.put_bytes(key, value).await?;
+        self.require_committed(key, None);
+        Ok(())
+    }
+
+    async fn compare_and_set(&self, key: &str, expected: Option<&[u8]>, new: &[u8]) -> Result<()> {
+        self.put_bytes(key, new).await?;
+        self.require_committed(key, expected.map(<[u8]>::to_vec));
+        Ok(())
+    }
+
+    async fn delete_if(&self, key: &str, expected: &[u8]) -> Result<()> {
+        let old_value = self.get_bytes(key).await?;
+        self.stage_delete(key, old_value);
+        self.require_committed(key, Some(expected.to_vec()));
+        Ok(())
+    }
 }
 
 #[async_trait]
 impl Transaction for BTreeTx {
     async fn commit(self) -> Result<()> {
         let staged = lock_ignore_poison(&self.staged).clone();
+        let preconditions = lock_ignore_poison(&self.preconditions).clone();
         for event in &staged {
             if let (ChangeKind::Set, Some(value)) = (event.kind, event.new_value.as_deref()) {
                 let view = crate::store::hooks::RevalidateView {
@@ -270,7 +314,18 @@ impl Transaction for BTreeTx {
 
         let overlay = std::mem::take(&mut *lock_ignore_poison(&self.overlay));
         {
+            // The precondition check and the overlay apply share one write
+            // lock. The check reads the shared map, not the overlay.
             let mut guard = rwlock_ignore_poison(&self.store);
+            for (key, expected) in &preconditions {
+                let current = guard.get(key).cloned();
+                if current.as_deref() != expected.as_deref() {
+                    return Err(super::StoreError::TxConflict {
+                        key: key.clone(),
+                        current,
+                    });
+                }
+            }
             for (k, v) in overlay {
                 match v {
                     Some(val) => {
@@ -341,9 +396,8 @@ where
 fn build_next(
     map: &BTreeMap<String, Vec<u8>>,
     cursor: &(Option<String>, Option<String>),
-    limit: Option<u32>,
+    limit: Option<usize>,
 ) -> Vec<KeyValue> {
-    let limit = limit.map(|l| l as usize);
     match (&cursor.0, &cursor.1) {
         (Some(start), Some(end)) => {
             if start > end {
@@ -361,9 +415,8 @@ fn build_next(
 fn build_prev(
     map: &BTreeMap<String, Vec<u8>>,
     cursor: &(Option<String>, Option<String>),
-    limit: Option<u32>,
+    limit: Option<usize>,
 ) -> Vec<KeyValue> {
-    let limit = limit.map(|l| l as usize);
     let (start_opt, end_opt) = cursor;
 
     let Some(start) = start_opt else {
@@ -422,9 +475,8 @@ where
 fn build_next_keys(
     map: &BTreeMap<String, Vec<u8>>,
     cursor: &(Option<String>, Option<String>),
-    limit: Option<u32>,
+    limit: Option<usize>,
 ) -> Vec<String> {
-    let limit = limit.map(|l| l as usize);
     match (&cursor.0, &cursor.1) {
         (Some(start), Some(end)) => {
             if start > end {
@@ -442,9 +494,8 @@ fn build_next_keys(
 fn build_prev_keys(
     map: &BTreeMap<String, Vec<u8>>,
     cursor: &(Option<String>, Option<String>),
-    limit: Option<u32>,
+    limit: Option<usize>,
 ) -> Vec<String> {
-    let limit = limit.map(|l| l as usize);
     let (start_opt, end_opt) = cursor;
 
     let Some(start) = start_opt else {
@@ -468,10 +519,6 @@ fn limit_reached(limit: Option<usize>, len: usize) -> bool {
 
 type SideItem<'a> = (&'a String, &'a Vec<u8>);
 type SideIter<'a> = Box<dyn Iterator<Item = SideItem<'a>> + 'a>;
-
-fn limit_of(limit: Option<u32>) -> Option<usize> {
-    limit.map(|l| l as usize)
-}
 
 /// Store-side iterator for the given cursor and direction. The iterator skips
 /// every key that the overlay contains. The overlay value wins for a skipped
@@ -622,13 +669,13 @@ fn build_next_overlay(
     store: &BTreeMap<String, Vec<u8>>,
     overlay: &BTreeMap<String, Option<Vec<u8>>>,
     cursor: &(Option<String>, Option<String>),
-    limit: Option<u32>,
+    limit: Option<usize>,
 ) -> Vec<KeyValue> {
     let overlay_keys: HashSet<&String> = overlay.keys().collect();
     merge_sides(
         store_side(store, cursor, &overlay_keys, true).peekable(),
         overlay_side(overlay, cursor, true).peekable(),
-        limit_of(limit),
+        limit,
         true,
     )
 }
@@ -641,13 +688,13 @@ fn build_prev_overlay(
     store: &BTreeMap<String, Vec<u8>>,
     overlay: &BTreeMap<String, Option<Vec<u8>>>,
     cursor: &(Option<String>, Option<String>),
-    limit: Option<u32>,
+    limit: Option<usize>,
 ) -> Vec<KeyValue> {
     let overlay_keys: HashSet<&String> = overlay.keys().collect();
     merge_sides(
         store_side(store, cursor, &overlay_keys, false).peekable(),
         overlay_side(overlay, cursor, false).peekable(),
-        limit_of(limit),
+        limit,
         false,
     )
 }
@@ -694,13 +741,13 @@ fn build_next_overlay_keys(
     store: &BTreeMap<String, Vec<u8>>,
     overlay: &BTreeMap<String, Option<Vec<u8>>>,
     cursor: &(Option<String>, Option<String>),
-    limit: Option<u32>,
+    limit: Option<usize>,
 ) -> Vec<String> {
     let overlay_keys: HashSet<&String> = overlay.keys().collect();
     merge_side_keys(
         store_side(store, cursor, &overlay_keys, true).peekable(),
         overlay_side(overlay, cursor, true).peekable(),
-        limit_of(limit),
+        limit,
         true,
     )
 }
@@ -713,13 +760,13 @@ fn build_prev_overlay_keys(
     store: &BTreeMap<String, Vec<u8>>,
     overlay: &BTreeMap<String, Option<Vec<u8>>>,
     cursor: &(Option<String>, Option<String>),
-    limit: Option<u32>,
+    limit: Option<usize>,
 ) -> Vec<String> {
     let overlay_keys: HashSet<&String> = overlay.keys().collect();
     merge_side_keys(
         store_side(store, cursor, &overlay_keys, false).peekable(),
         overlay_side(overlay, cursor, false).peekable(),
-        limit_of(limit),
+        limit,
         false,
     )
 }

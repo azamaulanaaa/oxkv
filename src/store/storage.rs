@@ -11,7 +11,8 @@
 //!
 //! Backends report two conditions. These conditions let the engine's CAS-retry
 //! logic work uniformly without backend-specific types:
-//! - missing object: [`StoreError::Storage`] whose message contains `not found`
+//! - missing object: [`StoreError::Storage`] with
+//!   [`StorageCause::NotFound`] and `not found` in `message`
 //! - conditional-write conflict: [`StoreError::CasConflict`]
 //!
 //! Conditional reads map `ETag` matches to [`StoreError::NotModified`].
@@ -122,6 +123,46 @@ pub struct GetOutput {
     pub version: Option<String>,
 }
 
+/// Coarse cause of a storage failure.
+///
+/// The cause names the kind of failure. It does not change retry
+/// classification. Every cause maps to
+/// [`ErrorKind::Transient`](crate::store::ErrorKind::Transient).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StorageCause {
+    /// The object is absent.
+    NotFound,
+    /// A network request failed. A retry can succeed.
+    Network,
+    /// An I/O operation failed. A retry can succeed.
+    Io,
+    /// The object bytes are not valid. This includes a parse failure and a
+    /// checksum failure.
+    Corrupt,
+    /// The group-commit leader stopped before it reported the outcome.
+    LeaderLost,
+    /// The failure has no finer cause.
+    Other,
+}
+
+/// A storage failure with a structured cause.
+///
+/// The cause does not change the retry class. See [`StorageCause`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorageError {
+    /// Context for the failure. This includes the operation and the object
+    /// path where the code knows them.
+    pub message: String,
+    /// Coarse cause of the failure.
+    pub cause: StorageCause,
+}
+
+impl std::fmt::Display for StorageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
 /// Minimal object-store surface required by the LSM engine.
 ///
 /// See the module-level contracts above for how backends must report
@@ -132,7 +173,8 @@ pub trait Storage: Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// Returns a `not found` [`StoreError::Storage`] when the object is missing.
+    /// Returns a `not found` [`StoreError::Storage`] with
+    /// [`StorageCause::NotFound`] when the object is missing.
     async fn get(&self, path: &ObjectPath) -> Result<GetOutput>;
 
     /// Fetches with `options` (e.g. `If-None-Match` for manifest polling).
@@ -140,7 +182,7 @@ pub trait Storage: Send + Sync + 'static {
     /// # Errors
     ///
     /// Returns [`StoreError::NotModified`] on an etag match. It returns
-    /// `not found` when the object is missing.
+    /// `not found` with [`StorageCause::NotFound`] when the object is missing.
     async fn get_opts(&self, path: &ObjectPath, options: GetOptions) -> Result<GetOutput>;
 
     /// Puts `payload` at `path` with `mode` (`Create` = `If-None-Match`,
@@ -217,10 +259,9 @@ impl MemStorage {
 impl Storage for MemStorage {
     async fn get(&self, path: &ObjectPath) -> Result<GetOutput> {
         let inner = self.inner.lock().await;
-        let obj = inner
-            .objects
-            .get(path.as_str())
-            .ok_or_else(|| StoreError::Storage(format!("not found: {path}")))?;
+        let obj = inner.objects.get(path.as_str()).ok_or_else(|| {
+            StoreError::storage_with_cause(format!("not found: {path}"), StorageCause::NotFound)
+        })?;
         Ok(GetOutput {
             bytes: obj.bytes.clone(),
             e_tag: Some(obj.etag.clone()),
@@ -400,6 +441,7 @@ mod tests {
         store.delete(&path).await.expect("missing delete is Ok");
         let err = store.get(&path).await.expect_err("missing get fails");
         assert!(err.to_string().contains("not found"), "{err}");
+        assert_eq!(err.storage_cause(), Some(StorageCause::NotFound));
         store
             .put_opts(&path, b"1".to_vec(), PutMode::Create)
             .await

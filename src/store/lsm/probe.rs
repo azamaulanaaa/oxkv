@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use crate::store::storage::{ObjectPath, ObjectVersion, PutMode, Storage};
-use crate::store::{Result, StoreError};
+use crate::store::{Result, StoreError, storage_context};
 
 fn probe_path(prefix: &ObjectPath) -> ObjectPath {
     let base = if prefix.is_empty() {
@@ -28,7 +28,7 @@ pub(crate) async fn probe_store(store: Arc<dyn Storage>, prefix: &ObjectPath) ->
     let first = store
         .put_opts(&path, b"probe".to_vec(), PutMode::Create)
         .await
-        .map_err(|e| StoreError::Storage(format!("probe create failed: {e}")))?;
+        .map_err(|e| storage_context("probe create failed", e))?;
 
     let second = store
         .put_opts(&path, b"probe2".to_vec(), PutMode::Create)
@@ -37,15 +37,16 @@ pub(crate) async fn probe_store(store: Arc<dyn Storage>, prefix: &ObjectPath) ->
         Err(StoreError::CasConflict(_)) => {}
         Ok(_) => {
             let _ = store.delete(&path).await;
-            return Err(StoreError::Storage(
-                "probe store accepted duplicate create — conditional writes not enforced (needs S3/R2/GCS/Azure, not B2/Hetzner)".to_string(),
+            return Err(StoreError::storage(
+                "probe store accepted duplicate create — conditional writes not enforced (needs S3/R2/GCS/Azure, not B2/Hetzner)",
             ));
         }
         Err(e) => {
             let _ = store.delete(&path).await;
-            return Err(StoreError::Storage(format!(
-                "probe second create unexpected error (expected CAS conflict): {e}"
-            )));
+            return Err(storage_context(
+                "probe second create unexpected error (expected CAS conflict)",
+                e,
+            ));
         }
     }
 
@@ -60,16 +61,16 @@ pub(crate) async fn probe_store(store: Arc<dyn Storage>, prefix: &ObjectPath) ->
         Err(StoreError::CasConflict(_)) => {}
         Ok(_) => {
             let _ = store.delete(&path).await;
-            return Err(StoreError::Storage(
-                "probe store accepted stale If-Match — conditional overwrite not enforced"
-                    .to_string(),
+            return Err(StoreError::storage(
+                "probe store accepted stale If-Match — conditional overwrite not enforced",
             ));
         }
         Err(e) => {
             let _ = store.delete(&path).await;
-            return Err(StoreError::Storage(format!(
-                "probe stale update unexpected error (expected CAS conflict): {e}"
-            )));
+            return Err(storage_context(
+                "probe stale update unexpected error (expected CAS conflict)",
+                e,
+            ));
         }
     }
 
@@ -80,12 +81,12 @@ pub(crate) async fn probe_store(store: Arc<dyn Storage>, prefix: &ObjectPath) ->
     store
         .put_opts(&path, b"probe-ok".to_vec(), PutMode::Update(valid))
         .await
-        .map_err(|e| StoreError::Storage(format!("probe valid update failed: {e}")))?;
+        .map_err(|e| storage_context("probe valid update failed", e))?;
 
     store
         .delete(&path)
         .await
-        .map_err(|e| StoreError::Storage(format!("probe cleanup failed: {e}")))?;
+        .map_err(|e| storage_context("probe cleanup failed", e))?;
 
     Ok(())
 }

@@ -30,9 +30,13 @@ pub use btree::{BTreeStore, BTreeTx};
 mod btree;
 mod cas;
 pub use cas::{Cas, CasResult};
+mod feed;
+pub use feed::{ChangeFeed, FeedEntry};
+mod tx_cas;
 pub use hooks::{
     ChangeEvent, ChangeKind, HookState, Hooked, Hooks, Observer, Scope, StoreView, Validator,
 };
+pub use tx_cas::TxCas;
 mod hooks;
 pub mod testkit;
 pub use testkit::unique_prefix;
@@ -42,6 +46,12 @@ mod cache;
 mod lsm;
 mod scan;
 pub use scan::{KeyPrefix, Page, ScanExt};
+mod scoped;
+pub use scoped::{ScopedStore, ScopedTx};
+mod snapshot;
+pub use snapshot::{Snapshot, SnapshotTx};
+mod stats;
+pub use stats::{StatsStore, StatsTx, StoreStats};
 mod storage;
 #[cfg(feature = "oxkv")]
 pub use cache::{Cache, CacheStats, LruCache};
@@ -52,6 +62,7 @@ pub use lsm::internals;
 pub use lsm::{OxKvReader, OxKvRoTx, OxKvStore, OxKvStoreBuilder, OxKvTx, SstFile};
 pub use storage::{
     GetOptions, GetOutput, MemStorage, ObjectPath, ObjectVersion, PutMode, PutOutcome, Storage,
+    StorageCause, StorageError,
 };
 
 /// A specialized `Result` type for store operations.
@@ -120,8 +131,16 @@ pub(crate) fn now_millis() -> u64 {
 #[derive(Debug, Clone, Error)]
 pub enum StoreError {
     /// An error originating from the underlying storage engine.
+    ///
+    /// The payload holds the message and a [`StorageCause`]. The cause does
+    /// not change the retry class: every storage cause maps to
+    /// [`ErrorKind::Transient`].
+    ///
+    /// This one class covers a backend failure, an I/O failure, and a lost
+    /// group-commit leader. A write that returns this variant can have an
+    /// unknown outcome. Read the key back before a retry.
     #[error("storage error: {0}")]
-    Storage(String),
+    Storage(StorageError),
 
     /// A conditional-write precondition failed. A create uses `If-None-Match`.
     /// An update uses `If-Match`. Someone else won the CAS race.
@@ -131,6 +150,24 @@ pub enum StoreError {
     /// otherwise.
     #[error("CAS conflict: {0}")]
     CasConflict(String),
+
+    /// A transaction precondition failed at commit. No staged write applied.
+    ///
+    /// The variant comes from [`TxCas`] and only from a transaction commit.
+    /// The `key` names the precondition that failed. `current` is the
+    /// committed value at the moment of the check. A value of `None` means
+    /// that the key was absent.
+    ///
+    /// The error is retryable. Re-read the current state, stage the
+    /// precondition again, and retry the transaction.
+    #[error("transaction conflict on `{key}`")]
+    TxConflict {
+        /// The key whose precondition failed.
+        key: String,
+        /// The committed value at the moment of the check. `None` means that
+        /// the key was absent.
+        current: Option<Vec<u8>>,
+    },
 
     /// A serialization or deserialization error (e.g., JSON).
     #[error("serialization error: {0}")]
@@ -187,7 +224,7 @@ impl StoreError {
     #[must_use]
     pub fn kind(&self) -> ErrorKind {
         match self {
-            StoreError::CasConflict(_) => ErrorKind::Conflict,
+            StoreError::CasConflict(_) | StoreError::TxConflict { .. } => ErrorKind::Conflict,
             StoreError::Storage(_) => ErrorKind::Transient,
             StoreError::Fenced(_) => ErrorKind::Fenced,
             StoreError::Rejected { .. } => ErrorKind::Rejected,
@@ -222,13 +259,59 @@ impl StoreError {
     pub fn retry_after(&self) -> Option<std::time::Duration> {
         None
     }
+
+    /// Creates a storage error with cause [`StorageCause::Other`].
+    #[must_use]
+    pub fn storage(message: impl Into<String>) -> Self {
+        Self::Storage(StorageError {
+            message: message.into(),
+            cause: StorageCause::Other,
+        })
+    }
+
+    /// Creates a storage error with `cause`.
+    #[must_use]
+    pub fn storage_with_cause(message: impl Into<String>, cause: StorageCause) -> Self {
+        Self::Storage(StorageError {
+            message: message.into(),
+            cause,
+        })
+    }
+
+    /// Returns the structured cause when this is a [`StoreError::Storage`].
+    ///
+    /// Returns `None` for every other variant.
+    #[must_use]
+    pub fn storage_cause(&self) -> Option<StorageCause> {
+        match self {
+            StoreError::Storage(error) => Some(error.cause),
+            _ => None,
+        }
+    }
+}
+
+/// Adds context to a storage failure and keeps its cause.
+///
+/// When `error` is already a [`StoreError::Storage`], the new error keeps its
+/// [`StorageCause`]. Any other error becomes a storage error with cause
+/// [`StorageCause::Other`]. The message includes the display text of `error`.
+#[must_use]
+#[cfg(feature = "oxkv")]
+pub(crate) fn storage_context(context: impl std::fmt::Display, error: StoreError) -> StoreError {
+    match error {
+        StoreError::Storage(inner) => StoreError::Storage(StorageError {
+            message: format!("{context}: {}", inner.message),
+            cause: inner.cause,
+        }),
+        other => StoreError::storage(format!("{context}: {other}")),
+    }
 }
 
 impl PartialEq for StoreError {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (StoreError::Storage(a), StoreError::Storage(b))
-            | (StoreError::Serialization(a), StoreError::Serialization(b))
+            (StoreError::Storage(a), StoreError::Storage(b)) => a == b,
+            (StoreError::Serialization(a), StoreError::Serialization(b))
             | (StoreError::Other(a), StoreError::Other(b))
             | (StoreError::CasConflict(a), StoreError::CasConflict(b))
             | (StoreError::Fenced(a), StoreError::Fenced(b)) => a == b,
@@ -245,6 +328,16 @@ impl PartialEq for StoreError {
                     reason: rb,
                 },
             ) => ka == kb && ra == rb,
+            (
+                StoreError::TxConflict {
+                    key: ka,
+                    current: ca,
+                },
+                StoreError::TxConflict {
+                    key: kb,
+                    current: cb,
+                },
+            ) => ka == kb && ca == cb,
             (StoreError::NotModified, StoreError::NotModified) => true,
             _ => false,
         }
@@ -385,7 +478,7 @@ pub trait GetSet {
     ///
     /// # Parameters
     ///
-    /// - `limit`: Maximum number of items to return. If `None`, all matching items are returned.
+    /// - `limit`: Maximum number of items to return. If `None`, all matching items are returned and the call can exhaust memory.
     /// - `direction`: Whether to traverse in ascending (`Next`) or descending (`Prev`) order.
     /// - `cursor`: A tuple of optional start and end cursors (both inclusive).
     ///
@@ -412,7 +505,7 @@ pub trait GetSet {
     /// Returns a [`StoreError`] if the underlying storage fails.
     async fn gets_bytes(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>>;
@@ -427,6 +520,15 @@ pub trait GetSet {
     /// A backend overrides this method when it can read keys without loading
     /// values.
     ///
+    /// These public backends override this method: `BTreeStore`, `BTreeTx`,
+    /// `OxKvStore`, and `OxKvTx`. The LSM override skips blob dereference and
+    /// output value copies. It still decodes SST value bytes and copies
+    /// `MemTable` values.
+    ///
+    /// These implementations use the default body and therefore read values:
+    /// `Hooked`, `CachedOxKvStore`, `CachedTx`, `OtelStore`, `OtelTx`,
+    /// `OxKvReader`, `OxKvRoTx`, and any custom backend that does not override.
+    ///
     /// A limit of `Some(0)` returns an empty vector. A limit of `None` reads
     /// every matching key and can exhaust memory.
     ///
@@ -435,7 +537,7 @@ pub trait GetSet {
     /// Returns a [`StoreError`] if the underlying storage fails.
     async fn gets_keys(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<String>> {
@@ -491,7 +593,11 @@ pub trait Store: GetSet {
     /// `type Transaction = OxKvTx;`. This design allows zero-cost
     /// monomorphization. Zero-cost monomorphization requires no heap allocation
     /// and no vtable dispatch.
-    type Transaction: Transaction + Send;
+    ///
+    /// The `Sync` bound lets a generic `S: Store` adapter call default
+    /// [`GetSet`] methods such as [`GetSet::put_bytes`]. The default body of
+    /// those methods needs `Self: Sync`.
+    type Transaction: Transaction + Send + Sync;
 
     /// Begins a new write transaction.
     ///
@@ -513,6 +619,11 @@ pub trait StoreExt: Store {
     /// Equivalent to concatenating every chunk yielded by
     /// [`save_stream`](Self::save_stream). For large stores prefer streaming
     /// directly to the destination instead.
+    ///
+    /// The output is a logical dump. It is not a point-in-time backup. The
+    /// call pages live reads. A concurrent committed write can appear between
+    /// pages. A concurrent delete can be missed. For a fixed view, call
+    /// [`snapshot`](Self::snapshot) first and then call `save` on the snapshot.
     ///
     /// # Errors
     ///
@@ -538,6 +649,12 @@ pub trait StoreExt: Store {
     /// concatenate to exactly what [`save`](Self::save) returns. Boundaries
     /// always fall between whole records, so each chunk can be decoded
     /// independently downstream.
+    ///
+    /// The stream is a logical dump. It is not a point-in-time backup. Each
+    /// page is a live read. A concurrent committed write can appear between
+    /// pages. A concurrent delete can be missed. For a fixed view, call
+    /// [`snapshot`](Self::snapshot) first and then call `save_stream` on the
+    /// snapshot.
     fn save_stream(&self) -> Pin<Box<dyn Stream<Item = Result<Vec<u8>>> + Send + '_>>
     where
         // The returned stream must itself be Send. That requirement needs the
@@ -548,9 +665,38 @@ pub trait StoreExt: Store {
         Box::pin(SaveStream::new(self))
     }
 
-    /// Loads all key-value pairs directly from a `&[u8]` slice into the store.
+    /// Returns a fixed, read-only copy of every key and value in the store.
     ///
-    /// Equivalent to [`load_stream`](fn@load_stream) over a single chunk.
+    /// The method reads every pair one time and stores the pairs in a
+    /// [`Snapshot`]. A write or a delete on this store after the call does
+    /// not change the snapshot. A snapshot that needs the data after the
+    /// source store changes is safe to use.
+    ///
+    /// The snapshot materializes every key and every value. Its memory use is
+    /// the sum of the sizes of all keys and values in the store. Do not call
+    /// this method when the store does not fit in memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`StoreError`] if the read fails.
+    async fn snapshot(&self) -> Result<Snapshot>
+    where
+        Self: Sync,
+    {
+        let rows = self.gets_bytes(None, Direction::Next, (None, None)).await?;
+        Ok(Snapshot::from_rows(rows))
+    }
+
+    /// Loads all key-value pairs directly from a `&[u8]` slice into the store,
+    /// inside one transaction.
+    ///
+    /// Equivalent to [`load_stream`](fn@load_stream) over a single chunk. The
+    /// call stages the whole payload in one transaction. Memory use and the
+    /// commit object grow with the payload. For a large backup, use
+    /// [`load_chunked`](Self::load_chunked).
+    ///
+    /// Keys and values use 32-bit lengths. A key or value of 4 GiB or more
+    /// fails. There is no explicit entry-count cap.
     ///
     /// # Errors
     ///
@@ -562,6 +708,49 @@ pub trait StoreExt: Store {
         load_stream(
             self,
             stream::iter(std::iter::once(Ok::<_, StoreError>(data))),
+        )
+        .await
+    }
+
+    /// Returns a handle that maps every key to `{prefix}/{key}`.
+    ///
+    /// An empty prefix leaves keys unchanged. The handle returns unscoped keys
+    /// to the caller. Cursors map in both directions, and a scan stays inside
+    /// the scope even when its cursor is unbounded.
+    ///
+    /// The handle clones `self`. A store with a cheap clone shares its cache,
+    /// client, and session with the handle.
+    #[must_use]
+    fn scoped(&self, prefix: impl Into<String>) -> ScopedStore<Self>
+    where
+        Self: Clone + Sized,
+    {
+        ScopedStore::new(self.clone(), prefix)
+    }
+
+    /// Loads key-value pairs from a `&[u8]` slice and commits one transaction
+    /// every `page_size` records.
+    ///
+    /// Equivalent to [`load_stream_chunked`](fn@load_stream_chunked) over a
+    /// single chunk. Memory use stays bounded by one page plus the decoder
+    /// buffer, not by the whole payload.
+    ///
+    /// A failure after a commit leaves the earlier pages committed. A failure
+    /// inside a page drops that page. The store never rolls back a page that
+    /// already committed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Other`] when `page_size` is zero. Returns a
+    /// [`StoreError`] if the payload is malformed or writing fails.
+    async fn load_chunked(&self, data: &[u8], page_size: usize) -> Result<usize>
+    where
+        Self: Sized,
+    {
+        load_stream_chunked(
+            self,
+            stream::iter(std::iter::once(Ok::<_, StoreError>(data))),
+            page_size,
         )
         .await
     }
@@ -595,6 +784,18 @@ fn write_snapshot_header(buffer: &mut Vec<u8>) {
 /// bounded by the largest pending record. Memory does not scale with the total
 /// payload. Typical sources are files, network bodies, and JS `ReadableStream`s
 /// bridged via `wasm-streams` (see the WASM bindings).
+///
+/// # Size limits
+///
+/// Decoding memory stays bounded by the largest pending record. Every decoded
+/// record is staged in one transaction, so the transaction overlay grows with
+/// the total payload. The commit writes one WAL object. A large backup
+/// therefore costs memory and one large object. For a large backup, use
+/// [`load_stream_chunked`], which commits one transaction per page.
+///
+/// Keys and values use 32-bit lengths. A key or value of 4 GiB or more is not
+/// representable, so the save path rejects it and this function rejects such a
+/// payload. There is no explicit entry-count cap.
 ///
 /// A failure leaves `store` untouched. This function drops the transaction
 /// without a commit. The drop discards every staged write.
@@ -658,13 +859,98 @@ where
     Ok(count)
 }
 
+/// Loads key-value pairs from an arbitrary source of byte chunks into `store`,
+/// with one transaction committed every `page_size` records.
+///
+/// This function uses the same incremental decoder as [`load_stream`]. A chunk
+/// may split anywhere. Memory use stays bounded by one page plus the decoder
+/// buffer, not by the whole payload.
+///
+/// A failure after a commit leaves the earlier pages committed. A failure
+/// inside a page drops that page. The function never rolls back a page that
+/// already committed. The caller that needs all-or-nothing behavior must use
+/// [`load_stream`].
+///
+/// Returns the number of records loaded.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Other`] when `page_size` is zero. Returns a
+/// [`StoreError`] in the following cases:
+/// - Any chunk returns an error (`E: Into<StoreError>`).
+/// - The payload is not an oxkv snapshot.
+/// - The format version of the payload is not supported.
+/// - The stream ends mid-header or mid-record.
+/// - A write or commit fails.
+pub async fn load_stream_chunked<T, C, E, S>(
+    store: &T,
+    chunks: S,
+    page_size: usize,
+) -> Result<usize>
+where
+    T: Store + ?Sized,
+    C: AsRef<[u8]>,
+    E: Into<StoreError>,
+    S: Stream<Item = std::result::Result<C, E>> + Unpin,
+{
+    if page_size == 0 {
+        return Err(StoreError::Other(
+            "load_stream_chunked: page_size must be greater than zero".into(),
+        ));
+    }
+
+    let mut count = 0usize;
+    let mut in_page = 0usize;
+    let mut decoder = RecordDecoder::new();
+    let mut chunks = chunks;
+    let mut tx = store.begin_tx()?;
+
+    while let Some(item) = chunks.next().await {
+        let chunk = item.map_err(Into::into)?;
+        decoder.push(chunk.as_ref());
+
+        // Validate and consume the versioned header before any record is
+        // accepted. The function rejects an unknown producer up front.
+        if !decoder.header_validated && !decoder.validate_header()? {
+            continue; // header still arriving
+        }
+
+        while let Some((key, value)) = decoder.next_record()? {
+            tx.set_bytes(&key, &value).await?;
+            count += 1;
+            in_page += 1;
+            if in_page == page_size {
+                tx.commit().await?;
+                in_page = 0;
+                tx = store.begin_tx()?;
+            }
+        }
+        decoder.compact();
+    }
+
+    if !decoder.header_validated {
+        return Err(StoreError::Serialization(
+            "Truncated snapshot header at end of input".into(),
+        ));
+    }
+    if !decoder.is_empty() {
+        return Err(StoreError::Serialization(
+            "Truncated record at end of input".into(),
+        ));
+    }
+    if in_page > 0 {
+        tx.commit().await?;
+    }
+    Ok(count)
+}
+
 impl<T: Store> StoreExt for T {}
 
 /// Target size above which [`SaveStream`] flushes its internal buffer.
 const SAVE_CHUNK_TARGET: usize = 16 * 1024;
 
 /// Batch size used for paginated reads while streaming a save.
-const SAVE_BATCH_SIZE: u32 = 256;
+const SAVE_BATCH_SIZE: usize = 256;
 
 /// In-flight batch read held by [`SaveStream`] between polls.
 type PendingBatch<'a> = Pin<Box<dyn Future<Output = Result<Vec<KeyValue>>> + Send + 'a>>;
@@ -675,6 +961,11 @@ type PendingBatch<'a> = Pin<Box<dyn Future<Output = Result<Vec<KeyValue>>> + Sen
 /// in ascending key order. Boundaries always fall between records, so each
 /// chunk decodes independently. Reading is lazy. Nothing is fetched until the
 /// stream is polled. Only one page of 256 entries is held at a time.
+///
+/// The stream is a logical dump. It is not a point-in-time backup. Each page
+/// is a live read. A concurrent committed write can appear between pages. A
+/// concurrent delete can be missed. For a fixed view, call
+/// [`StoreExt::snapshot`] first and then call `save_stream` on the snapshot.
 #[must_use = "streams do nothing unless polled"]
 pub struct SaveStream<'a, S> {
     inner: &'a S,
@@ -747,7 +1038,7 @@ where
                             }
                             this.cursor = last_key;
 
-                            let is_last_batch = batch.len() < SAVE_BATCH_SIZE as usize;
+                            let is_last_batch = batch.len() < SAVE_BATCH_SIZE;
                             // The stream also stops when every entry was
                             // skipped. That step avoids fetching the same
                             // inclusive-cursor page forever.
@@ -960,9 +1251,12 @@ impl<T: GetSet> GetSetExt for T {}
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::{ErrorKind, StoreError};
     #[cfg(feature = "btree")]
-    use super::{GetSet, SNAPSHOT_HEADER_LEN, StoreExt, load_stream};
+    use super::{
+        BTreeStore, Direction, GetSet, SNAPSHOT_HEADER_LEN, Store, StoreExt, Transaction,
+        encode_record, load_stream, load_stream_chunked, write_snapshot_header,
+    };
+    use super::{ErrorKind, StorageCause, StoreError};
     #[cfg(feature = "btree")]
     use futures::stream;
 
@@ -974,13 +1268,22 @@ mod tests {
         let cases = [
             (
                 "Storage",
-                StoreError::Storage("backend failed".into()),
+                StoreError::storage("backend failed"),
                 ErrorKind::Transient,
                 true,
             ),
             (
                 "CasConflict",
                 StoreError::CasConflict("key changed".into()),
+                ErrorKind::Conflict,
+                true,
+            ),
+            (
+                "TxConflict",
+                StoreError::TxConflict {
+                    key: "claim".into(),
+                    current: Some(b"other".to_vec()),
+                },
                 ErrorKind::Conflict,
                 true,
             ),
@@ -1048,6 +1351,31 @@ mod tests {
         }
     }
 
+    /// The transaction conflict keeps its key and its committed value. The
+    /// display text names the failing key.
+    #[test]
+    fn tx_conflict_reports_the_key_and_the_committed_value() {
+        let error = StoreError::TxConflict {
+            key: "claim".into(),
+            current: Some(b"other".to_vec()),
+        };
+        assert_eq!(error.to_string(), "transaction conflict on `claim`");
+        assert_eq!(
+            error,
+            StoreError::TxConflict {
+                key: "claim".into(),
+                current: Some(b"other".to_vec()),
+            }
+        );
+        assert_ne!(
+            error,
+            StoreError::TxConflict {
+                key: "claim".into(),
+                current: None,
+            }
+        );
+    }
+
     /// `is_retryable` must follow `kind`, not a second mapping.
     #[test]
     fn only_conflict_and_transient_are_retryable() {
@@ -1066,6 +1394,49 @@ mod tests {
                 "{kind:?}"
             );
         }
+    }
+
+    /// A storage cause is available through the accessor and it does not
+    /// change the retry class.
+    #[test]
+    fn storage_cause_is_structured_and_still_transient() {
+        let error = StoreError::storage_with_cause("not found: wal/1", StorageCause::NotFound);
+        assert_eq!(error.storage_cause(), Some(StorageCause::NotFound));
+        assert_eq!(error.kind(), ErrorKind::Transient);
+        assert!(error.is_retryable(), "storage errors stay retryable");
+
+        assert_eq!(
+            StoreError::storage("misc").storage_cause(),
+            Some(StorageCause::Other)
+        );
+        assert_eq!(StoreError::Other("misc".into()).storage_cause(), None);
+    }
+
+    /// The `not found` contract reads the structured message field.
+    #[test]
+    fn not_found_contract_reads_the_message_field() {
+        let error = StoreError::storage_with_cause("not found: wal/1", StorageCause::NotFound);
+        assert!(
+            matches!(&error, StoreError::Storage(storage) if storage.message.contains("not found")),
+            "{error:?}"
+        );
+    }
+
+    /// An added context layer must keep a nested storage cause.
+    #[cfg(feature = "oxkv")]
+    #[test]
+    fn storage_context_keeps_the_nested_cause() {
+        let inner = StoreError::storage_with_cause("not found: wal/1", StorageCause::NotFound);
+        let wrapped = super::storage_context("read wal wal/1 failed", inner);
+        assert_eq!(wrapped.storage_cause(), Some(StorageCause::NotFound));
+        assert!(
+            wrapped.to_string().contains("read wal wal/1 failed"),
+            "{wrapped}"
+        );
+        assert!(
+            wrapped.to_string().contains("not found: wal/1"),
+            "{wrapped}"
+        );
     }
 
     /// No test ever constructed the public UTF-8 error variants. Their
@@ -1093,13 +1464,33 @@ mod tests {
         assert_ne!(e, owned);
     }
 
+    /// The public scan methods accept `usize` limits and `None`.
+    #[cfg(feature = "btree")]
+    #[tokio::test]
+    async fn scan_methods_accept_usize_limits() {
+        let store = BTreeStore::default();
+        store.set_bytes("key", b"value").await.unwrap();
+
+        let rows = store
+            .gets_bytes(Some(10usize), Direction::Next, (None, None))
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+
+        let keys = store
+            .gets_keys(None, Direction::Next, (None, None))
+            .await
+            .unwrap();
+        assert_eq!(keys, ["key"]);
+    }
+
     /// A chunk-level failure must surface *as that error*, not as some
     /// unrelated failure that happens to also be an `Err`.
     #[cfg(feature = "btree")]
     #[tokio::test]
     async fn load_stream_propagates_the_chunk_error_identity() {
         let store = crate::store::BTreeStore::default();
-        let injected = StoreError::Storage("injected chunk failure".to_string());
+        let injected = StoreError::storage("injected chunk failure");
         let err = load_stream(&store, stream::iter([Err::<Vec<u8>, _>(injected.clone())]))
             .await
             .expect_err("chunk error must propagate");
@@ -1109,6 +1500,27 @@ mod tests {
         assert!(
             saved.len() <= SNAPSHOT_HEADER_LEN,
             "a failed load must not commit"
+        );
+    }
+
+    /// A generic adapter over `S: Store` must call `put_bytes` on the
+    /// transaction type. The `Sync` bound on `Store::Transaction` makes the
+    /// default `async_trait` body available here.
+    #[cfg(feature = "btree")]
+    #[tokio::test]
+    async fn put_bytes_is_callable_through_a_generic_store() {
+        async fn blind_write<S: Store>(store: &S) {
+            let tx = store.begin_tx().expect("begin transaction");
+            tx.put_bytes("k", b"v").await.expect("blind write");
+            tx.commit().await.expect("commit");
+        }
+
+        let store = crate::store::BTreeStore::default();
+        blind_write(&store).await;
+        assert_eq!(
+            store.get_bytes("k").await.unwrap(),
+            Some(b"v".to_vec()),
+            "generic adapter must stage the blind write"
         );
     }
 
@@ -1126,5 +1538,76 @@ mod tests {
             "malformed payload must report why"
         );
         assert!(!store.has("k").await.unwrap());
+    }
+
+    /// A chunked load decodes chunks that split the header and commits each
+    /// page of records.
+    #[cfg(feature = "btree")]
+    #[tokio::test]
+    async fn load_chunked_commits_every_page() {
+        let source = crate::store::BTreeStore::default();
+        for key in ["a", "b", "c", "d", "e"] {
+            source.set_bytes(key, key.as_bytes()).await.unwrap();
+        }
+        let payload = source.save().await.unwrap();
+        let dest = crate::store::BTreeStore::default();
+        let chunks = stream::iter(vec![
+            Ok::<_, StoreError>(payload[..3].to_vec()),
+            Ok(payload[3..].to_vec()),
+        ]);
+        let count = load_stream_chunked(&dest, chunks, 2).await.unwrap();
+        assert_eq!(count, 5);
+        for key in ["a", "b", "c", "d", "e"] {
+            assert_eq!(
+                dest.get_bytes(key).await.unwrap().as_deref(),
+                Some(key.as_bytes()),
+                "key {key} must be loaded"
+            );
+        }
+    }
+
+    /// A page size of zero is a caller error and commits nothing.
+    #[cfg(feature = "btree")]
+    #[tokio::test]
+    async fn load_chunked_rejects_a_zero_page_size() {
+        let store = crate::store::BTreeStore::default();
+        let mut payload = Vec::new();
+        write_snapshot_header(&mut payload);
+        encode_record(&mut payload, "k", b"v").unwrap();
+        let err = store
+            .load_chunked(&payload, 0)
+            .await
+            .expect_err("zero page size");
+        assert!(matches!(err, StoreError::Other(_)), "{err:?}");
+        assert!(!store.has("k").await.unwrap());
+    }
+
+    /// A malformed record after the first page leaves that page committed.
+    /// The page that contains the bad record is dropped.
+    #[cfg(feature = "btree")]
+    #[tokio::test]
+    async fn load_chunked_keeps_committed_pages_on_a_late_error() {
+        let store = crate::store::BTreeStore::default();
+        let mut payload = Vec::new();
+        write_snapshot_header(&mut payload);
+        for key in ["a", "b"] {
+            encode_record(&mut payload, key, b"v").unwrap();
+        }
+        // A truncated length prefix makes the next record incomplete.
+        payload.extend_from_slice(&[9, 0]);
+        let err = store
+            .load_chunked(&payload, 2)
+            .await
+            .expect_err("truncated record");
+        assert!(matches!(err, StoreError::Serialization(_)), "{err:?}");
+        assert_eq!(
+            store.get_bytes("a").await.unwrap().as_deref(),
+            Some(b"v".as_slice())
+        );
+        assert_eq!(
+            store.get_bytes("b").await.unwrap().as_deref(),
+            Some(b"v".as_slice())
+        );
+        assert!(!store.has("c").await.unwrap());
     }
 }

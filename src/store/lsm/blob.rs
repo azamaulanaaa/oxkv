@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::store::storage::{ObjectPath, PutMode, Storage};
-use crate::store::{Result, StoreError};
+use crate::store::{Result, StoreError, storage_context};
 
 use super::ownership::epoch_prefix;
 
@@ -109,7 +109,7 @@ pub(crate) async fn put_blob(
     match store.put_opts(&path, value.to_vec(), PutMode::Create).await {
         Ok(_) => Ok(path),
         Err(StoreError::CasConflict(_)) => Ok(path),
-        Err(err) => Err(StoreError::Storage(format!("put blob failed: {err}"))),
+        Err(err) => Err(storage_context("put blob failed", err)),
     }
 }
 
@@ -118,6 +118,6 @@ pub(crate) async fn get_blob(store: Arc<dyn Storage>, blob_path: &ObjectPath) ->
     let out = store
         .get(blob_path)
         .await
-        .map_err(|e| StoreError::Storage(format!("get blob {blob_path} failed: {e}")))?;
+        .map_err(|e| storage_context(format!("get blob {blob_path} failed"), e))?;
     Ok(out.bytes)
 }

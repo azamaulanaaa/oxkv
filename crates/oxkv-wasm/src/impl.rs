@@ -294,7 +294,7 @@ macro_rules! js_tx {
                 let tx = guard.as_mut().ok_or_else(|| {
                     store::StoreError::Other("transaction already committed or rolled back".into())
                 }).map_err(|e| js_error(&e))?;
-                match tx.gets_bytes(limit, direction.into(), cursor).await {
+                match tx.gets_bytes(limit.map(|value| value as usize), direction.into(), cursor).await {
                     Ok(kvs) => kvs
                         .into_iter()
                         .map(|value| {

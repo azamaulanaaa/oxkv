@@ -17,8 +17,8 @@
 //!
 //! # Limits
 //!
-//! - There is no atomicity across keys. Use a transaction for a rule that
-//!   spans keys.
+//! - There is no atomicity across keys for [`Cas`]. Use a transaction with
+//!   [`TxCas`](super::TxCas) for a rule that spans keys.
 //! - There is no conflict detection against a separate transaction. A
 //!   transaction that read the key earlier does not fail when a CAS changes
 //!   the key. The commit re-runs validators only.
@@ -26,7 +26,16 @@
 //!   [`StoreError::Fenced`](super::StoreError::Fenced) and does not write.
 //! - The transaction types do not implement [`Cas`]. A transaction stages
 //!   writes without a lock on the key. A CAS method there would not be
-//!   atomic.
+//!   atomic. Use [`TxCas`](super::TxCas) instead. It stages a precondition
+//!   and checks at commit under the write lock or write gate.
+//!
+//! # Multi-key unique claims
+//!
+//! `Cas` covers one key. A unique claim that must commit with an entity row,
+//! attribute rows, index rows, and an outbox row cannot use `Cas` alone. Use
+//! [`TxCas`](super::TxCas) to stage the claim and the other writes in one
+//! transaction. The commit checks every precondition under the same lock or
+//! gate that applies the overlay.
 
 use async_trait::async_trait;
 

@@ -11,7 +11,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::store::storage::{GetOptions, ObjectPath, ObjectVersion, PutMode, Storage};
-use crate::store::{Result, StoreError, now_millis};
+use crate::store::{Result, StorageCause, StoreError, now_millis, storage_context};
+
+use super::read::is_not_found;
 
 /// Metadata for one SST file recorded in the manifest.
 ///
@@ -86,12 +88,16 @@ pub(crate) async fn read_manifest(
     match store.get(&path).await {
         Ok(out) => {
             let etag = out.e_tag.clone().unwrap_or_default();
-            let manifest: Manifest = serde_json::from_slice(&out.bytes)
-                .map_err(|e| StoreError::Storage(format!("parse manifest: {e}")))?;
+            let manifest: Manifest = serde_json::from_slice(&out.bytes).map_err(|e| {
+                StoreError::storage_with_cause(
+                    format!("parse manifest: {e}"),
+                    StorageCause::Corrupt,
+                )
+            })?;
             Ok(Some((manifest, etag)))
         }
-        Err(e) if e.to_string().contains("not found") => Ok(None),
-        Err(e) => Err(StoreError::Storage(format!("get manifest failed: {e}"))),
+        Err(e) if is_not_found(&e) => Ok(None),
+        Err(e) => Err(storage_context("get manifest failed", e)),
     }
 }
 
@@ -108,7 +114,7 @@ pub(crate) async fn cas_manifest(
 ) -> Result<String> {
     let path = manifest_path(prefix);
     let payload = serde_json::to_vec(manifest)
-        .map_err(|e| StoreError::Storage(format!("serialize manifest: {e}")))?;
+        .map_err(|e| StoreError::storage(format!("serialize manifest: {e}")))?;
     let mode = match expected_etag {
         None => PutMode::Create,
         Some(etag) => PutMode::Update(ObjectVersion {
@@ -120,7 +126,7 @@ pub(crate) async fn cas_manifest(
         if let StoreError::CasConflict(detail) = e {
             StoreError::CasConflict(format!("manifest {path}: {detail}"))
         } else {
-            StoreError::Storage(format!("put manifest failed: {e}"))
+            storage_context("put manifest failed", e)
         }
     })?;
     Ok(out.e_tag.unwrap_or_default())
@@ -225,8 +231,12 @@ pub async fn load_manifest(
         match store.get_opts(&path, opts).await {
             Ok(out) => {
                 let new_etag = out.e_tag.clone().unwrap_or_default();
-                let manifest: Manifest = serde_json::from_slice(&out.bytes)
-                    .map_err(|e| StoreError::Storage(format!("parse manifest: {e}")))?;
+                let manifest: Manifest = serde_json::from_slice(&out.bytes).map_err(|e| {
+                    StoreError::storage_with_cause(
+                        format!("parse manifest: {e}"),
+                        StorageCause::Corrupt,
+                    )
+                })?;
                 cache
                     .lock()
                     .await
@@ -236,12 +246,12 @@ pub async fn load_manifest(
             Err(StoreError::NotModified) => {
                 return Ok((manifest, etag));
             }
-            Err(e) if e.to_string().contains("not found") => {
+            Err(e) if is_not_found(&e) => {
                 let empty = Manifest::empty(epoch);
                 cache.lock().await.update(empty.clone(), String::new());
                 return Ok((Arc::new(empty), String::new()));
             }
-            Err(e) => return Err(StoreError::Storage(format!("get manifest failed: {e}"))),
+            Err(e) => return Err(storage_context("get manifest failed", e)),
         }
     }
     match read_manifest(Arc::clone(&store), prefix).await? {

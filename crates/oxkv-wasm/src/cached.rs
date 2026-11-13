@@ -407,6 +407,7 @@ impl JsCachedOxKvStore {
         let cursor = (start_cursor, end_cursor);
 
         let store = self.inner.lock().await;
+        let limit = limit.map(|value| value as usize);
         match store.gets_bytes(limit, direction.into(), cursor).await {
             Ok(kvs) => kvs
                 .into_iter()
@@ -453,7 +454,7 @@ impl JsCachedOxKvStore {
         let store = self.inner.lock().await;
         match QueryExt::gets(
             &*store,
-            limit,
+            limit.map(|value| value as usize),
             direction.into(),
             (start_cursor, end_cursor),
             query.as_deref(),

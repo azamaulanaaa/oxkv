@@ -12,7 +12,7 @@ use super::TOMBSTONE_VLEN;
 use super::manifest::{ManifestCache, load_manifest};
 use super::read::is_not_found;
 use crate::store::storage::{ObjectPath, Storage};
-use crate::store::{Result, StoreError};
+use crate::store::{Result, StorageCause, StoreError, storage_context};
 
 /// Decodes length-prefixed WAL records (`[u32 key len][key][u32 value len][value]`).
 ///
@@ -96,9 +96,7 @@ pub(crate) async fn replay_listed_wals(
                     }
                     Err(e) if is_not_found(&e) => missing.push(wal_id.clone()),
                     Err(e) => {
-                        return Err(StoreError::Storage(format!(
-                            "read wal {wal_id} failed: {e}"
-                        )));
+                        return Err(storage_context(format!("read wal {wal_id} failed"), e));
                     }
                 }
             }
@@ -107,10 +105,13 @@ pub(crate) async fn replay_listed_wals(
             return Ok(());
         }
         if attempt == 1 {
-            return Err(StoreError::Storage(format!(
-                "wal listed in manifest but absent from storage: {}",
-                missing.join(", ")
-            )));
+            return Err(StoreError::storage_with_cause(
+                format!(
+                    "wal listed in manifest but absent from storage: {}",
+                    missing.join(", ")
+                ),
+                StorageCause::NotFound,
+            ));
         }
         // Refresh. `gc_wal` cleared these ids. Their records live in an SST.
         manifest_cache.lock().await.clear();

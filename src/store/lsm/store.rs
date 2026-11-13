@@ -33,7 +33,7 @@ use crate::store::cache::{Cache, CacheStats, LruCache};
 use crate::store::storage::{MemStorage, ObjectPath, PutMode, Storage};
 use crate::store::{
     ChangeEvent, ChangeKind, Direction, GetSet, HookState, Hooks, KeyValue, Observer, Result,
-    Scope, Store, StoreError, Validator, lock_ignore_poison, sleep,
+    Scope, StorageCause, Store, StoreError, Validator, lock_ignore_poison, sleep, storage_context,
 };
 use futures::channel::mpsc;
 
@@ -394,10 +394,10 @@ where
         for (key, value) in ops {
             if let Some(val) = value {
                 crate::store::encode_record(&mut buf, key, val)
-                    .map_err(|e| StoreError::Storage(format!("encode wal: {e}")))?;
+                    .map_err(|e| StoreError::storage(format!("encode wal: {e}")))?;
             } else {
                 let klen = u32::try_from(key.len())
-                    .map_err(|e| StoreError::Storage(format!("key too long: {e}")))?;
+                    .map_err(|e| StoreError::storage(format!("key too long: {e}")))?;
                 buf.extend_from_slice(&klen.to_le_bytes());
                 buf.extend_from_slice(key.as_bytes());
                 buf.extend_from_slice(&TOMBSTONE_VLEN.to_le_bytes());
@@ -472,14 +472,17 @@ where
                     .inner
                     .get(&path)
                     .await
-                    .map_err(|e| StoreError::Storage(format!("read back wal failed: {e}")))?;
+                    .map_err(|e| storage_context("read back wal failed", e))?;
                 if existing.bytes != payload {
-                    return Err(StoreError::Storage(format!(
-                        "wal sequence {seq} already holds different bytes; refusing to overwrite"
-                    )));
+                    return Err(StoreError::storage_with_cause(
+                        format!(
+                            "wal sequence {seq} already holds different bytes; refusing to overwrite"
+                        ),
+                        StorageCause::Corrupt,
+                    ));
                 }
             }
-            Err(e) => return Err(StoreError::Storage(format!("put wal failed: {e}"))),
+            Err(e) => return Err(storage_context("put wal failed", e)),
         }
 
         let cur = read_ownership(Arc::clone(&self.inner), &self.prefix).await?;
@@ -751,14 +754,17 @@ where
                     .inner
                     .get(&sst_path)
                     .await
-                    .map_err(|e| StoreError::Storage(format!("read back sst failed: {e}")))?;
+                    .map_err(|e| storage_context("read back sst failed", e))?;
                 if existing.bytes != sst_bytes {
-                    return Err(StoreError::Storage(format!(
-                        "sst sequence {seq} already holds different bytes; refusing to overwrite"
-                    )));
+                    return Err(StoreError::storage_with_cause(
+                        format!(
+                            "sst sequence {seq} already holds different bytes; refusing to overwrite"
+                        ),
+                        StorageCause::Corrupt,
+                    ));
                 }
             }
-            Err(e) => return Err(StoreError::Storage(format!("put sst failed: {e}"))),
+            Err(e) => return Err(storage_context("put sst failed", e)),
         }
 
         let cur_owner = read_ownership(Arc::clone(&self.inner), &self.prefix).await?;
@@ -825,7 +831,7 @@ where
                     self.discard_flushed(&snapshot).await;
                     return Ok(reloaded.sst.iter().find(|m| m.id == sst_id).cloned());
                 }
-                Err(StoreError::Storage(format!(
+                Err(StoreError::storage(format!(
                     "manifest CAS conflict after backoff retry: {detail}"
                 )))
             }
@@ -881,7 +887,7 @@ where
     /// Returns `StoreError` on I/O or CRC failure.
     pub async fn gets_bytes(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
@@ -919,7 +925,7 @@ where
     /// Returns `StoreError` on I/O or CRC failure.
     pub async fn gets_keys(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<String>> {
@@ -999,9 +1005,7 @@ where
                     for wal in &to_delete {
                         let path = ObjectPath::from(wal.as_str());
                         if let Err(e) = self.inner.delete(&path).await {
-                            return Err(StoreError::Storage(format!(
-                                "delete wal {wal} failed: {e}"
-                            )));
+                            return Err(storage_context(format!("delete wal {wal} failed"), e));
                         }
                         deleted += 1;
                     }
@@ -1336,18 +1340,22 @@ where
             // conflict means the object exists. It does not mean that the
             // object is ours.
             Err(StoreError::CasConflict(_)) => {
-                let existing =
-                    self.inner.get(&l1_path).await.map_err(|e| {
-                        StoreError::Storage(format!("read back L1 sst failed: {e}"))
-                    })?;
+                let existing = self
+                    .inner
+                    .get(&l1_path)
+                    .await
+                    .map_err(|e| storage_context("read back L1 sst failed", e))?;
                 if existing.bytes != sst_bytes {
-                    return Err(StoreError::Storage(format!(
-                        "L1 sst sequence {seq} already holds different bytes; \
-                         refusing to overwrite"
-                    )));
+                    return Err(StoreError::storage_with_cause(
+                        format!(
+                            "L1 sst sequence {seq} already holds different bytes; \
+                             refusing to overwrite"
+                        ),
+                        StorageCause::Corrupt,
+                    ));
                 }
             }
-            Err(e) => return Err(StoreError::Storage(format!("put L1 sst failed: {e}"))),
+            Err(e) => return Err(storage_context("put L1 sst failed", e)),
         }
         // Verify that the store still owns the prefix.
         let cur_owner = read_ownership(Arc::clone(&self.inner), &self.prefix).await?;
@@ -1538,7 +1546,7 @@ where
         // state moves.
         let mut encoded = Vec::new();
         crate::store::encode_record(&mut encoded, key, value)
-            .map_err(|e| StoreError::Storage(format!("encode wal: {e}")))?;
+            .map_err(|e| StoreError::storage(format!("encode wal: {e}")))?;
         let (responder, mut waiter) = futures::channel::oneshot::channel::<Result<()>>();
         let id = PENDING_CTR.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         lock_ignore_poison(&self.pending).push(PendingWrite {
@@ -1558,9 +1566,9 @@ where
                 Ok(Some(result)) => return result,
                 Ok(None) => {}
                 Err(futures::channel::oneshot::Canceled) => {
-                    return Err(StoreError::Storage(
-                        "group commit leader lost; write fate unknown — read back to confirm"
-                            .to_string(),
+                    return Err(StoreError::storage_with_cause(
+                        "group commit leader lost; write fate unknown — read back to confirm",
+                        StorageCause::LeaderLost,
                     ));
                 }
             }
@@ -1577,9 +1585,9 @@ where
                 return waiter
                     .await
                     .map_err(|_| {
-                        StoreError::Storage(
-                            "group commit leader lost; write fate unknown — read back to confirm"
-                                .to_string(),
+                        StoreError::storage_with_cause(
+                            "group commit leader lost; write fate unknown — read back to confirm",
+                            StorageCause::LeaderLost,
                         )
                     })
                     .and_then(|r| r);
@@ -1609,7 +1617,7 @@ where
 
     async fn gets_bytes(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
@@ -1618,7 +1626,7 @@ where
 
     async fn gets_keys(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<String>> {
@@ -1651,6 +1659,7 @@ where
             hooks: self.hooks.clone(),
             validators: self.hooks.validators(),
             staged: std::sync::Mutex::new(Vec::new()),
+            preconditions: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             overlay: std::sync::Mutex::new(std::collections::BTreeMap::new()),
         })
     }
@@ -1769,9 +1778,9 @@ impl OxKvStoreBuilder {
     ///
     /// Returns `StoreError::Storage` when no [`Storage`] was configured.
     pub async fn build_reader(self) -> Result<OxKvReader> {
-        let store = self.inner.ok_or_else(|| {
-            StoreError::Storage("OxKvStore requires a Storage via with_store()".to_string())
-        })?;
+        let store = self
+            .inner
+            .ok_or_else(|| StoreError::storage("OxKvStore requires a Storage via with_store()"))?;
         OxKvReader::open(store, self.prefix).await
     }
 
@@ -1786,9 +1795,9 @@ impl OxKvStoreBuilder {
     where
         C: Cache<String, Arc<SstFile>>,
     {
-        let store = self.inner.ok_or_else(|| {
-            StoreError::Storage("OxKvStore requires a Storage via with_store()".to_string())
-        })?;
+        let store = self
+            .inner
+            .ok_or_else(|| StoreError::storage("OxKvStore requires a Storage via with_store()"))?;
         OxKvReader::open_with_cache(store, self.prefix, cache).await
     }
 
@@ -1850,9 +1859,9 @@ impl OxKvStoreBuilder {
     where
         C: Cache<String, Arc<SstFile>>,
     {
-        let store = self.inner.ok_or_else(|| {
-            StoreError::Storage("OxKvStore requires a Storage via with_store()".to_string())
-        })?;
+        let store = self
+            .inner
+            .ok_or_else(|| StoreError::storage("OxKvStore requires a Storage via with_store()"))?;
 
         if !self.skip_probe {
             probe_store(Arc::clone(&store), &self.prefix).await?;

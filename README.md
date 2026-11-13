@@ -1,21 +1,22 @@
 
 # oxkv
 
-A transactional key-value store library written in Rust, with optional WebAssembly bindings for JavaScript interop. Features cursor-based pagination, a Lucene-style query engine that matches stored JSON documents, JSON serialization via `serde_json`, streaming snapshot export/import, optional OpenTelemetry instrumentation, and strict linting. The query engine lives in `oxkv-query`. The WASM bindings live in `oxkv-wasm`. All operations are `async` and take `&self`, and every store is `Send + Sync`, so one store can be shared across threads via `Arc`.
+A transactional key-value store library written in Rust, with optional WebAssembly bindings for JavaScript interop. Features cursor-based pagination, a Lucene-style query engine that matches stored JSON documents, JSON serialization via `serde_json`, streaming export and import, optional OpenTelemetry instrumentation, and strict linting. The query engine lives in `oxkv-query`. The WASM bindings live in `oxkv-wasm`. All operations are `async` and take `&self`, and every store is `Send + Sync`, so one store can be shared across threads via `Arc`.
 
 ## Features
 
-- **Transaction support** — atomic commit/rollback batches of CRUD operations
+- **Transaction support** — atomic commit/rollback batches of CRUD operations, with opt-in transaction-level conditional writes via `TxCas`
 - **Cursor-based pagination** — bidirectional traversal (`Next` / `Prev`) with inclusive range cursors and limit control
 - **Lucene-style query engine** — the `oxkv-query` crate filters stored JSON documents with a query language supporting field paths, ranges, wildcards, regex, fuzzy matching, and boolean operators
 - **JSON serialization** — extension methods for inserting and retrieving `serde_json::Value` types via JSON, stored as raw bytes
-- **WASM bindings** — thread-safe wrappers in `crates/oxkv-wasm/` expose `BTreeStore`, `OxKvStore`, and `CachedOxKvStore` to JavaScript as async promises (`oxkv-otel` is native-only, the OXKV snapshot is portable across all)
+- **WASM bindings** — thread-safe wrappers in `crates/oxkv-wasm/` expose `BTreeStore`, `OxKvStore`, and `CachedOxKvStore` to JavaScript as async promises (`oxkv-otel` is native-only, the OXKV export is portable across all)
 - **Extensible backends** — the crate defines three traits (`GetSet`, `Transaction`, `Store`) that any backend can implement; ships with an in-memory B-tree backend (`btree`, test and bench baseline + WASM baseline) and an LSM backend (`oxkv`, native + wasm) generic over `Storage` + `Cache` (S3/GCS/Azure via the `oxkv-s3` crate)
 - **LSM backend** — portable LSM over pluggable `Storage` (in-memory `MemStorage` everywhere including browsers; S3/GCS/Azure/local via the [`oxkv-s3`](crates/oxkv-s3) crate, OPFS origin-private storage in browsers via the [`oxkv-opfs`](crates/oxkv-opfs) crate): epoch-fenced single writer, WAL with RPO=0, `MemTable` + SST (L0/L1) with Bloom + CRC, blob overflow for large values, scan-resistant `S3-FIFO` SST cache (trait, `moka` optional), WAL replay, GC and L0→L1 compaction, group-committed batched writes, lazy pull-merge range scans, read-only `OxKvReader` followers, write-through `CachedOxKvStore` RAM mirror
 - **Validation hooks** — reject invalid writes before they reach storage, scoped to a single key, a key prefix, or the whole store
 - **Reactivity** — watch keys or prefixes and observe every committed change via channels or observer traits; rolled-back transactions never notify
 - **Save/Load** — serialize the entire store contents into a single contiguous `Uint8Array` and reconstruct it from binary data
-- **Streaming snapshots** — same wire format as an incremental byte stream: memory stays bounded regardless of store size on both Rust (via `futures::Stream`) and JavaScript (native `ReadableStream`)
+- **Streaming export and import** — same wire format as an incremental byte stream: memory stays bounded regardless of store size on both Rust (via `futures::Stream`) and JavaScript (native `ReadableStream`). The export is a logical dump, not a point-in-time backup
+- **Stable snapshots** — `StoreExt::snapshot` copies every key and value one time into a read-only `Snapshot`. A later write or delete does not change the snapshot. The snapshot uses memory equal to the size of the store
 - **OpenTelemetry** — the `oxkv-otel` crate provides the `OtelStore` decorator. It emits spans and metrics around every operation. The crate uses the API only, so your application plugs in any SDK or exporter
 - **Strict linting** — all warnings and clippy lints are enforced at the workspace level
 
@@ -30,7 +31,11 @@ The default feature is `oxkv`. The other surfaces are opt-in:
 | `moka` | `moka` SST cache backend (native-only) |
 
 `oxkv-cached`, `oxkv-wasm`, `oxkv-query`, `oxkv-opfs`, `oxkv-otel`, and
-`oxkv-s3` are separate workspace crates.
+`oxkv-s3` are separate workspace crates. All workspace crates release in
+lockstep. See [MIGRATING.md](MIGRATING.md) for the 0.10 to 0.12 upgrade guide
+and the [crate compatibility table](MIGRATING.md#crate-compatibility).
+The [0.11 feedback response](docs/feedback-0.11-response.md) lists each item,
+its status, and the matching public API.
 
 ## Core Traits
 
@@ -43,9 +48,14 @@ The default feature is `oxkv`. The other surfaces are opt-in:
 | `oxkv_query::QueryExt` | Adds `gets` (paginated JSON retrieval with optional query filtering) to every `GetSet` backend |
 | `oxkv_query::QueryViewExt` | Adds the same `gets` method to every read-only `StoreView` |
 | [`store::Cas`] / [`store::CasResult`] | Atomic single-key conditional writes: `set_if_absent`, `compare_and_set`, and `delete_if`; `CasResult` reports `Applied` or `Conflict { current }` |
-| [`store::KeyPrefix`] / [`store::Page`] / [`store::ScanExt`] | Prefix-bounded scans that return one page at a time: `scan_keys`, `scan` (values optional), and `count_prefix`; `Page::next` carries the cursor |
-| [`store::BatchExt`] / [`store::BatchOp`] | Batch helpers: `get_many`, `write_batch` (one transaction), and `delete_prefix` (bounded chunks); `BatchOp::set` and `BatchOp::delete` build operations |
-| [`store::StoreExt`] | Save/Load the entire store contents as binary; `save_stream`/`load_stream` stream it as byte chunks |
+| [`store::TxCas`] | Transaction-level conditional writes: `set_if_absent`, `compare_and_set`, and `delete_if` stage a write and a precondition; `commit` checks every precondition against committed state under the write lock or write gate; one conflict rejects every staged write with `StoreError::TxConflict` |
+| [`store::KeyPrefix`] / [`store::Page`] / [`store::ScanExt`] | Prefix-bounded scans that return one page at a time: `scan_keys`, `scan` (values optional), `scan_older_than` (keys below an exclusive cutoff), and `count_prefix`; `Page::next` carries the cursor |
+| [`store::BatchExt`] / [`store::BatchOp`] | Batch helpers: `get_many` (sequential reads), `write_batch` (its own transaction), `delete_prefix_chunked` (bounded chunks, not atomic across chunks), and `delete_prefix_before` (bounded chunks below an exclusive cutoff); `BatchOp::set` and `BatchOp::delete` build operations; `delete_prefix` is a deprecated alias |
+| [`store::ChangeFeed`] / [`store::FeedEntry`] | Durable append-only event log under `{prefix}/{seq:020}` with a CAS counter at `{prefix}/next`: `next_seq`, `append`, `append_in_tx`, `since`, and chunked `prune`; at-least-once delivery, caller-supplied events (not automatic change capture) |
+| [`store::StoreExt`] | Save/Load the entire store contents as binary; `save_stream`/`load_stream` stream it as byte chunks; `snapshot` returns a fixed read-only `Snapshot`; `load_chunked` commits one transaction per page |
+| [`store::Snapshot`] / [`store::SnapshotTx`] | Read-only copy of every key and value at one point in time; writes are rejected; an empty transaction commit is a no-op |
+| [`store::StatsStore`] / [`store::StoreStats`] / [`store::StatsTx`] | Decorator that counts client-side API calls, bytes, scan rows, transaction completions, and errors; `stats`, `reset`, and `into_inner` manage the counters |
+| [`store::ScopedStore`] / [`store::ScopedTx`] / [`store::StoreExt::scoped`] | Prefix-scoped handle over a clone of a store: maps keys to `{prefix}/{key}`, strips the prefix from returned keys, maps cursors, keeps scans inside the scope, and delegates transactions |
 | [`store::Validator`] | Validates writes before they are stored (attach per key, prefix, or globally) |
 | [`store::Observer`] | Receives change notifications after they become durable |
 | [`store::Hooks`] | Trait adding validators and change watching to any store |
@@ -55,6 +65,8 @@ The default feature is `oxkv`. The other surfaces are opt-in:
 | `oxkv_cached::CachedOxKvStore` / `CachedTx` / `WarmMode` | Separate crate adding the write-through RAM mirror — zero-I/O reads once warmed, `Eager`/`Background`/`Lazy` fill via `warm`/`warm_step`/`is_warmed`, WAL durability, TTL-checked reads, `refresh`/`check_stale` catch-up, fencing poisons until refresh |
 | [`store::StoreError::Fenced`] | Terminal fencing error — another owner acquired the epoch via `ownership.json` CAS |
 | [`store::StoreError::CasConflict`] | Conditional-write precondition failed — someone else won the CAS race; retryable unless fencing says otherwise |
+| [`store::StoreError::TxConflict`] | Transaction precondition failed at commit — no staged write applied; the variant carries the key and the committed value; retryable |
+| [`store::StoreError::Storage`] | Backend, I/O, parse, or group-commit failure — `storage_cause` returns a structured `StorageCause` (`NotFound`, `Network`, `Io`, `Corrupt`, `LeaderLost`, `Other`); the retry class stays `Transient` |
 | [`store::ErrorKind`] | Coarse class from `StoreError::kind` — `Conflict` and `Transient` are retryable; `Fenced`, `Rejected`, `InvalidInput`, and `Other` are not; `retry_after` returns `None` today |
 
 See [docs/contracts.md](docs/contracts.md) for the transaction, durability,
@@ -103,8 +115,9 @@ async fn main() {
 
 Any store can scan its entries and return only the JSON documents that match a
 query string, using `gets` from the `oxkv-query` crate. It mirrors
-`gets_bytes`: same `limit`, `direction` and cursor semantics — when no query is
-passed it is a plain pass-through.
+`gets_bytes`: same `limit`, `direction` and cursor semantics. The limit is
+`Option<usize>`. `None` returns all matches and can exhaust memory. When no
+query is passed it is a plain pass-through.
 
 ```text
 use oxkv::{BTreeStore, Direction};
@@ -281,9 +294,62 @@ assert_eq!(event.new_value, Some(b"hello".to_vec()));
 Hooks must not call back into the same store: stores guard their state with
 locks, so reentrant hook calls can deadlock.
 
-## Streaming Snapshots
+## Durable Change Feed
 
-`save`/`load` materialize the whole snapshot in memory. For large stores,
+`ChangeFeed` writes an append-only event log to any `Store + Cas` backend. A
+consumer reads the events after its cursor. The feed does not capture writes
+automatically. The caller writes each event.
+
+```rust
+# #[cfg(feature = "btree")]
+# mod btree_example {
+# #[tokio::main(flavor = "current_thread")]
+# async fn main() {
+use oxkv::{BTreeStore, ChangeFeed, GetSet, Store, Transaction};
+
+let store = BTreeStore::default();
+let feed = ChangeFeed::new("feed");
+
+// Append two events. The sequence numbers are 1 and 2.
+feed.append(&store, b"created:42").await.unwrap();
+feed.append(&store, b"updated:42").await.unwrap();
+
+// Read the events after cursor 0.
+let events = feed.since(&store, 0, 100).await.unwrap();
+assert_eq!(events.len(), 2);
+assert_eq!(events[0].seq, 1);
+
+// Commit a business row and an event together.
+let seq = feed.next_seq(&store).await.unwrap();
+let tx = store.begin_tx().unwrap();
+tx.set_bytes("entity/42", b"body").await.unwrap();
+feed.append_in_tx(&tx, seq, b"audited:42").await.unwrap();
+tx.commit().await.unwrap();
+
+// Delete the events below sequence 3 in chunks of 100.
+let deleted = feed.prune(&store, 3, 100).await.unwrap();
+assert_eq!(deleted, 2);
+# }
+# }
+```
+
+- `next_seq` updates the counter at `{prefix}/next` with
+  `Cas::compare_and_set`. Concurrent callers cannot get the same sequence
+  number. The first sequence is 1.
+- `append` updates the counter first and writes the event second. A crash
+  between the two steps leaves a gap. A consumer must tolerate a gap.
+- Delivery is at-least-once. A retry can write an event again. Make the
+  consumer idempotent and use the sequence number as the idempotency key.
+- `append_in_tx` takes a sequence from the caller. It puts the event and the
+  business row in one transaction. `next_seq` is not part of that
+  transaction. A rollback after `next_seq` leaves a gap.
+- `prune` deletes events in chunks. It is not atomic across chunks.
+- This helper does not capture every store write. Use `Hooks` for in-process
+  notifications, or write a feed event at each business operation.
+
+## Streaming Export and Import
+
+`save`/`load` materialize the whole export in memory. For large stores,
 stream the same wire format instead:
 
 ```rust
@@ -322,7 +388,7 @@ assert_eq!(
 # }
 ```
 
-Every snapshot starts with an 8-byte header — magic `"OXKV"` plus a
+Every export starts with an 8-byte header — magic `"OXKV"` plus a
 little-endian format version — followed by length-prefixed records
 (`[u32 key len][key][u32 value len][value]`). Loaders validate the header
 before accepting any record: foreign payloads and unsupported future versions
@@ -330,6 +396,119 @@ are rejected with a descriptive error instead of being mis-parsed, so format
 evolution is trackable. Chunk boundaries always fall between records, so
 chunks concatenate to exactly what `save` returns and each decodes
 independently.
+
+The export is a logical dump. It is not a point-in-time backup. `save_stream`
+reads the live store and each page is a new read: a concurrent committed write
+can appear between pages, and a concurrent delete can be missed.
+
+For a fixed view, call `snapshot()` first. The call copies every key and
+value one time. A later write or delete does not change the copy. The copy
+uses memory equal to the size of the store.
+
+```rust
+# #[cfg(feature = "btree")]
+# mod snapshot_example {
+# #[tokio::main(flavor = "current_thread")]
+# async fn main() {
+use oxkv::{BTreeStore, GetSet, StoreExt};
+
+# let store = BTreeStore::default();
+# store.set_bytes("hello", b"world").await.unwrap();
+let snapshot = store.snapshot().await.unwrap();
+store.set_bytes("hello", b"changed").await.unwrap();
+
+// The snapshot holds the value from the snapshot call.
+assert_eq!(
+    snapshot.get_bytes("hello").await.unwrap().as_deref(),
+    Some(b"world".as_slice())
+);
+# }
+# }
+```
+
+The snapshot is read-only. A write returns
+`StoreError::Other("read-only snapshot: writes are rejected")`. The type
+implements `Store`, so `save`, `save_stream`, and scans work on it.
+
+## Retention cleanup
+
+The store has no TTL and no background expiry job. To remove old keys, encode
+the time in the key and schedule `BatchExt::delete_prefix_before`. The cutoff
+is an exclusive lexicographic key bound.
+
+```text
+// Keys use timer/<zero-padded-deadline-ms>/<id>.
+let cutoff = format!("timer/{deadline_ms:020}/");
+let deleted = store
+    .delete_prefix_before("timer/", &cutoff, 500)
+    .await?;
+```
+
+Each chunk is one transaction. A failure between chunks leaves the earlier
+chunks deleted. Use `ScanExt::scan_older_than` when you must inspect the keys
+before you delete them. These methods are cleanup helpers, not TTL.
+
+## Metrics and Scoped Handles
+
+`StatsStore` wraps any store and counts client-side API calls. `ScopedStore`
+restricts one store to a key prefix:
+
+```rust
+# #[cfg(feature = "btree")]
+# mod btree_example {
+# #[tokio::main(flavor = "current_thread")]
+# async fn main() {
+use oxkv::{BTreeStore, GetSet, StatsStore, StoreExt};
+
+let counted = StatsStore::new(BTreeStore::default());
+counted.set_bytes("a", b"12").await.unwrap();
+let _ = counted.get_bytes("a").await.unwrap();
+let stats = counted.stats();
+assert_eq!(stats.sets, 1);
+assert_eq!(stats.gets, 1);
+assert_eq!(stats.bytes_written, 2);
+assert_eq!(stats.bytes_read, 2);
+
+let store = BTreeStore::default();
+let tenant = store.scoped("tenant-a");
+tenant.set_bytes("key", b"value").await.unwrap();
+assert_eq!(
+    tenant.get_bytes("key").await.unwrap(),
+    Some(b"value".to_vec())
+);
+assert_eq!(
+    store.get_bytes("tenant-a/key").await.unwrap(),
+    Some(b"value".to_vec())
+);
+# }
+# }
+```
+
+`StoreStats` reports `gets`, `has`, `sets`, `puts`, `deletes`, `scans`,
+`scan_items`, `bytes_read`, `bytes_written`, `tx_commits`, `tx_rollbacks`, and
+`errors`. A failed call increments its method counter and `errors`. `scans`
+counts `gets_bytes` and `gets_keys` calls. `scan_items` counts the returned
+rows or keys. `Cas` calls only increment `errors` when they fail. `stats`
+returns a snapshot, `reset` sets every counter to zero, and `into_inner`
+returns the wrapped store. Clones share the atomic counters.
+
+These counters are client-side. They count calls that reach the wrapper. They
+do not count S3 requests, WAL objects, or compaction backlog. The LSM cache
+statistics remain the source for cache hits and misses. See `Cache::stats` and
+`OxKvStore::sst_cache_stats`.
+
+`StoreExt::scoped(prefix)` returns a `ScopedStore` that owns a clone of the
+store. Every key maps to `{prefix}/{key}`. An empty prefix leaves keys
+unchanged. Reads return keys without the prefix. Cursors map in both
+directions. A scan stays inside the scope when its cursor is unbounded.
+`begin_tx` returns a `ScopedTx` that maps keys and delegates commit and
+rollback. For `OxKvStore`, the clone shares the cache, client, and session.
+
+`load_stream` stages the whole payload in one transaction. Memory use and the
+commit object therefore grow with the payload. `load_chunked(data, page_size)`
+and `load_stream_chunked(chunks, page_size)` commit one transaction every
+`page_size` records. A failure after a commit leaves the earlier pages
+committed. A page size of zero returns `StoreError::Other`.
 
 ## OpenTelemetry (`oxkv-otel` crate)
 
@@ -372,7 +551,7 @@ the full validation pipeline.
 
 ## LSM Backend (feature `oxkv`, native + wasm)
 
-`OxKvStore` is an LSM tree over any [`Storage`](src/store/storage.rs) backend: in-memory `MemStorage` (native + wasm), browser OPFS via the `oxkv-opfs` crate, or S3-compatible storage (S3, GCS, Azure) and local FS via the `oxkv-s3` crate. `Storage` requires `get`, `get_opts`, `put_opts`, `delete`, and `list` (a custom backend must implement all five). It shares the same `GetSet`/`Store`/`Transaction` traits as the other backends, so application code is portable. Snapshot bytes (`OXKV` magic `+` version + records) are identical across `BTreeStore` and `OxKvStore` on every target — `save`/`load` round-trip everywhere.
+`OxKvStore` is an LSM tree over any [`Storage`](src/store/storage.rs) backend: in-memory `MemStorage` (native + wasm), browser OPFS via the `oxkv-opfs` crate, or S3-compatible storage (S3, GCS, Azure) and local FS via the `oxkv-s3` crate. `Storage` requires `get`, `get_opts`, `put_opts`, `delete`, and `list` (a custom backend must implement all five). It shares the same `GetSet`/`Store`/`Transaction` traits as the other backends, so application code is portable. Export bytes (`OXKV` magic `+` version + records) are identical across `BTreeStore` and `OxKvStore` on every target — `save`/`load` round-trip everywhere.
 
 ```rust
 # #[tokio::main(flavor = "current_thread")]
@@ -561,6 +740,11 @@ takeover (new epoch) needs no reader restart, and a scan racing a
 compaction reloads the manifest and retries once instead of failing on the
 deleted file.
 
+The reader does not freeze a view. Two reads can observe different states, and
+a fresh reader sees post-open writes on the next read. For a fixed view, call
+`StoreExt::snapshot` on the reader. The full contract is in
+[docs/contracts.md](docs/contracts.md#46-reader-consistency).
+
 ### RAM mirror
 
 When RAM is plentiful, `CachedOxKvStore` pairs the durable core with a
@@ -688,7 +872,7 @@ for (const { key, value } of results) {
 ### LSM from JavaScript
 
 `OxKvStore` exposes the same API over the LSM engine — in-memory via `create()`,
-durable across reloads via `createPersistent()` (OPFS). Snapshots stay portable:
+durable across reloads via `createPersistent()` (OPFS). Export bytes stay portable:
 bytes saved by either class restore into the other.
 
 ```js
@@ -702,10 +886,10 @@ const durable = await OxKvStore.createPersistent("my-app");
 await durable.setBytes("k", new TextEncoder().encode("v"));
 ```
 
-### Streaming Snapshots from JavaScript
+### Streaming Export from JavaScript
 
 Both `BTreeStore` and `OxKvStore` expose `saveStream()`/`loadStream()`.
-Snapshot export/import works over native JS streams — pipe straight to a file,
+Export and import work over native JS streams — pipe straight to a file,
 network upload or `IndexedDB` without buffering the whole store:
 
 ```js
@@ -867,13 +1051,13 @@ wasm-pack build crates/oxkv-wasm --target web --out-name oxkv   # or nodejs, bun
 
 ## Architecture
 
-- `crates/oxkv-wasm/` — manual wasm-bindgen wrappers (`lib` + `btree` + `oxkv` + `cached`) for `BTreeStore` + `OxKvStore` + `CachedOxKvStore` (thread-safe JS-facing types; OXKV snapshot portable across all backends)
+- `crates/oxkv-wasm/` — manual wasm-bindgen wrappers (`lib` + `btree` + `oxkv` + `cached`) for `BTreeStore` + `OxKvStore` + `CachedOxKvStore` (thread-safe JS-facing types; OXKV export portable across all backends)
 - `crates/oxkv-otel/` — `OtelStore` decorator emitting OpenTelemetry spans and metrics
 - `crates/oxkv-s3/` — `ObjectStoreStorage` adapter for S3, GCS, Azure, and local files
 - `crates/oxkv-opfs/` — `OpfsStorage` browser backend and its Web Lock bridge
 - `crates/oxkv-query/` — Lucene-style parser, JSON matcher, `QueryExt`, and `QueryViewExt`
 - `crates/oxkv-cached/` — `CachedOxKvStore`/`CachedTx` write-through RAM mirror and `BuildCachedExt`
-- `src/store/mod.rs` — core traits (`GetSet`, `Transaction`, `Store`, `GetSetExt`, `StoreExt`), error types (`StoreError::Fenced`, `StoreError::CasConflict`, `StoreError::NotModified`), and the `lock_ignore_poison` policy helper
+- `src/store/mod.rs` — core traits (`GetSet`, `Transaction`, `Store`, `GetSetExt`, `StoreExt`), error types (`StoreError::Fenced`, `StoreError::CasConflict`, `StoreError::TxConflict`, `StoreError::NotModified`), and the `lock_ignore_poison` policy helper
 - `src/store/btree.rs` — in-memory B-tree backend (`btree`, test/bench + WASM baseline)
 - `src/store/lsm/mod.rs` — LSM facade (`oxkv`, native + wasm): re-exports `OxKvStore`/`OxKvTx`/`OxKvReader`/`SstFile`, shared `MemTable` types + WAL/GC tuning constants, and hidden internals for `oxkv-cached`
 - `src/store/lsm/store.rs` — single-writer `OxKvStore`/`OxKvStoreBuilder`: probe + epoch fencing, WAL gate + group commit, flush/GC/compaction
@@ -889,6 +1073,8 @@ wasm-pack build crates/oxkv-wasm --target web --out-name oxkv   # or nodejs, bun
 - `src/store/lsm/probe.rs` — conditional-write probe (`If-None-Match` / `If-Match`)
 - `src/store/storage.rs` — `Storage` trait + `MemStorage` (in-memory, every target); the S3/GCS/Azure/local adapter lives in `crates/oxkv-s3`, and the browser OPFS adapter lives in `crates/oxkv-opfs`
 - `src/store/cache.rs` — `Cache` trait + `LruCache` (scan-resistant `S3-FIFO`, `moka` optional)
+- `src/store/stats.rs` — `StatsStore`/`StatsTx` client-side operation counters and `StoreStats` snapshots
+- `src/store/scoped.rs` — `ScopedStore`/`ScopedTx` prefix-scoped handles over a cloned store
 - `src/store/hooks.rs` — `Hooks` trait, the `Hooked` decorator for any `GetSet` backend, and change notifications
 
 ## License

@@ -1,4 +1,7 @@
-use oxkv::{GetOptions, GetOutput, ObjectPath, PutMode, PutOutcome, Result, Storage, StoreError};
+use oxkv::{
+    GetOptions, GetOutput, ObjectPath, PutMode, PutOutcome, Result, Storage, StorageCause,
+    StoreError,
+};
 
 /// Announces that a browser-only test will check nothing on this host.
 ///
@@ -120,7 +123,7 @@ fn js_err(context: &str, err: wasm_bindgen::JsValue) -> StoreError {
         |e| format!("{e:?}"),
         |d| format!("{}: {}", d.name(), d.message()),
     );
-    StoreError::Storage(format!("{context}: {detail}"))
+    StoreError::storage_with_cause(format!("{context}: {detail}"), StorageCause::Io)
 }
 
 /// Drives a JS promise on the local task queue. The function bridges `!Send`
@@ -150,7 +153,7 @@ impl OpfsStorage {
     /// Returns [`StoreError::Storage`] when OPFS is unavailable or denied.
     pub async fn open() -> Result<Self> {
         let window = web_sys::window()
-            .ok_or_else(|| StoreError::Storage("OPFS requires a window context".to_string()))?;
+            .ok_or_else(|| StoreError::storage("OPFS requires a window context"))?;
         let origin_js = js_await(window.navigator().storage().get_directory())
             .await
             .map_err(|e| js_err("OPFS getDirectory failed", e))?;
@@ -198,12 +201,12 @@ impl OpfsStorage {
     /// Splits `path` into parent segments and the file name.
     fn split(path: &ObjectPath) -> Result<(Vec<&str>, &str)> {
         if path.is_empty() {
-            return Err(StoreError::Storage("empty object path".to_string()));
+            return Err(StoreError::storage("empty object path"));
         }
         let mut segments: Vec<&str> = path.as_str().split('/').collect();
         let name = segments.pop().unwrap_or_default();
         if name.is_empty() {
-            return Err(StoreError::Storage(format!("invalid object path: {path}")));
+            return Err(StoreError::storage(format!("invalid object path: {path}")));
         }
         Ok((segments, name))
     }
@@ -271,7 +274,7 @@ impl OpfsStorage {
         let dir = self
             .parent(&segments, true)
             .await?
-            .ok_or_else(|| StoreError::Storage(format!("OPFS missing parent for {path}")))?;
+            .ok_or_else(|| StoreError::storage(format!("OPFS missing parent for {path}")))?;
         let file_opts = web_sys::FileSystemGetFileOptions::new();
         file_opts.set_create(true);
         let handle_js = js_await(dir.get_file_handle_with_options(name, &file_opts))
@@ -402,7 +405,7 @@ impl OpfsStorage {
                     }
                     Err(handle) => {
                         if handle.dyn_into::<web_sys::FileSystemFileHandle>().is_err() {
-                            return Err(StoreError::Storage(format!(
+                            return Err(StoreError::storage(format!(
                                 "OPFS entry is neither a file nor a directory: {key}"
                             )));
                         }
@@ -427,7 +430,10 @@ impl Storage for OpfsStorage {
                 e_tag: Some(etag.clone()),
                 version: Some(etag),
             }),
-            None => Err(StoreError::Storage(format!("not found: {path}"))),
+            None => Err(StoreError::storage_with_cause(
+                format!("not found: {path}"),
+                StorageCause::NotFound,
+            )),
         }
     }
 

@@ -61,7 +61,8 @@
 //! # What is recorded
 //!
 //! Every operation produces one *span* named after it (`get`, `has`, `set`,
-//! `delete`, `gets`, `begin_tx`, `commit`, `rollback`):
+//! `delete`, `gets`, `set_if_absent`, `compare_and_set`, `delete_if`,
+//! `begin_tx`, `commit`, `rollback`):
 //!
 //! - `db.system = "oxkv"` identifies the store. `db.operation.name`
 //!   identifies the operation.
@@ -117,7 +118,7 @@ use opentelemetry::{Context, KeyValue as OtelKv, global};
 use futures::channel::mpsc;
 use oxkv::{
     ChangeEvent, Direction, GetSet, Hooks, KeyValue, Observer, Result, Scope, Store, Transaction,
-    Validator,
+    TxCas, Validator,
 };
 
 /// The value recorded for the `db.system` span attribute.
@@ -148,6 +149,9 @@ mod ops {
     pub(super) const SET: &str = "set";
     pub(super) const DELETE: &str = "delete";
     pub(super) const GETS: &str = "gets";
+    pub(super) const SET_IF_ABSENT: &str = "set_if_absent";
+    pub(super) const COMPARE_AND_SET: &str = "compare_and_set";
+    pub(super) const DELETE_IF: &str = "delete_if";
     pub(super) const BEGIN_TX: &str = "begin_tx";
     pub(super) const COMMIT: &str = "commit";
     pub(super) const ROLLBACK: &str = "rollback";
@@ -436,7 +440,7 @@ impl<S: GetSet + Send + Sync> GetSet for OtelStore<S> {
 
     async fn gets_bytes(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
@@ -548,7 +552,7 @@ impl<T: GetSet + Send + Sync> GetSet for OtelTx<T> {
 
     async fn gets_bytes(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
@@ -561,6 +565,42 @@ impl<T: GetSet + Send + Sync> GetSet for OtelTx<T> {
                 let count = i64::try_from(entries.len()).unwrap_or(i64::MAX);
                 span.set_attribute(OtelKv::new(ATTR_ITEMS, count));
             },
+        )
+        .await
+    }
+}
+
+#[async_trait]
+impl<T: TxCas + Send + Sync> TxCas for OtelTx<T> {
+    async fn set_if_absent(&self, key: &str, value: &[u8]) -> Result<()> {
+        instrumented(
+            ops::SET_IF_ABSENT,
+            Some(key),
+            None,
+            self.inner.set_if_absent(key, value),
+            no_annotation,
+        )
+        .await
+    }
+
+    async fn compare_and_set(&self, key: &str, expected: Option<&[u8]>, new: &[u8]) -> Result<()> {
+        instrumented(
+            ops::COMPARE_AND_SET,
+            Some(key),
+            None,
+            self.inner.compare_and_set(key, expected, new),
+            no_annotation,
+        )
+        .await
+    }
+
+    async fn delete_if(&self, key: &str, expected: &[u8]) -> Result<()> {
+        instrumented(
+            ops::DELETE_IF,
+            Some(key),
+            None,
+            self.inner.delete_if(key, expected),
+            no_annotation,
         )
         .await
     }
@@ -808,6 +848,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_tx_cas_delegates_and_instruments_staging_and_commit() {
+        let _guard = telemetry_lock();
+        fixture();
+        let s = store();
+        let before = exported_len();
+
+        let tx = s.begin_tx().unwrap();
+        tx.set_if_absent("tx-cas", b"one").await.unwrap();
+        tx.commit().await.unwrap();
+
+        let tx = s.begin_tx().unwrap();
+        tx.compare_and_set("tx-cas", Some(b"one"), b"two")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let tx = s.begin_tx().unwrap();
+        tx.set_if_absent("tx-cas", b"three").await.unwrap();
+        let error = tx.commit().await.unwrap_err();
+        assert!(matches!(error, StoreError::TxConflict { .. }));
+        assert_eq!(s.get_bytes("tx-cas").await.unwrap(), Some(b"two".to_vec()));
+
+        let names: Vec<String> = exported_since(before).iter().map(name_of).collect();
+        for expected in ["set_if_absent", "compare_and_set", "commit"] {
+            assert!(
+                names.iter().any(|name| name == expected),
+                "expected `{expected}` span among {names:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn test_into_inner_consumes_the_decorator() {
         let _guard = telemetry_lock();
         fixture();
@@ -851,7 +923,7 @@ mod tests {
 
         async fn gets_bytes(
             &self,
-            _limit: Option<u32>,
+            _limit: Option<usize>,
             _direction: Direction,
             _cursor: (Option<String>, Option<String>),
         ) -> Result<Vec<KeyValue>> {

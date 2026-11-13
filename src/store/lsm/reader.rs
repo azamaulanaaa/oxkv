@@ -13,7 +13,7 @@ use crate::store::cache::{Cache, CacheStats, LruCache};
 use crate::store::storage::{ObjectPath, Storage};
 use crate::store::{
     ChangeEvent, Direction, GetSet, Hooks, KeyValue, Observer, Result, Scope, Store, StoreError,
-    Transaction, Validator,
+    Transaction, TxCas, Validator, storage_context,
 };
 use futures::channel::mpsc;
 
@@ -34,6 +34,13 @@ fn default_sst_cache() -> LruCache<String, Arc<SstFile>> {
 }
 
 /// Read-only view over a [`crate::store::OxKvStore`] prefix, sharing the [`Store`] trait.
+///
+/// The reader does not freeze a view. Each read revalidates the manifest and
+/// replays newly listed WAL files. The reader sees a committed write after the
+/// manifest CAS lands. Two reads can observe different states. For a fixed
+/// view, call [`StoreExt::snapshot`](crate::store::StoreExt::snapshot) on the
+/// reader. See `docs/contracts.md`, section 4.6 "Reader consistency", for the
+/// full contract.
 #[derive(Clone)]
 pub struct OxKvReader<C = LruCache<String, Arc<SstFile>>> {
     inner: Arc<dyn Storage>,
@@ -210,9 +217,7 @@ where
                     continue;
                 }
                 Err(e) => {
-                    return Err(StoreError::Storage(format!(
-                        "read wal {wal_id} failed: {e}"
-                    )));
+                    return Err(storage_context(format!("read wal {wal_id} failed"), e));
                 }
             };
             let mut replayed = self.replayed.lock().await;
@@ -275,7 +280,7 @@ where
     /// Returns `StoreError` on I/O or CRC failure.
     pub async fn gets_bytes(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
@@ -334,7 +339,7 @@ where
 
     async fn gets_bytes(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
@@ -369,7 +374,7 @@ where
 
     async fn gets_bytes(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
@@ -388,6 +393,29 @@ where
 
     async fn rollback(self) -> Result<()> {
         Ok(())
+    }
+}
+
+#[async_trait]
+impl<C> TxCas for OxKvRoTx<C>
+where
+    C: Cache<String, Arc<SstFile>>,
+{
+    async fn set_if_absent(&self, _key: &str, _value: &[u8]) -> Result<()> {
+        Err(read_only_err())
+    }
+
+    async fn compare_and_set(
+        &self,
+        _key: &str,
+        _expected: Option<&[u8]>,
+        _new: &[u8],
+    ) -> Result<()> {
+        Err(read_only_err())
+    }
+
+    async fn delete_if(&self, _key: &str, _expected: &[u8]) -> Result<()> {
+        Err(read_only_err())
     }
 }
 
@@ -496,6 +524,14 @@ mod tests {
         }
         let tx = reader.begin_tx().expect("tx");
         assert!(tx.put_bytes("k", b"x").await.is_err());
+        for result in [
+            tx.set_if_absent("k", b"x").await,
+            tx.compare_and_set("k", Some(b"v"), b"x").await,
+            tx.delete_if("k", b"v").await,
+        ] {
+            let error = result.expect_err("read-only transaction rejects TxCas");
+            assert!(error.to_string().contains("read-only"));
+        }
         tx.commit().await.expect("empty commit");
         assert_eq!(
             store.get_bytes("k").await.expect("get"),
@@ -628,7 +664,10 @@ mod tests {
                 .extension()
                 .is_some_and(|ext| ext == "sst");
             if is_sst && self.fail.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                return Err(StoreError::Storage("not found: injected".to_string()));
+                return Err(StoreError::storage_with_cause(
+                    "not found: injected",
+                    crate::store::StorageCause::NotFound,
+                ));
             }
             self.inner.get(path).await
         }

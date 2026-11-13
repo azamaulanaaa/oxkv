@@ -89,18 +89,18 @@ pub trait QueryExt: GetSet {
     /// Returns a [`StoreError`] if the query is invalid or retrieval fails.
     async fn gets(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
         query: Option<&str>,
     ) -> Result<Vec<KeyValue>> {
-        const BATCH_SIZE: u32 = 256;
+        const BATCH_SIZE: usize = 256;
 
         let Some(query) = query else {
             return self.gets_bytes(limit, direction, cursor).await;
         };
 
-        let max_results = limit.map_or(usize::MAX, |l| usize::try_from(l).unwrap_or(usize::MAX));
+        let max_results = limit.unwrap_or(usize::MAX);
         // Checked before the scan. The loop below tests the limit *after* each
         // push. So `Some(0)` would otherwise return one row.
         if max_results == 0 {
@@ -124,7 +124,7 @@ pub trait QueryExt: GetSet {
             }
 
             let last_key = batch.last().map(|kv| kv.key.clone());
-            let is_last_batch = batch.len() < BATCH_SIZE as usize;
+            let is_last_batch = batch.len() < BATCH_SIZE;
 
             for kv in batch {
                 // Skip duplicate processing when the cursor bound is inclusive
@@ -170,18 +170,18 @@ pub trait QueryViewExt: StoreView {
     /// Returns a [`StoreError`] if the query is invalid or retrieval fails.
     async fn gets(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
         query: Option<&str>,
     ) -> Result<Vec<KeyValue>> {
-        const BATCH_SIZE: u32 = 256;
+        const BATCH_SIZE: usize = 256;
 
         let Some(query) = query else {
             return self.gets_bytes(limit, direction, cursor).await;
         };
 
-        let max_results = limit.map_or(usize::MAX, |l| usize::try_from(l).unwrap_or(usize::MAX));
+        let max_results = limit.unwrap_or(usize::MAX);
         if max_results == 0 {
             return Ok(Vec::new());
         }
@@ -203,7 +203,7 @@ pub trait QueryViewExt: StoreView {
             }
 
             let last_key = batch.last().map(|kv| kv.key.clone());
-            let is_last_batch = batch.len() < BATCH_SIZE as usize;
+            let is_last_batch = batch.len() < BATCH_SIZE;
 
             for kv in batch {
                 if page_cursor.as_deref() == Some(kv.key.as_str()) {

@@ -124,7 +124,10 @@ mod tests {
                     .fail_once
                     .swap(false, std::sync::atomic::Ordering::SeqCst)
             {
-                return Err(StoreError::Storage("not found: injected".to_string()));
+                return Err(StoreError::storage_with_cause(
+                    "not found: injected",
+                    crate::store::StorageCause::NotFound,
+                ));
             }
             self.inner.get(path).await
         }
@@ -2176,7 +2179,7 @@ mod tests {
                 self.inner.delete(path).await
             }
             async fn list(&self, _prefix: &ObjectPath) -> Result<Vec<ObjectPath>> {
-                Err(StoreError::Storage("list unavailable".to_string()))
+                Err(StoreError::storage("list unavailable"))
             }
         }
 

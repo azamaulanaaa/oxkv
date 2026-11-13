@@ -85,7 +85,7 @@ const TX_BATCH: usize = 1_000;
 /// holds 1M keys. Depth is therefore preserved. Only the repeated work is capped.
 /// One iteration then costs 10K gets instead of 1M.
 const READ_SAMPLES: usize = 10_000;
-const PAGE: u32 = 100;
+const PAGE: usize = 100;
 const PAYLOAD: [u8; 64] = [b'x'; 64];
 /// Prime stride used for deterministic pseudo-random key selection.
 const STRIDE: usize = 7919;
@@ -197,11 +197,7 @@ where
     S: GetSet + Default,
 {
     let mut group = c.benchmark_group(format!("page_fetch_{PAGE}/{backend}/{n}"));
-    configure(
-        &mut group,
-        n,
-        usize::try_from(PAGE).expect("page size fits"),
-    );
+    configure(&mut group, n, PAGE);
     let keys: Vec<String> = (0..n).map(key).collect();
 
     // The store populates lazily on the first (untimed warmup) iteration. A
@@ -432,11 +428,7 @@ mod oxkv_bench {
 
     pub(crate) fn page_fetch(rt: &tokio::runtime::Runtime, c: &mut Criterion, n: usize) {
         let mut group = c.benchmark_group(format!("page_fetch_{PAGE}/oxkv_mem/{n}"));
-        configure(
-            &mut group,
-            n,
-            usize::try_from(PAGE).expect("page size fits"),
-        );
+        configure(&mut group, n, PAGE);
         let keys: Vec<String> = (0..n).map(key).collect();
         let mut store: Option<OxKvStore> = None;
         let starts: Vec<String> = (0..128usize).map(|j| key((j * 7919 + n / 2) % n)).collect();

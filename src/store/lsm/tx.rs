@@ -19,8 +19,8 @@ use super::{MemTable, WalBuffer};
 use crate::store::cache::{Cache, LruCache};
 use crate::store::storage::{ObjectPath, Storage};
 use crate::store::{
-    ChangeEvent, ChangeKind, Direction, GetSet, HookState, KeyValue, Result, SstFile, Transaction,
-    Validator, lock_ignore_poison,
+    ChangeEvent, ChangeKind, Direction, GetSet, HookState, KeyValue, Result, SstFile, StoreError,
+    Transaction, TxCas, Validator, lock_ignore_poison,
 };
 
 /// Transaction for `OxKvStore`. It stages an overlay. It is durable only
@@ -59,6 +59,9 @@ pub struct OxKvTx<C = LruCache<String, Arc<SstFile>>> {
     pub(crate) hooks: HookState,
     pub(crate) validators: Vec<Arc<dyn Validator>>,
     pub(crate) staged: std::sync::Mutex<Vec<ChangeEvent>>,
+    /// Committed values that the transaction requires at commit time. The
+    /// condition is `None` for an absent key.
+    pub(crate) preconditions: std::sync::Mutex<std::collections::BTreeMap<String, Option<Vec<u8>>>>,
     pub(crate) overlay: std::sync::Mutex<std::collections::BTreeMap<String, Option<Vec<u8>>>>,
 }
 
@@ -133,7 +136,7 @@ where
 
     async fn gets_bytes(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<KeyValue>> {
@@ -149,7 +152,7 @@ where
 
     async fn gets_keys(
         &self,
-        limit: Option<u32>,
+        limit: Option<usize>,
         direction: Direction,
         cursor: (Option<String>, Option<String>),
     ) -> Result<Vec<String>> {
@@ -175,6 +178,62 @@ impl<C> OxKvTx<C> {
             None => staged.push(event),
         }
     }
+
+    /// Records the committed value that `key` must have at commit time.
+    fn require_committed(&self, key: &str, expected: Option<Vec<u8>>) {
+        lock_ignore_poison(&self.preconditions).insert(key.to_string(), expected);
+    }
+
+    /// Stages a delete without a read of the current overlay state.
+    fn stage_delete(&self, key: &str, old_value: Option<Vec<u8>>) {
+        lock_ignore_poison(&self.overlay).insert(key.to_string(), None);
+        self.stage(ChangeEvent {
+            key: key.to_string(),
+            kind: ChangeKind::Delete,
+            old_value,
+            new_value: None,
+            seq: 0,
+        });
+    }
+}
+
+impl<C> OxKvTx<C>
+where
+    C: Cache<String, Arc<SstFile>>,
+{
+    /// Reads `key` from committed state. The transaction overlay is ignored.
+    async fn committed_get(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        retry_once_not_found(&self.manifest_cache, || {
+            let staged = async { self.mem.read().await.get(key).cloned() };
+            async move { point_lookup(&self.read_ctx(), staged.await, key).await }
+        })
+        .await
+    }
+}
+
+#[async_trait]
+impl<C> TxCas for OxKvTx<C>
+where
+    C: Cache<String, Arc<SstFile>>,
+{
+    async fn set_if_absent(&self, key: &str, value: &[u8]) -> Result<()> {
+        self.put_bytes(key, value).await?;
+        self.require_committed(key, None);
+        Ok(())
+    }
+
+    async fn compare_and_set(&self, key: &str, expected: Option<&[u8]>, new: &[u8]) -> Result<()> {
+        self.put_bytes(key, new).await?;
+        self.require_committed(key, expected.map(<[u8]>::to_vec));
+        Ok(())
+    }
+
+    async fn delete_if(&self, key: &str, expected: &[u8]) -> Result<()> {
+        let old_value = self.get_bytes(key).await?;
+        self.stage_delete(key, old_value);
+        self.require_committed(key, Some(expected.to_vec()));
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -198,21 +257,36 @@ where
         }
 
         // Serialize concurrent writers. See `write_gate`.
+        let preconditions = lock_ignore_poison(&self.preconditions).clone();
         let _gate = self.write_gate.lock().await;
         // Drain under the lock. The `commit` method consumes the
         // transaction, so taking ownership up front is equivalent. It also
         // keeps no guard across awaits.
         let overlay = std::mem::take(&mut *lock_ignore_poison(&self.overlay));
-        if overlay.is_empty() {
+        if overlay.is_empty() && preconditions.is_empty() {
             return Ok(());
         }
         // Encode directly from overlay. Do not mutate shared mem until WAL
         // is durable (atomic).
         let updates: Vec<(String, Option<Vec<u8>>)> = overlay.into_iter().collect();
-        let payload_buf = OxKvStore::<C>::encode_ops(&updates)?;
         // Anything already staged on the parent store happened-before this
         // commit. It must land ahead of this commit in the WAL.
         self.maintenance_view().drain_staged_locked().await?;
+        // The precondition check and the overlay apply share the write gate.
+        // The check reads committed state, not the transaction overlay.
+        for (key, expected) in &preconditions {
+            let current = self.committed_get(key).await?;
+            if current.as_deref() != expected.as_deref() {
+                return Err(StoreError::TxConflict {
+                    key: key.clone(),
+                    current,
+                });
+            }
+        }
+        if updates.is_empty() {
+            return Ok(());
+        }
+        let payload_buf = OxKvStore::<C>::encode_ops(&updates)?;
         self.maintenance_view()
             .append_wal_locked(payload_buf, &updates)
             .await?;

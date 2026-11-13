@@ -159,7 +159,7 @@ pub(crate) fn pull_merge_next(
 #[must_use]
 pub(crate) fn merged_gets_bytes(
     sources: Vec<Vec<(String, Option<Vec<u8>>)>>,
-    limit: Option<u32>,
+    limit: Option<usize>,
     direction: Direction,
     cursor: (Option<String>, Option<String>),
 ) -> Vec<KeyValue> {
@@ -206,11 +206,10 @@ pub(crate) fn merged_gets_bytes(
             vec
         }
     };
-    if let Some(lim) = limit {
-        let lim = lim as usize;
-        if filtered.len() > lim {
-            filtered.truncate(lim);
-        }
+    if let Some(lim) = limit
+        && filtered.len() > lim
+    {
+        filtered.truncate(lim);
     }
     filtered
 }

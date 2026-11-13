@@ -19,7 +19,7 @@ use super::{
 };
 use crate::store::cache::Cache;
 use crate::store::storage::{ObjectPath, Storage};
-use crate::store::{Direction, KeyValue, Result, StoreError};
+use crate::store::{Direction, KeyValue, Result, StorageCause, StoreError, storage_context};
 
 /// Shared inputs for one lookup. The inputs are the storage and the SST
 /// cache.
@@ -33,7 +33,11 @@ pub(crate) struct ReadCtx<'a, C> {
 
 #[must_use]
 pub(crate) fn is_not_found(err: &StoreError) -> bool {
-    matches!(err, StoreError::Storage(msg) if msg.contains("not found"))
+    matches!(
+        err,
+        StoreError::Storage(storage)
+            if storage.cause == StorageCause::NotFound || storage.message.contains("not found")
+    )
 }
 
 /// Filters `map` to `[lower, upper]` bounds derived from `direction`/`cursor`.
@@ -74,19 +78,25 @@ pub(crate) async fn resolve_value<C>(ctx: &ReadCtx<'_, C>, raw: Vec<u8>) -> Resu
         let blob_path = ObjectPath::from(ptr.blob.as_str());
         let bytes = get_blob(Arc::clone(ctx.inner), &blob_path).await?;
         if bytes.len() != ptr.len {
-            return Err(StoreError::Storage(format!(
-                "blob len mismatch for {}: expected {}, got {}",
-                blob_path,
-                ptr.len,
-                bytes.len()
-            )));
+            return Err(StoreError::storage_with_cause(
+                format!(
+                    "blob len mismatch for {}: expected {}, got {}",
+                    blob_path,
+                    ptr.len,
+                    bytes.len()
+                ),
+                StorageCause::Corrupt,
+            ));
         }
         let crc = crc32fast::hash(&bytes);
         if crc != ptr.crc {
-            return Err(StoreError::Storage(format!(
-                "blob crc mismatch for {}: expected {}, got {}",
-                blob_path, ptr.crc, crc
-            )));
+            return Err(StoreError::storage_with_cause(
+                format!(
+                    "blob crc mismatch for {}: expected {}, got {}",
+                    blob_path, ptr.crc, crc
+                ),
+                StorageCause::Corrupt,
+            ));
         }
         Ok(bytes)
     } else {
@@ -108,7 +118,7 @@ where
         .inner
         .get(&path)
         .await
-        .map_err(|e| StoreError::Storage(format!("get sst {id} failed: {e}")))?;
+        .map_err(|e| storage_context(format!("get sst {id} failed"), e))?;
     let sst = Arc::new(SstFile::parse(out.bytes)?);
     sst.verify_file_crc()?;
     Ok(sst)
@@ -215,7 +225,7 @@ where
 pub(crate) async fn range_lookup<C>(
     ctx: &ReadCtx<'_, C>,
     layers: Vec<Vec<(String, Option<Vec<u8>>)>>,
-    limit: Option<u32>,
+    limit: Option<usize>,
     direction: Direction,
     cursor: (Option<String>, Option<String>),
 ) -> Result<Vec<KeyValue>>
@@ -245,7 +255,7 @@ where
 pub(crate) async fn range_keys<C>(
     ctx: &ReadCtx<'_, C>,
     layers: Vec<Vec<(String, Option<Vec<u8>>)>>,
-    limit: Option<u32>,
+    limit: Option<usize>,
     direction: Direction,
     cursor: (Option<String>, Option<String>),
 ) -> Result<Vec<String>>
@@ -273,7 +283,7 @@ async fn scan_manifest<C>(
     ctx: &ReadCtx<'_, C>,
     manifest: Arc<super::Manifest>,
     layers: Vec<Vec<(String, Option<Vec<u8>>)>>,
-    limit: Option<u32>,
+    limit: Option<usize>,
     direction: Direction,
     cursor: (Option<String>, Option<String>),
     load_values: bool,
@@ -310,7 +320,7 @@ where
         for file in &files {
             pull.push(MergeSource::File(file.scan_iter(scan_start, scan_end)));
         }
-        let merged = pull_merge_next(&mut pull, limit.map(|l| l as usize))?;
+        let merged = pull_merge_next(&mut pull, limit)?;
         let mut out = Vec::with_capacity(merged.len());
         for (key, raw) in merged {
             out.push(KeyValue {
@@ -355,4 +365,28 @@ where
         sources.push(resolved);
     }
     Ok(merged_gets_bytes(sources, limit, direction, cursor))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_not_found;
+    use crate::store::{StorageCause, StoreError};
+
+    #[test]
+    fn is_not_found_matches_a_cause_only_error() {
+        let err = StoreError::storage_with_cause("missing object", StorageCause::NotFound);
+        assert!(
+            is_not_found(&err),
+            "NotFound must count as not found: {err:?}"
+        );
+    }
+
+    #[test]
+    fn is_not_found_rejects_another_cause_without_the_message() {
+        let err = StoreError::storage_with_cause("network failure", StorageCause::Network);
+        assert!(
+            !is_not_found(&err),
+            "Network must not count as not found: {err:?}"
+        );
+    }
 }
