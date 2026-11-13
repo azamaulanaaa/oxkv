@@ -2,7 +2,7 @@
 name = "oxkv-write"
 version = "0.11.0"
 edition = "2024"
-description = "Versioned write requests and an in-memory authority commit simulator for oxkv."
+description = "Versioned write requests and a durable authority for oxkv."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/azamaulanaaa/oxkv"
 readme = "README.md"

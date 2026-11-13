@@ -61,7 +61,7 @@ impl fmt::Display for Key {
 
 /// A client identity.
 ///
-/// The authority takes the client identity from the request. The simulator has
+/// The authority takes the client identity from the request. The authority has
 /// no authentication layer, so the request carries the identity as an explicit
 /// value. The receipt id covers this value.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]

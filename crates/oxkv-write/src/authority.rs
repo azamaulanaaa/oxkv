@@ -1,4 +1,4 @@
-//! The in-memory authority commit simulator.
+//! The write authority for one shard.
 //!
 //! The authority owns one shard. It serializes writes and assigns every key
 //! version. The check order is:
@@ -12,14 +12,20 @@
 //! Authentication is outside this crate. The request carries the client
 //! identity as an explicit value. The receipt id covers the client identity,
 //! the idempotency key, and the request body digest. The receipt ledger keys
-//! every receipt by the client identity and the idempotency key. The simulator
-//! has no clock, randomness, or I/O.
+//! every receipt by the client identity and the idempotency key. The commit
+//! path has no clock, randomness, or I/O.
 //!
 //! A production authority takes a real [`CheckpointSigner`]. Production mode
 //! rejects [`StructuralSigner`]. A local authority uses the structural signer
 //! and the in-memory witness queue.
+//!
+//! A native authority can save its state to a directory and load it again
+//! after a restart. The state covers the rows, the receipts, the commit
+//! version, the audit records, the signed checkpoints, and the chain tip.
 
 use std::collections::BTreeMap;
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
 use std::sync::Arc;
 
 use oxkv_contracts::receipt::{
@@ -31,7 +37,7 @@ use oxkv_contracts::version::{
 };
 use oxkv_security::audit::{
     AuditChain, AuditCheckpoint, AuditDecision, AuditEntry, AuditRowDecision,
-    AuditVerificationReport, CheckpointSigner, SignerKind, StructuralSigner,
+    AuditVerificationReport, CheckpointSigner, GENESIS_HASH, SignerKind, StructuralSigner,
 };
 use oxkv_security::auth::PrincipalId;
 use oxkv_security::error::SecurityError;
@@ -47,6 +53,8 @@ use crate::policy::{
 use crate::receipt::{ReceiptLedger, ReceiptLedgerError};
 use crate::record::{CommitSummary, CommitView, KeyChange, KeyRecord, KeyValue};
 use crate::request::{ClientId, Key, Mutation, WriteOperation, WriteRequest};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::state::{AuthorityState, AuthorityStateError};
 use crate::util::push_bytes;
 
 const REASON_CROSS_SHARD: &str = "shard.cross_mutation_rejected";
@@ -254,7 +262,7 @@ impl AuthorityInitError {
 
 /// The configuration of one authority.
 ///
-/// Every value is explicit. The simulator supplies no default value. The
+/// Every value is explicit. The configuration supplies no default value. The
 /// configuration pins the provenance that the audit record carries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorityConfig {
@@ -396,10 +404,11 @@ impl AuthorityConfig {
     }
 }
 
-/// The in-memory authority for one shard.
+/// The write authority for one shard.
 ///
-/// The witness type defaults to the in-memory [`WitnessQueue`]. A production
-/// deployment supplies a durable outbox instead.
+/// The witness type defaults to the in-memory [`WitnessQueue`]. A native
+/// deployment supplies a durable outbox instead. A native authority can also
+/// save its state to a directory and load it again after a restart.
 #[derive(Debug, Clone)]
 pub struct Authority<W = WitnessQueue> {
     shard_id: ShardId,
@@ -420,7 +429,7 @@ impl Authority<WitnessQueue> {
     /// Creates a local authority for one shard.
     ///
     /// The authority uses the structural signer and the in-memory witness
-    /// queue.
+    /// queue. Use [`Authority::open`] to supply a durable outbox.
     ///
     /// # Errors
     ///
@@ -593,6 +602,81 @@ impl<W> Authority<W> {
         idempotency_key: &IdempotencyKey,
     ) -> Option<&ReceiptEnvelope> {
         self.receipts.receipt(client_id, idempotency_key)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<W> Authority<W> {
+    /// Saves the authority state to a directory.
+    ///
+    /// The method writes one state file in the directory. The file holds the
+    /// rows and their key versions, the receipts, the commit version, the
+    /// audit records, the signed checkpoints, and the chain tip. The method
+    /// writes a temporary file and renames it over the state file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthorityStateError::Io`] when the directory or the file is
+    /// not writable.
+    pub fn save_state(&self, directory: impl AsRef<Path>) -> Result<(), AuthorityStateError> {
+        let state = AuthorityState {
+            shard_id: self.shard_id.clone(),
+            records: self.records.clone(),
+            receipts: self.receipts.clone(),
+            commit_version: self.commit_version,
+            audit_records: self.audit.records().to_vec(),
+            checkpoints: self.audit.checkpoints().to_vec(),
+            tip: self
+                .audit
+                .records()
+                .last()
+                .map_or(GENESIS_HASH, |record| record.record_hash),
+        };
+        state.save(directory.as_ref())
+    }
+
+    /// Loads the authority state from a directory.
+    ///
+    /// The method replaces the rows, the receipts, the commit version, the
+    /// audit records, and the signed checkpoints. The method keeps the
+    /// configuration and the witness outbox. A failed load changes no state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthorityStateError::MissingState`] when the state file is
+    /// absent. Returns [`AuthorityStateError::Truncated`] when the file is
+    /// short. Returns [`AuthorityStateError::IntegrityMismatch`] when the
+    /// integrity value does not match. Returns
+    /// [`AuthorityStateError::UnsupportedVersion`] when the format version is
+    /// unknown. Returns [`AuthorityStateError::UnknownFormat`] when the magic
+    /// value is unknown. Returns [`AuthorityStateError::Corrupt`] when the
+    /// payload or the audit chain is invalid.
+    pub fn load_state(&mut self, directory: impl AsRef<Path>) -> Result<(), AuthorityStateError> {
+        let state = AuthorityState::load(directory.as_ref())?;
+        if state.shard_id != self.shard_id {
+            return Err(AuthorityStateError::Corrupt {
+                reason: "the saved shard does not match the open shard",
+            });
+        }
+        let audit = AuditChain::from_parts(
+            self.shard_id.clone(),
+            state.audit_records,
+            state.checkpoints,
+        );
+        let report = audit.verify().map_err(|_| AuthorityStateError::Corrupt {
+            reason: "the saved audit chain does not verify",
+        })?;
+        let expected_tip = report.tip.unwrap_or(GENESIS_HASH);
+        if state.tip != expected_tip {
+            return Err(AuthorityStateError::Corrupt {
+                reason: "the saved chain tip does not match the audit chain",
+            });
+        }
+        self.records = state.records;
+        self.receipts = state.receipts;
+        self.commit_version = state.commit_version;
+        self.audit = audit;
+        Ok(())
     }
 }
 

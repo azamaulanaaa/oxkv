@@ -1,6 +1,6 @@
 # oxkv-write
 
-Versioned write requests and an in-memory authority commit simulator for oxkv.
+Versioned write requests and a durable authority for oxkv.
 
 ## What it does
 
@@ -15,6 +15,21 @@ Versioned write requests and an in-memory authority commit simulator for oxkv.
 - A retry with a different body fails with `write.idempotency_key_reuse`.
 - A cross-shard mutation fails with `shard.cross_mutation_rejected` before the version check.
 
+## Durable state
+
+- An authority can save its state to a data directory.
+- The state covers the rows and their key versions, the receipt ledger
+  entries, the commit version, the audit records, the audit checkpoints, and
+  the chain tip.
+- One canonical format holds the state. The format has a magic value, a format
+  version, and a `BLAKE3` integrity value.
+- `save_state` writes a temporary file and renames it over the state file.
+- `load_state` rejects a missing, truncated, corrupt, or unknown-version file
+  with `AuthorityStateError`.
+- A save followed by a load round-trips the state exactly.
+- The state file is `authority.state` in the data directory.
+- State persistence is native only. The commit path stays pure.
+
 ## Modes and checkpoint signing
 
 - A production authority takes a real `CheckpointSigner`.
@@ -23,6 +38,8 @@ Versioned write requests and an in-memory authority commit simulator for oxkv.
 - A local authority uses `StructuralSigner`. The structural signer is for
   tests and local runs. It is not a production signature scheme.
 - The signer key identifier must match the configured checkpoint key.
+- Production still requires a real `CheckpointSigner`. This tree has no
+  production signer.
 
 ## Witness outbox
 
@@ -47,12 +64,12 @@ derives index or event effects only at the commit step.
 
 This crate does not implement the scheduler, the client outbox, the external
 audit witness, the search index, or the event stream. It exposes pure policy
-and commit hook seams for those crates. The audit chain is in memory and hash
-linked per shard. Each checkpoint carries a signature. The crate stores no key
-material.
+and commit hook seams for those crates. The audit chain is hash linked per
+shard. Each checkpoint carries a signature. The crate stores no key material.
 
-The core is portable and pure. It uses no clock, randomness, I/O, floating
-point, or `unsafe`.
+The commit path is portable and pure. It uses no clock, randomness, I/O,
+floating point, or `unsafe`. Native state persistence and the native witness
+outbox use file I/O.
 
 ## Example
 

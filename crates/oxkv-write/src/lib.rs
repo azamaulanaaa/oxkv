@@ -1,4 +1,4 @@
-//! Versioned write requests and an in-memory authority commit simulator.
+//! Versioned write requests and a durable authority for oxkv.
 //!
 //! A write request carries one client identity, one idempotency key, and one
 //! base version for each mutated key. The authority owns the per-key version
@@ -12,18 +12,25 @@
 //! 4. policy check;
 //! 5. commit.
 //!
-//! Authentication is outside this crate. The core is portable and pure. It
-//! uses no clock, randomness, I/O, floating point, or `unsafe`. The native
-//! witness outbox is the only file I/O path.
+//! Authentication is outside this crate. The commit path is portable and
+//! pure. It uses no clock, randomness, I/O, floating point, or `unsafe`. The
+//! native state file and the native witness outbox are the only file I/O
+//! paths.
+//!
+//! An authority can save its state to a directory and load it again after a
+//! restart. The state covers the key records, the receipt ledger, the commit
+//! version, the audit records, the signed checkpoints, and the chain tip. The
+//! save path writes a temporary file and renames it over the state file.
 //!
 //! The authority appends one signed audit record for each terminal verdict.
 //! The audit chain comes from `oxkv-security`. The authority sends each signed
 //! checkpoint to an asynchronous witness outbox after the commit. The commit
 //! path does not wait for the witness.
 //!
-//! Production mode requires a real [`CheckpointSigner`]. A production
-//! configuration that uses [`StructuralSigner`] fails at startup. The
-//! structural signer is for tests and local runs.
+//! Production mode requires a real [`CheckpointSigner`]. This tree has no
+//! production signer. A production configuration that uses
+//! [`StructuralSigner`] fails at startup. The structural signer is for tests
+//! and local runs.
 //!
 //! A native deployment stores checkpoints in a `FileWitnessOutbox`. The
 //! outbox survives a restart and resumes delivery. Tests and local runs use
@@ -80,6 +87,8 @@ pub mod policy;
 pub mod receipt;
 pub mod record;
 pub mod request;
+#[cfg(not(target_arch = "wasm32"))]
+mod state;
 mod util;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod witness_outbox;
@@ -100,5 +109,7 @@ pub use policy::{
 pub use receipt::{ReceiptLedger, ReceiptLedgerError, StoredReceipt};
 pub use record::{CommitSummary, CommitView, KeyChange, KeyRecord, KeyValue};
 pub use request::{ClientId, Key, Mutation, WriteOperation, WriteRequest};
+#[cfg(not(target_arch = "wasm32"))]
+pub use state::{AuthorityStateError, STATE_FILE};
 #[cfg(not(target_arch = "wasm32"))]
 pub use witness_outbox::FileWitnessOutbox;
