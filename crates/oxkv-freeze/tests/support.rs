@@ -54,6 +54,54 @@ fn the_support_window_is_published() {
     }
 }
 
+/// Returns the value of one row in the support policy table.
+fn policy_table_value<'a>(document: &'a str, rule: &str) -> &'a str {
+    let prefix = format!("| {rule} |");
+    document
+        .lines()
+        .find_map(|line| line.trim().strip_prefix(prefix.as_str()))
+        .map_or_else(
+            || panic!("the support policy has no row for {rule}"),
+            |value| value.trim_end_matches('|').trim(),
+        )
+}
+
+#[test]
+fn the_support_constants_match_the_published_table() {
+    let document = include_str!("../../../docs/specs/freeze.md");
+    let fixes = policy_table_value(document, "Fixes after the next major");
+    let security = policy_table_value(document, "Security fixes for the last minor");
+    let notice = policy_table_value(document, "Removal notice");
+    assert_eq!(fixes, "24 months");
+    assert_eq!(security, "12 months");
+    assert_eq!(notice, "12 months of notice");
+    assert_eq!(
+        fixes.trim_end_matches(" months").parse::<u16>(),
+        Ok(FIXES_AFTER_NEXT_MAJOR_MONTHS)
+    );
+    assert_eq!(
+        security.trim_end_matches(" months").parse::<u16>(),
+        Ok(SECURITY_FIXES_LAST_MINOR_MONTHS)
+    );
+    assert_eq!(
+        notice.trim_end_matches(" months of notice").parse::<u16>(),
+        Ok(REMOVAL_NOTICE_MONTHS)
+    );
+    assert_eq!(
+        policy_table_value(document, "Supported minors"),
+        "Two minors stay supported."
+    );
+    assert_eq!(
+        policy_table_value(document, "Downgrade"),
+        "No downgrade after the first write under a new format."
+    );
+    assert_eq!(
+        policy_table_value(document, "Removal migration"),
+        "An automated migration is required."
+    );
+    assert_eq!(SUPPORTED_MINORS, 2);
+}
+
 #[test]
 fn the_support_constants_match_the_policy() {
     assert_eq!(FIXES_AFTER_NEXT_MAJOR_MONTHS, 24);

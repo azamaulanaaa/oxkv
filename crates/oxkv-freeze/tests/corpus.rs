@@ -76,3 +76,26 @@ fn every_register_row_has_a_vector_reference() {
         );
     }
 }
+
+#[test]
+fn the_corpus_names_each_row_one_time() {
+    let corpus = corpus_from_golden();
+    for row in REGISTER {
+        let entries: Vec<_> = corpus
+            .entries()
+            .iter()
+            .filter(|entry| entry.contract == row.id)
+            .collect();
+        assert_eq!(entries.len(), 1, "the corpus repeats {}", row.id);
+        assert_ne!(entries[0].vector, "");
+    }
+    let mut names: Vec<&str> = corpus
+        .entries()
+        .iter()
+        .map(|entry| entry.vector.as_str())
+        .collect();
+    names.sort_unstable();
+    let before = names.len();
+    names.dedup();
+    assert_eq!(names.len(), before, "the corpus repeats a vector name");
+}

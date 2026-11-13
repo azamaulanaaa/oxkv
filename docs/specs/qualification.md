@@ -176,17 +176,31 @@ The tiers are policy data in `crates/oxkv-qualify/policy/tiers.json`.
 | `nightly` | Full matrix | Yes | Yes | No |
 | `release_candidate` | Full matrix | Yes | Yes | Yes |
 
-The release candidate includes the full browser matrix. The browser tier
-therefore gates the release. The pull request tier runs one browser target.
-The nightly tier runs the full browser matrix, old artifacts, and fuzzing.
+The release candidate includes the full logical browser matrix. The
+checked-in CI runs one real headless Chrome target in the `wasm-browser` job
+of `ci.yml`. The release workflow calls `ci.yml`, so a failed browser job
+blocks the tag. The qualification suite itself runs the browser-shaped target
+on the native host. The real browser job proves the wasm binding and OPFS
+paths. It does not run the qualification vectors.
 
 ## 12. Continuous integration
 
-`.github/workflows/qualification.yml` runs two jobs on a pull request and on a
-push to `main`:
+`.github/workflows/qualification.yml` runs three jobs on a pull request and on
+a push to `main`:
 
 - `native` runs the native suite, clippy, and the format check.
 - `vectors` runs the vector immutability test.
+- `freeze` runs the freeze register gate, the receipt registry gate, and the
+  register agreement gate.
+
+`.github/workflows/ci.yml` runs the `qualification` job with
+`cargo run -p oxkv-qualify --locked -- --tier release_candidate`. It also runs
+the `wasm-browser` job with headless Chrome. `.github/workflows/release.yml`
+calls `ci.yml` and gates both publish jobs on `checks`. The browser tier and
+the qualification matrix therefore gate the release.
+
+`.github/scripts/check-release-gates.sh` fails when a release gate is absent
+from the workflows.
 
 The workflow uses locked dependencies and pinned action revisions. It starts
 no service.

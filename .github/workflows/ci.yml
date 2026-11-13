@@ -136,6 +136,17 @@ jobs:
           CHROME_BIN: /usr/bin/chromium
           CHROMEDRIVER: /usr/bin/chromedriver
 
+  qualification:
+    name: Qualification release candidate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-rust
+      - name: Run the qualification suite
+        # The release workflow calls this workflow. A failure here blocks the
+        # tag. The suite runs the release_candidate tier offline.
+        run: cargo run -p oxkv-qualify --locked -- --tier release_candidate
+
   # One job per cargo-deny check. A failure names the check that failed:
   # a licence problem and a vulnerability are different conversations.
   licenses:
@@ -204,3 +215,8 @@ jobs:
         # This check makes GitHub enforce that release.yml still calls ci.yml
         # and that the publish jobs still need `checks`.
         run: .githooks/ci-local.sh release-config
+      - name: Check the release gates
+        # The release gate must include the browser tier and the qualification
+        # matrix. The qualification workflow must run the freeze and vector
+        # gates.
+        run: .github/scripts/check-release-gates.sh

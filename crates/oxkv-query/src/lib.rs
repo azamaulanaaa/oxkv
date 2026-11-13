@@ -304,14 +304,16 @@ pub enum Expression {
     },
 }
 
-/// A term expression with optional phrase, regex, fuzzy, and boost modifiers.
+/// A term expression with optional phrase, fuzzy, and boost modifiers.
 #[derive(Debug, PartialEq, Clone)]
 pub struct TermExpr {
-    /// The raw term text (unescaped content for quoted/regex terms).
+    /// The raw term text (unescaped content for quoted terms).
     pub value: String,
     /// Whether the term was a quoted phrase.
     pub is_quoted: bool,
-    /// Whether the term was a `/regex/` expression.
+    /// Whether the term used the rejected `/regex/` form.
+    ///
+    /// [`parse`] rejects this form with [`REGEX_NOT_SUPPORTED_CODE`].
     pub is_regex: bool,
     /// Fuzzy/proximity slop from a trailing `~N` (defaults to 2 for bare `~`).
     pub fuzzy_slop: Option<u8>,
@@ -322,13 +324,51 @@ pub struct TermExpr {
 /// Alias for fallible AST construction helpers.
 type AstResult<T> = std::result::Result<T, String>;
 
+/// The named error for a regular expression on the 1.0 search surface.
+///
+/// The 1.0 search language has no regular expressions. A later release can add
+/// them with a new contract version.
+pub const REGEX_NOT_SUPPORTED_CODE: &str = "policy.regex_not_supported";
+
 /// Parses a Lucene-style query string into a [`Query`] AST.
 ///
 /// # Errors
-/// Returns an error if the input is not a syntactically valid query.
+/// Returns an error if the input is not a syntactically valid query. Returns
+/// [`REGEX_NOT_SUPPORTED_CODE`] when the query has a `/regex/` term.
 pub fn parse(input: &str) -> AstResult<Query> {
     let pairs = LuceneParser::parse(Rule::main, input).map_err(|e| e.to_string())?;
-    build_ast(pairs)
+    let query = build_ast(pairs)?;
+    reject_regex_terms(&query)?;
+    Ok(query)
+}
+
+/// Returns true when one expression holds a `/regex/` term.
+fn expression_has_regex(expr: &Expression) -> bool {
+    match expr {
+        Expression::Term(term) => term.is_regex,
+        Expression::Field { expr, .. } => expression_has_regex(expr),
+        Expression::Range { .. } => false,
+        Expression::SubQuery { query, .. } => query_has_regex(query),
+    }
+}
+
+/// Returns true when one query holds a `/regex/` term.
+fn query_has_regex(query: &Query) -> bool {
+    let Query::Group(items) = query;
+    items.iter().any(|item| expression_has_regex(&item.expr))
+}
+
+/// Rejects a `/regex/` term on the 1.0 search surface.
+///
+/// # Errors
+/// Returns [`REGEX_NOT_SUPPORTED_CODE`] when the query has a `/regex/` term.
+fn reject_regex_terms(query: &Query) -> AstResult<()> {
+    if query_has_regex(query) {
+        return Err(format!(
+            "{REGEX_NOT_SUPPORTED_CODE}: the 1.0 search language has no regular expressions"
+        ));
+    }
+    Ok(())
 }
 
 fn invalid(rule: Rule) -> String {
@@ -673,17 +713,15 @@ mod tests {
     }
 
     #[test]
-    fn test_a_slash_wrapped_pattern_parses_to_a_regex_term() {
-        let ast = parse_to_ast("/rus.*/");
-        let expected = group(vec![(&None, term("rus.*", false, true, None, None), &None)]);
-        assert_eq!(ast, expected);
+    fn test_a_slash_wrapped_pattern_is_rejected_with_the_policy_code() {
+        let error = parse("/rus.*/").expect_err("a regex term must fail");
+        assert!(error.contains(REGEX_NOT_SUPPORTED_CODE), "{error}");
     }
 
     #[test]
-    fn test_an_escaped_slash_stays_inside_a_regex_term() {
-        let ast = parse_to_ast("/a\\/b/");
-        let expected = group(vec![(&None, term("a/b", false, true, None, None), &None)]);
-        assert_eq!(ast, expected);
+    fn test_an_escaped_slash_pattern_is_rejected_with_the_policy_code() {
+        let error = parse("/a\\/b/").expect_err("a regex term must fail");
+        assert!(error.contains(REGEX_NOT_SUPPORTED_CODE), "{error}");
     }
 
     #[test]
@@ -888,17 +926,9 @@ mod tests {
     }
 
     #[test]
-    fn test_a_field_can_hold_a_regex_term() {
-        let ast = parse_to_ast("title:/rus.*/");
-        let expected = group(vec![(
-            &None,
-            Expression::Field {
-                field: "title".to_string(),
-                expr: Box::new(term("rus.*", false, true, None, None)),
-            },
-            &None,
-        )]);
-        assert_eq!(ast, expected);
+    fn test_a_field_regex_term_is_rejected_with_the_policy_code() {
+        let error = parse("title:/rus.*/").expect_err("a regex term must fail");
+        assert!(error.contains(REGEX_NOT_SUPPORTED_CODE), "{error}");
     }
 
     #[test]

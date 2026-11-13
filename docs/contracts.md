@@ -4,10 +4,21 @@ This document states the behavior that the code on this branch provides. It
 covers the in-memory B-tree backend and the durable LSM backend. Each claim
 names the source file and function that implements it.
 
-The crate version is 0.12.0. The contracts below describe this branch only.
+The crate version is 1.0.0. The contracts below describe this branch only.
 They do not describe requested features that are absent from this branch. The
 Lucene-style query engine lives in the `oxkv-query` crate at
 `crates/oxkv-query`.
+
+## Search surface
+
+The 1.0 search contract is `oxkv-index` for the tokenizer and inverted index,
+and `oxkv-search` for the pinned search read. The `oxkv-query` crate is a
+legacy convenience filter for the `gets` method. It is not the 1.0 search
+contract.
+
+The 1.0 search language has no regular expressions. A `/regex/` term fails
+with `policy.regex_not_supported`. The `*` and `?` wildcard forms still work.
+A later release can add regular expressions with a new contract version.
 
 ## Terms
 

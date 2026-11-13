@@ -1,3 +1,29 @@
+# Migrating from 0.12 to 1.0
+
+OxKV 1.0 removes the `/regex/` term from the query filter. The 1.0 search
+language has no regular expressions. A query with `/regex/` fails with
+`policy.regex_not_supported`.
+
+Before:
+
+```rust
+let rows = store
+    .gets(None, Direction::Next, (None, None), Some(r"id:/doc-\d+/"))
+    .await?;
+```
+
+After:
+
+```rust
+let rows = store
+    .gets(None, Direction::Next, (None, None), Some("id:doc-*"))
+    .await?;
+```
+
+The `*` and `?` wildcard forms still work. The `oxkv-index` and `oxkv-search`
+crates hold the 1.0 search contract. The `oxkv-query` filter is a legacy
+convenience layer. All workspace crates release in lockstep at 1.0.0.
+
 # Migrating from 0.11 to 0.12
 
 OxKV 0.12 changes three existing signatures and adds new APIs. The sections

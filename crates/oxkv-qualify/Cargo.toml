@@ -14,5 +14,8 @@ blake3 = "1.8"
 oxkv-contracts = { path = "../oxkv-contracts" }
 serde_json = "1"
 
+[dev-dependencies]
+oxkv-freeze = { path = "../oxkv-freeze" }
+
 [lints]
 workspace = true

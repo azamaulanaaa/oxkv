@@ -231,6 +231,21 @@ fn every_named_error_fixture_matches_its_code() {
 }
 
 #[test]
+fn a_receipt_that_names_an_unknown_code_fails_validation() {
+    let text = FULL_MANIFEST.replace("\"write.queue_timeout\"", "\"write.not_a_code\"");
+    assert_ne!(text, FULL_MANIFEST, "the fixture has the known code");
+    let manifest = Manifest::parse(&text).expect("the manifest parses");
+    let error = manifest
+        .validate()
+        .expect_err("the unknown receipt code must fail");
+    assert_eq!(error.code(), CODE_UNKNOWN_FIELD);
+    assert!(
+        error.to_string().contains("write.not_a_code"),
+        "the error does not name the unknown code: {error}"
+    );
+}
+
+#[test]
 fn a_float_fails_before_schema_checks() {
     let error = Manifest::parse(fixture("float")).expect_err("the float is rejected");
     assert_eq!(error.code(), CODE_FLOAT_NOT_ALLOWED);

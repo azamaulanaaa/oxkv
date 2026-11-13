@@ -222,7 +222,9 @@ impl JsBTreeStore {
     /// `limit` caps the number of *matching* entries.
     ///
     /// See the `query` module for the query syntax. The syntax covers field
-    /// paths, ranges, wildcards, regex, fuzzy, and boolean operators.
+    /// paths, ranges, wildcards, fuzzy, and boolean operators. The 1.0 surface
+    /// has no regular expressions. A `/regex/` term fails with
+    /// `policy.regex_not_supported`.
     /// # Errors
     /// * `StoreError` - if the query is invalid
     /// * `StoreError` - if an I/O error occurs

@@ -66,12 +66,11 @@ fn corpus(n: usize) -> Vec<Value> {
 }
 
 /// One representative query per engine feature: `(kind, query string)`.
-const QUERIES: [(&str, &str); 14] = [
+const QUERIES: [(&str, &str); 13] = [
     ("term", "rust"),
     ("field_term", "lang:rust"),
     ("phrase", r#"id:"doc-000042""#),
     ("wildcard", "id:doc-00*"),
-    ("regex", r"id:/doc-\d{3}/"),
     ("fuzzy", "lang:rust~1"),
     ("range_numeric", "age:[30 TO 40]"),
     // The bounds are deliberately not ISO-8601 shaped. This query exercises

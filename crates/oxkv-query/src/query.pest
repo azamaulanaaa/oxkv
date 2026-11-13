@@ -21,7 +21,9 @@ unquoted_term = @{ (term_char | "*" | "?")+ }
 quoted_term    = ${ "\"" ~ phrase_content ~ "\"" }
 phrase_content = @{ (escaped_char | !"\"" ~ ANY)* }
 
-// Regex support: /pattern/ with escaped slash support (\/)
+// Regex form: /pattern/ with escaped slash support (\/). The parser accepts
+// the form only to reject it with `policy.regex_not_supported`. The 1.0 search
+// language has no regular expressions.
 regex_term    = ${ "/" ~ regex_content ~ "/" }
 regex_content = @{ ("\\/" | !"/" ~ ANY)* }
 

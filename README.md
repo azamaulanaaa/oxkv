@@ -32,7 +32,7 @@ The default feature is `oxkv`. The other surfaces are opt-in:
 
 `oxkv-cached`, `oxkv-wasm`, `oxkv-query`, `oxkv-opfs`, `oxkv-otel`, and
 `oxkv-s3` are separate workspace crates. All workspace crates release in
-lockstep. See [MIGRATING.md](MIGRATING.md) for the 0.10 to 0.12 upgrade guide
+lockstep. See [MIGRATING.md](MIGRATING.md) for the 0.10 to 1.0 upgrade guide
 and the [crate compatibility table](MIGRATING.md#crate-compatibility).
 The [0.11 feedback response](docs/feedback-0.11-response.md) lists each item,
 its status, and the matching public API.

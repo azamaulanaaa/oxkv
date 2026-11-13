@@ -36,3 +36,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: ./.github/actions/setup-rust
       - run: cargo test -p oxkv-qualify --locked --test immutability
+
+  freeze:
+    name: Freeze and receipt gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-rust
+      - name: Run the freeze register gate
+        run: cargo test -p oxkv-freeze --locked
+      - name: Run the receipt registry gate
+        run: cargo test -p oxkv-manifest --locked
+      - name: Run the register agreement gate
+        run: cargo test -p oxkv-qualify --locked --test release_gate
