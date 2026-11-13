@@ -10,7 +10,7 @@
 
 use oxkv_contracts::ErrorCode;
 
-use crate::error::TransportFailure;
+use crate::error::{ProtocolError, TransportFailure};
 
 /// The Connect frame magic.
 pub const FRAME_MAGIC: &[u8; 8] = b"OXKVCN01";
@@ -73,34 +73,70 @@ const fn str_eq(left: &str, right: &str) -> bool {
 }
 
 /// The outcome of one End frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ConnectStatus {
-    code: Option<ErrorCode>,
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ConnectStatus {
+    /// The call completed.
+    Success,
+    /// The call ended with a code from the local registry.
+    Error(ErrorCode),
+    /// The call ended with a code that this build does not know.
+    Unknown {
+        /// The raw remote code. The value is preserved without change.
+        raw: String,
+    },
 }
 
 impl ConnectStatus {
     /// Creates a successful end status.
     #[must_use]
     pub const fn success() -> Self {
-        Self { code: None }
+        Self::Success
     }
 
     /// Creates an error end status.
     #[must_use]
     pub const fn error(code: ErrorCode) -> Self {
-        Self { code: Some(code) }
+        Self::Error(code)
+    }
+
+    /// Creates an end status for an unknown remote code.
+    #[must_use]
+    pub fn unknown(raw: impl Into<String>) -> Self {
+        Self::Unknown { raw: raw.into() }
     }
 
     /// Returns true for a successful end status.
     #[must_use]
-    pub const fn is_success(self) -> bool {
-        self.code.is_none()
+    pub const fn is_success(&self) -> bool {
+        matches!(self, Self::Success)
     }
 
-    /// Returns the error code of an error end status.
+    /// Returns the error code of a known error end status.
     #[must_use]
-    pub const fn code(self) -> Option<ErrorCode> {
-        self.code
+    pub const fn code(&self) -> Option<ErrorCode> {
+        match self {
+            Self::Error(code) => Some(*code),
+            Self::Success | Self::Unknown { .. } => None,
+        }
+    }
+
+    /// Returns the raw text of an unknown remote code.
+    #[must_use]
+    pub fn raw_code(&self) -> Option<&str> {
+        match self {
+            Self::Unknown { raw } => Some(raw),
+            Self::Success | Self::Error(_) => None,
+        }
+    }
+
+    /// Maps the end status to one named client error.
+    #[must_use]
+    pub fn protocol_error(&self) -> Option<ProtocolError> {
+        match self {
+            Self::Success => None,
+            Self::Error(code) => Some(ProtocolError::handler(*code)),
+            Self::Unknown { raw } => Some(ProtocolError::UnknownRemoteCode { raw: raw.clone() }),
+        }
     }
 }
 
@@ -204,6 +240,18 @@ impl ConnectEnvelope {
         }
     }
 
+    /// Creates an end envelope for an unknown remote code.
+    #[must_use]
+    pub fn end_unknown(sequence: u64, stream_id: u64, raw: impl Into<String>) -> Self {
+        Self {
+            sequence,
+            stream_id,
+            body: ConnectBody::End {
+                status: ConnectStatus::unknown(raw),
+            },
+        }
+    }
+
     /// Returns the sequence number.
     #[must_use]
     pub const fn sequence(&self) -> u64 {
@@ -242,9 +290,9 @@ impl ConnectEnvelope {
 
     /// Returns the end status.
     #[must_use]
-    pub const fn status(&self) -> Option<ConnectStatus> {
+    pub fn status(&self) -> Option<ConnectStatus> {
         match &self.body {
-            ConnectBody::End { status } => Some(*status),
+            ConnectBody::End { status } => Some(status.clone()),
             ConnectBody::Call { .. } | ConnectBody::Message { .. } => None,
         }
     }
@@ -289,9 +337,6 @@ pub enum FrameError {
     /// A string is not valid UTF-8.
     #[error("The frame string is not valid UTF-8.")]
     InvalidUtf8,
-    /// The error code is not in the local registry.
-    #[error("The frame names an unknown error code.")]
-    UnknownErrorCode,
 }
 
 impl FrameError {
@@ -316,11 +361,15 @@ pub fn encode_frame(envelope: &ConnectEnvelope) -> Vec<u8> {
             push_bytes(&mut bytes, payload);
         }
         ConnectBody::Message { payload } => push_bytes(&mut bytes, payload),
-        ConnectBody::End { status } => match status.code {
-            None => bytes.push(0),
-            Some(code) => {
+        ConnectBody::End { status } => match status {
+            ConnectStatus::Success => bytes.push(0),
+            ConnectStatus::Error(code) => {
                 bytes.push(1);
                 push_string(&mut bytes, code.as_str());
+            }
+            ConnectStatus::Unknown { raw } => {
+                bytes.push(1);
+                push_string(&mut bytes, raw);
             }
         },
     }
@@ -352,9 +401,11 @@ pub fn decode_frame(bytes: &[u8]) -> Result<ConnectEnvelope, FrameError> {
             let status = match reader.read_u8()? {
                 0 => ConnectStatus::success(),
                 1 => {
-                    let code = ErrorCode::parse(&reader.read_string()?)
-                        .ok_or(FrameError::UnknownErrorCode)?;
-                    ConnectStatus::error(code)
+                    let raw = reader.read_string()?;
+                    match ErrorCode::parse(&raw) {
+                        Some(code) => ConnectStatus::error(code),
+                        None => ConnectStatus::unknown(raw),
+                    }
                 }
                 _ => return Err(FrameError::UnknownStatusTag),
             };
@@ -495,6 +546,20 @@ mod tests {
             Some(ConnectCodec::Binary)
         );
         assert_eq!(ConnectCodec::from_name("cbor"), None);
+    }
+
+    #[test]
+    fn an_unknown_server_code_is_preserved() {
+        let frame = ConnectEnvelope::end_unknown(1, 2, "rpc.from_the_future");
+        let decoded = decode_frame(&encode_frame(&frame)).expect("the frame decodes");
+        let status = decoded.status().expect("the frame ends");
+        assert_eq!(status.raw_code(), Some("rpc.from_the_future"));
+        assert_eq!(
+            status.protocol_error(),
+            Some(ProtocolError::UnknownRemoteCode {
+                raw: "rpc.from_the_future".to_owned()
+            })
+        );
     }
 
     #[test]

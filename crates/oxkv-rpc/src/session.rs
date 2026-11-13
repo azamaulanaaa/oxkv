@@ -7,7 +7,9 @@
 //! A data call before negotiation returns `sync.negotiation_required`. A
 //! descriptor digest mismatch returns `rpc.descriptor_mismatch`.
 
-use oxkv_contracts::version::{DescriptorDigest, ManifestDigest, SyncWireVersion};
+use oxkv_contracts::version::{
+    DescriptorDigest, ManifestDigest, MapDigest, MapVersion, SyncWireVersion,
+};
 
 use crate::connect::ConnectCodec;
 use crate::descriptor::DescriptorIdentity;
@@ -18,6 +20,8 @@ use crate::error::ProtocolError;
 pub struct SessionHelloFacts {
     descriptor_digest: DescriptorDigest,
     manifest_digest: ManifestDigest,
+    map_version: MapVersion,
+    map_digest: MapDigest,
     sync_wire_version: SyncWireVersion,
     codec: ConnectCodec,
 }
@@ -34,9 +38,31 @@ impl SessionHelloFacts {
         Self {
             descriptor_digest,
             manifest_digest,
+            map_version: MapVersion::new(0),
+            map_digest: MapDigest::from_bytes([0; 32]),
             sync_wire_version,
             codec,
         }
+    }
+
+    /// Sets the client shard map version and digest.
+    #[must_use]
+    pub const fn with_map(mut self, map_version: MapVersion, map_digest: MapDigest) -> Self {
+        self.map_version = map_version;
+        self.map_digest = map_digest;
+        self
+    }
+
+    /// Returns the client shard map version.
+    #[must_use]
+    pub const fn map_version(self) -> MapVersion {
+        self.map_version
+    }
+
+    /// Returns the client shard map digest.
+    #[must_use]
+    pub const fn map_digest(self) -> MapDigest {
+        self.map_digest
     }
 
     /// Returns the client descriptor digest.
@@ -68,6 +94,8 @@ impl SessionHelloFacts {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionConfig {
     identity: DescriptorIdentity,
+    map_version: MapVersion,
+    map_digest: MapDigest,
     sync_wire_version: SyncWireVersion,
     codecs: Vec<ConnectCodec>,
 }
@@ -82,9 +110,31 @@ impl SessionConfig {
     ) -> Self {
         Self {
             identity,
+            map_version: MapVersion::new(0),
+            map_digest: MapDigest::from_bytes([0; 32]),
             sync_wire_version,
             codecs,
         }
+    }
+
+    /// Sets the server shard map version and digest.
+    #[must_use]
+    pub const fn with_map(mut self, map_version: MapVersion, map_digest: MapDigest) -> Self {
+        self.map_version = map_version;
+        self.map_digest = map_digest;
+        self
+    }
+
+    /// Returns the server shard map version.
+    #[must_use]
+    pub const fn map_version(&self) -> MapVersion {
+        self.map_version
+    }
+
+    /// Returns the server shard map digest.
+    #[must_use]
+    pub const fn map_digest(&self) -> MapDigest {
+        self.map_digest
     }
 
     /// Returns the descriptor identity.
@@ -191,6 +241,16 @@ impl Session {
             return Err(ProtocolError::IncompatibleManifest {
                 expected: self.config.identity.manifest_digest(),
                 found: facts.manifest_digest,
+            });
+        }
+        if facts.map_version != self.config.map_version
+            || facts.map_digest != self.config.map_digest
+        {
+            return Err(ProtocolError::MapMismatch {
+                expected_version: self.config.map_version,
+                found_version: facts.map_version,
+                expected_digest: self.config.map_digest,
+                found_digest: facts.map_digest,
             });
         }
         if facts.sync_wire_version != self.config.sync_wire_version {
@@ -328,6 +388,15 @@ mod tests {
                 .as_str(),
             "sync.incompatible_manifest"
         );
+    }
+
+    #[test]
+    fn a_map_digest_mismatch_has_the_named_error() {
+        let session = session();
+        let wrong = facts().with_map(MapVersion::new(1), MapDigest::from_bytes([9; 32]));
+        let error = session.check_compatibility(&wrong).unwrap_err();
+        assert_eq!(error.code().as_str(), "sync.incompatible_manifest");
+        assert!(matches!(error, ProtocolError::MapMismatch { .. }));
     }
 
     #[test]

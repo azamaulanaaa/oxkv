@@ -10,10 +10,11 @@
 
 use std::collections::BTreeMap;
 
-use oxkv_contracts::version::{LeaseTerm, ScopeVersionVector};
+use oxkv_contracts::version::{ContentDigest, LeaseTerm, ScopeVersionVector};
 
 use crate::error::ReplicaError;
 use crate::index::{IndexVersion, ReplicaIndex, Scorer};
+use crate::journal::{HydrationJournal, HydrationJournalStore, HydrationPhase};
 use crate::mirror::{DiffFrame, Ingest, Mirror, RowEntry};
 use crate::outbox::{Outbox, OutboxRecord};
 use crate::page::{ScopeSnapshot, ScopeSnapshotPage};
@@ -26,6 +27,9 @@ use crate::scope::Scope;
 use crate::tabs::{CursorAdvancer, LocalTabLease, ReplicaIdentity, TabId};
 use crate::versions::{merge_max, version_lag};
 
+/// The digest value that means "not declared".
+const UNKNOWN_DIGEST: ContentDigest = ContentDigest::from_bytes([0; 32]);
+
 /// One hydration target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HydrationTarget {
@@ -33,16 +37,45 @@ pub struct HydrationTarget {
     pub target_bytes: u64,
     /// The target version vector.
     pub target_version: ScopeVersionVector,
+    /// The expected snapshot page count. Zero means "not declared".
+    pub expected_pages: u64,
+    /// The expected snapshot content digest. The zero digest means "not declared".
+    pub content_digest: ContentDigest,
 }
 
 impl HydrationTarget {
-    /// Creates a hydration target.
+    /// Creates a hydration target without a declared page count or digest.
     #[must_use]
     pub const fn new(target_bytes: u64, target_version: ScopeVersionVector) -> Self {
         Self {
             target_bytes,
             target_version,
+            expected_pages: 0,
+            content_digest: UNKNOWN_DIGEST,
         }
+    }
+
+    /// Creates a hydration target from one scope snapshot.
+    #[must_use]
+    pub fn for_snapshot(snapshot: &ScopeSnapshot) -> Self {
+        Self {
+            target_bytes: snapshot.resident_bytes(),
+            target_version: snapshot.scope_version.clone(),
+            expected_pages: snapshot.page_count,
+            content_digest: snapshot.content_digest,
+        }
+    }
+
+    /// Sets the expected page count and content digest.
+    #[must_use]
+    pub const fn with_expected(
+        mut self,
+        expected_pages: u64,
+        content_digest: ContentDigest,
+    ) -> Self {
+        self.expected_pages = expected_pages;
+        self.content_digest = content_digest;
+        self
     }
 }
 
@@ -109,6 +142,7 @@ pub struct Replica {
     pub(crate) lease: LocalTabLease,
     pub(crate) hydration: HydrationState,
     staging: Option<Staging>,
+    journal: Option<HydrationJournal>,
     watermark: ScopeVersionVector,
     last_contact_at: Option<u64>,
     generation: u64,
@@ -131,12 +165,50 @@ impl Replica {
             lease,
             hydration: HydrationState::Cold,
             staging: None,
+            journal: None,
             watermark: ScopeVersionVector::new(),
             last_contact_at: None,
             generation: 0,
             hydration_peak_bytes: 0,
             evicted_pages: 0,
             evicted_bytes: 0,
+        }
+    }
+
+    /// Creates a replica that resumes from one durable journal.
+    #[must_use]
+    pub fn with_journal(config: ReplicaConfig, scope: Scope, journal: HydrationJournal) -> Self {
+        let mut replica = Self::new(config, scope);
+        replica.generation = journal.published_before.unwrap_or(0);
+        replica.journal = Some(journal);
+        replica
+    }
+
+    /// Creates a replica from the journal in one durable store.
+    #[must_use]
+    pub fn resume(config: ReplicaConfig, scope: Scope, store: &impl HydrationJournalStore) -> Self {
+        match store.load_journal() {
+            Some(journal) => Self::with_journal(config, scope, journal),
+            None => Self::new(config, scope),
+        }
+    }
+
+    /// Returns the hydration journal.
+    #[must_use]
+    pub const fn journal(&self) -> Option<&HydrationJournal> {
+        self.journal.as_ref()
+    }
+
+    /// Takes the hydration journal for durable storage.
+    #[must_use]
+    pub fn take_journal(&mut self) -> Option<HydrationJournal> {
+        self.journal.take()
+    }
+
+    /// Saves the hydration journal to one durable store.
+    pub fn persist_journal(&self, store: &mut impl HydrationJournalStore) {
+        if let Some(journal) = &self.journal {
+            store.save_journal(journal);
         }
     }
 
@@ -237,12 +309,38 @@ impl Replica {
                 budget: budget.max_resident_bytes,
             });
         }
+        let resumable = self.journal.as_ref().is_some_and(|journal| {
+            journal.has_identity(
+                &self.scope.identity(),
+                &target.target_version,
+                target.expected_pages,
+                target.content_digest,
+            ) && !journal.phase.is_terminal()
+        });
+        let generation = if resumable {
+            self.journal
+                .as_ref()
+                .map_or(self.generation + 1, |journal| journal.generation)
+        } else {
+            self.generation + 1
+        };
         let staging_ceiling = budget.max_resident_bytes.saturating_sub(served_bytes);
         self.staging = Some(Staging {
-            mirror: Mirror::new(self.scope.clone(), staging_ceiling, self.generation + 1),
-            target_version: target.target_version,
+            mirror: Mirror::new(self.scope.clone(), staging_ceiling, generation),
+            target_version: target.target_version.clone(),
             target_bytes: target.target_bytes,
         });
+        if !resumable {
+            let published_before = self.mirror.as_ref().map(|_| self.generation);
+            self.journal = Some(HydrationJournal::new(
+                self.scope.identity(),
+                target.target_version,
+                target.expected_pages,
+                target.content_digest,
+                generation,
+                published_before,
+            ));
+        }
         self.hydration = HydrationState::Hydrating {
             verified_bytes: 0,
             target_bytes: target.target_bytes,
@@ -262,6 +360,7 @@ impl Replica {
         let Some(staging) = &mut self.staging else {
             return Err(ReplicaError::HydrationNotStarted);
         };
+        let sequence = page.header.page_sequence;
         let result = match staging.mirror.ingest_page(page) {
             Ok(result) => result,
             Err(ReplicaError::ResourceExhausted { required, .. }) => {
@@ -272,6 +371,9 @@ impl Replica {
             }
             Err(error) => return Err(error),
         };
+        if let Some(journal) = &mut self.journal {
+            journal.record_verified(sequence);
+        }
         self.hydration = HydrationState::Hydrating {
             verified_bytes: staging.mirror.resident_bytes(),
             target_bytes: staging.target_bytes,
@@ -333,6 +435,35 @@ impl Replica {
             });
         }
         let page_count = u64::try_from(staging.mirror.page_count()).unwrap_or(u64::MAX);
+        let expected_pages = self
+            .journal
+            .as_ref()
+            .map_or(0, |journal| journal.expected_pages);
+        if expected_pages != 0 && page_count != expected_pages {
+            self.restore_hydration();
+            return Err(ReplicaError::PartialGeneration {
+                expected: expected_pages,
+                found: page_count,
+            });
+        }
+        let expected_digest = self
+            .journal
+            .as_ref()
+            .map_or(UNKNOWN_DIGEST, |journal| journal.content_digest);
+        if expected_digest != UNKNOWN_DIGEST {
+            let found = staging.mirror.snapshot_digest();
+            if found != expected_digest {
+                self.restore_hydration();
+                return Err(ReplicaError::ContentDigestMismatch {
+                    expected: expected_digest,
+                    found,
+                });
+            }
+        }
+        if let Some(journal) = &mut self.journal {
+            journal.phase = HydrationPhase::Swap;
+            journal.swap_commit = Some(staging.mirror.generation());
+        }
         let published_version = staging.mirror.applied().clone();
         self.generation = staging.mirror.generation();
         self.hydration_peak_bytes = self.hydration_peak_bytes.max(peak);
@@ -340,6 +471,9 @@ impl Replica {
         self.index = Some(index);
         merge_max(&mut self.watermark, &staging.target_version);
         merge_max(&mut self.watermark, &published_version);
+        if let Some(journal) = &mut self.journal {
+            journal.phase = HydrationPhase::Published;
+        }
         self.hydration = HydrationState::Hydrated;
         Ok(HydrationReport {
             generation: self.generation,
@@ -353,6 +487,9 @@ impl Replica {
     /// Aborts the staging generation.
     pub fn abort_hydration(&mut self) {
         self.staging = None;
+        if let Some(journal) = &mut self.journal {
+            journal.phase = HydrationPhase::Aborted;
+        }
         self.restore_hydration();
     }
 
@@ -378,15 +515,15 @@ impl Replica {
             return Err(ReplicaError::ScopePinMismatch);
         }
         let authority_watermark = snapshot.authority_watermark.clone();
-        self.begin_hydration(HydrationTarget::new(
-            snapshot.resident_bytes(),
-            snapshot.scope_version,
-        ))?;
+        self.begin_hydration(HydrationTarget::for_snapshot(&snapshot))?;
         for page in snapshot.pages {
             if let Err(error) = self.hydrate_page(page) {
                 self.abort_hydration();
                 return Err(error);
             }
+        }
+        if let Some(journal) = &mut self.journal {
+            journal.phase = HydrationPhase::Verified;
         }
         match self.publish_hydration() {
             Ok(report) => {

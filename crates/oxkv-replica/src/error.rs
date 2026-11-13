@@ -4,7 +4,9 @@
 //! [`ReplicaError::code`] to a person or match on the variant. The type carries
 //! no receipt. A replica never writes.
 
-use oxkv_contracts::version::{PageId, SnapshotPageVersion, TokenizerVersion};
+use oxkv_contracts::version::{
+    CommitVersion, ContentDigest, PageId, ShardId, SnapshotPageVersion, TokenizerVersion,
+};
 
 /// A named error from one replica operation.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -121,6 +123,38 @@ pub enum ReplicaError {
     /// A version vector would decrease.
     #[error("The applied version vector would decrease. A replica never moves backward.")]
     VersionRegression,
+    /// A generation holds fewer pages than the snapshot declares.
+    #[error(
+        "The generation is partial. Expected {expected} pages and found {found}. Do not publish it."
+    )]
+    PartialGeneration {
+        /// The expected page count.
+        expected: u64,
+        /// The received page count.
+        found: u64,
+    },
+    /// A generation page set differs from the snapshot content digest.
+    #[error(
+        "The generation content digest does not match. Expected {expected}. Found {found}. Refetch the snapshot."
+    )]
+    ContentDigestMismatch {
+        /// The expected content digest.
+        expected: ContentDigest,
+        /// The received content digest.
+        found: ContentDigest,
+    },
+    /// A diff frame skipped one or more shard commit versions.
+    #[error(
+        "The diff stream has a gap for shard {shard_id:?}. Expected commit version {expected}. Found {found}. Re-request the missing frame."
+    )]
+    DiffGap {
+        /// The shard with the gap.
+        shard_id: ShardId,
+        /// The next commit version that the shard requires.
+        expected: CommitVersion,
+        /// The commit version in the frame.
+        found: CommitVersion,
+    },
     /// Another tab holds the local tab lease.
     #[error("Another tab holds the local tab lease. Read through the leader tab.")]
     TabLeaseHeld,
@@ -155,7 +189,7 @@ impl ReplicaError {
             Self::NotFound => "key.not_found",
             Self::TokenizerMismatch { .. } => "search.tokenizer_mismatch",
             Self::IndexMismatch => "search.index_mismatch",
-            Self::CorruptPage { .. } => "format.corrupt_page",
+            Self::CorruptPage { .. } | Self::ContentDigestMismatch { .. } => "format.corrupt_page",
             Self::ScopeViolation { .. } | Self::ScopePinMismatch => "scope.identity_mismatch",
             Self::PageOutOfBounds => "format.page_out_of_bounds",
             Self::UnsupportedVersion { .. } => "format.unsupported_version",
@@ -166,6 +200,8 @@ impl ReplicaError {
             Self::VersionRegression | Self::HydrationInProgress | Self::HydrationNotStarted => {
                 "internal.invariant_violation"
             }
+            Self::DiffGap { .. } => "sync.gap_too_large",
+            Self::PartialGeneration { .. } => "format.truncated_snapshot",
             Self::TabLeaseHeld => "replication.lease_held",
             Self::StaleTabLease { .. } => "replication.stale_epoch",
             Self::IdempotencyKeyReuse => "write.idempotency_key_reuse",
@@ -181,6 +217,9 @@ impl ReplicaError {
                 | Self::Stale { .. }
                 | Self::BehindCommit { .. }
                 | Self::CorruptPage { .. }
+                | Self::ContentDigestMismatch { .. }
+                | Self::DiffGap { .. }
+                | Self::PartialGeneration { .. }
                 | Self::ResourceExhausted { .. }
                 | Self::TabLeaseHeld
         )
@@ -190,7 +229,9 @@ impl ReplicaError {
 #[cfg(test)]
 mod tests {
     use oxkv_contracts::lookup;
-    use oxkv_contracts::version::{PageId, SnapshotPageVersion, TokenizerVersion};
+    use oxkv_contracts::version::{
+        CommitVersion, ContentDigest, PageId, ShardId, SnapshotPageVersion, TokenizerVersion,
+    };
 
     use super::ReplicaError;
 
@@ -239,6 +280,19 @@ mod tests {
             },
             ReplicaError::LocalMutationRejected,
             ReplicaError::VersionRegression,
+            ReplicaError::PartialGeneration {
+                expected: 2,
+                found: 1,
+            },
+            ReplicaError::ContentDigestMismatch {
+                expected: ContentDigest::from_bytes([1; 32]),
+                found: ContentDigest::from_bytes([2; 32]),
+            },
+            ReplicaError::DiffGap {
+                shard_id: ShardId::new(vec![1]),
+                expected: CommitVersion::new(4),
+                found: CommitVersion::new(5),
+            },
             ReplicaError::TabLeaseHeld,
             ReplicaError::StaleTabLease {
                 expected: 1,

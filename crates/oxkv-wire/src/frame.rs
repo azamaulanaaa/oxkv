@@ -5,8 +5,8 @@ use core::fmt;
 use oxkv_contracts::cursor::ScopeGeneration;
 use oxkv_contracts::receipt::ReceiptState;
 use oxkv_contracts::version::{
-    DescriptorDigest, Hash32, ManifestDigest, ManifestRevision, MapVersion, PageId, PageSequence,
-    PolicyVersion, ScopeIdentity, ScopeVersionVector, ShardId, SyncWireVersion,
+    DescriptorDigest, Hash32, ManifestDigest, ManifestRevision, MapDigest, MapVersion, PageId,
+    PageSequence, PolicyVersion, ScopeIdentity, ScopeVersionVector, ShardId, SyncWireVersion,
 };
 
 use crate::codec::{CodecError, Decoder, Encoder};
@@ -191,6 +191,8 @@ pub struct SessionHello {
     pub manifest_revision: ManifestRevision,
     /// The client shard map version.
     pub map_version: MapVersion,
+    /// The client shard map digest.
+    pub map_digest: MapDigest,
     /// The capabilities that the client requires.
     pub required_capabilities: Capabilities,
     /// The capabilities that the client can use.
@@ -206,6 +208,7 @@ impl SessionHello {
         encoder.digest(self.manifest_digest.as_bytes());
         encoder.u64(self.manifest_revision.get());
         encoder.u64(self.map_version.get());
+        encoder.digest(self.map_digest.as_bytes());
         self.required_capabilities.encode(encoder);
         self.optional_capabilities.encode(encoder);
         self.limits.encode(encoder);
@@ -218,6 +221,7 @@ impl SessionHello {
             manifest_digest: ManifestDigest::from_bytes(decoder.digest()?),
             manifest_revision: ManifestRevision::new(decoder.u64()?),
             map_version: MapVersion::new(decoder.u64()?),
+            map_digest: MapDigest::from_bytes(decoder.digest()?),
             required_capabilities: Capabilities::decode(decoder)?,
             optional_capabilities: Capabilities::decode(decoder)?,
             limits: Limits::decode(decoder)?,
@@ -240,6 +244,8 @@ pub struct SessionReady {
     pub manifest_revision: ManifestRevision,
     /// The chosen shard map version.
     pub map_version: MapVersion,
+    /// The chosen shard map digest.
+    pub map_digest: MapDigest,
     /// The capability intersection.
     pub capabilities: Capabilities,
     /// The negotiated limits.
@@ -254,6 +260,7 @@ impl SessionReady {
         encoder.digest(self.manifest_digest.as_bytes());
         encoder.u64(self.manifest_revision.get());
         encoder.u64(self.map_version.get());
+        encoder.digest(self.map_digest.as_bytes());
         self.capabilities.encode(encoder);
         self.limits.encode(encoder);
     }
@@ -266,6 +273,7 @@ impl SessionReady {
             manifest_digest: ManifestDigest::from_bytes(decoder.digest()?),
             manifest_revision: ManifestRevision::new(decoder.u64()?),
             map_version: MapVersion::new(decoder.u64()?),
+            map_digest: MapDigest::from_bytes(decoder.digest()?),
             capabilities: Capabilities::decode(decoder)?,
             limits: Limits::decode(decoder)?,
         })

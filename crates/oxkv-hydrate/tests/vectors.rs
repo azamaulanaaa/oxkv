@@ -72,6 +72,35 @@ fn the_page_vector_matches() {
 }
 
 #[test]
+#[ignore = "regenerates the golden vector file"]
+fn generate_vectors() {
+    assert_eq!(
+        std::env::var("OXKV_UPDATE_GOLDEN").as_deref(),
+        Ok("1"),
+        "set OXKV_UPDATE_GOLDEN=1 to rewrite the golden vector"
+    );
+    let snapshot = sample();
+    let page = &snapshot.pages[0];
+    let page_digests = snapshot
+        .directory
+        .iter()
+        .flat_map(|entry| entry.page_digest.as_bytes().to_vec())
+        .collect::<Vec<_>>();
+    let value = serde_json::json!({
+        "page": hex(&page.encode()),
+        "page_id": hex(page.page_id.as_bytes()),
+        "page_digest": hex(page.digest().as_bytes()),
+        "snapshot": hex(&snapshot.to_bytes()),
+        "content_digest": hex(snapshot.header.content_digest.as_bytes()),
+        "page_digests": hex(&page_digests),
+    });
+    let text = serde_json::to_string_pretty(&value).expect("the vector serializes");
+    let path = format!("{}/tests/vectors/golden.json", env!("CARGO_MANIFEST_DIR"));
+    std::fs::write(&path, format!("{text}\n"))
+        .unwrap_or_else(|error| panic!("cannot write the golden file {path}: {error}"));
+}
+
+#[test]
 fn the_snapshot_vector_matches() {
     let golden: serde_json::Value =
         serde_json::from_str(GOLDEN).expect("the golden vector is valid JSON");

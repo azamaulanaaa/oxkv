@@ -6,9 +6,9 @@
 //! change.
 
 use oxkv_contracts::version::{
-    CommitVersion, ContentDigest, ContentSeal, LeaseTerm, ManifestDigest, PageId, PageSequence,
-    PolicyVersion, PrefixBounds, ScopeIdentity, ScopeVersionVector, ShardId, SnapshotIdentity,
-    SnapshotPageVersion, VersionVector,
+    CommitVersion, ContentDigest, ContentSeal, KeyEncodingVersion, LeaseTerm, ManifestDigest,
+    MapDigest, MapVersion, PageId, PageSequence, PolicyVersion, PrefixBounds, ScopeIdentity,
+    ScopeVersionVector, ShardId, SnapshotIdentity, SnapshotPageVersion, VersionVector,
 };
 
 use crate::encoding::{DecodeError, Reader, Writer};
@@ -17,6 +17,16 @@ use crate::page::{PAGE_FORMAT_MAJOR, SnapshotPage, check_features};
 
 /// The snapshot magic bytes.
 const SNAPSHOT_MAGIC: [u8; 4] = *b"OXSN";
+
+/// The provenance presence bit for the key encoding version.
+const PROVENANCE_KEY_ENCODING: u8 = 0b001;
+/// The provenance presence bit for the shard map version.
+const PROVENANCE_MAP_VERSION: u8 = 0b010;
+/// The provenance presence bit for the shard map digest.
+const PROVENANCE_MAP_DIGEST: u8 = 0b100;
+/// Every provenance bit that the reader requires.
+const PROVENANCE_REQUIRED: u8 =
+    PROVENANCE_KEY_ENCODING | PROVENANCE_MAP_VERSION | PROVENANCE_MAP_DIGEST;
 
 /// The identity and budget fields of one snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,6 +104,12 @@ pub struct SnapshotHeader {
     pub format_version: SnapshotPageVersion,
     /// The required feature bits.
     pub required_features: u64,
+    /// The key encoding annex version.
+    pub key_encoding_version: KeyEncodingVersion,
+    /// The shard map version.
+    pub map_version: MapVersion,
+    /// The shard map digest.
+    pub map_digest: MapDigest,
     /// The manifest digest.
     pub manifest_digest: ManifestDigest,
     /// The policy version.
@@ -114,6 +130,8 @@ pub struct SnapshotHeader {
     pub lease_term: LeaseTerm,
     /// The content digest.
     pub content_digest: ContentDigest,
+    /// The BLAKE3 integrity value of the directory bytes.
+    pub directory_integrity: ContentDigest,
     /// The content seal.
     pub content_seal: ContentSeal,
 }
@@ -125,6 +143,12 @@ pub struct SnapshotDraft {
     pub format_version: SnapshotPageVersion,
     /// The required feature bits.
     pub required_features: u64,
+    /// The key encoding annex version.
+    pub key_encoding_version: KeyEncodingVersion,
+    /// The shard map version.
+    pub map_version: MapVersion,
+    /// The shard map digest.
+    pub map_digest: MapDigest,
     /// The manifest digest.
     pub manifest_digest: ManifestDigest,
     /// The policy version.
@@ -152,6 +176,9 @@ impl SnapshotDraft {
         Self {
             format_version: SnapshotPageVersion::new(PAGE_FORMAT_MAJOR, 0),
             required_features: 0,
+            key_encoding_version: KeyEncodingVersion::new(1),
+            map_version: MapVersion::new(1),
+            map_digest: MapDigest::from_bytes([4; 32]),
             manifest_digest: ManifestDigest::from_bytes([1; 32]),
             policy_version: PolicyVersion::from_bytes([2; 32]),
             scope_identity: ScopeIdentity::from_bytes([3; 32]),
@@ -208,6 +235,9 @@ impl SnapshotDraft {
         let mut header = SnapshotHeader {
             format_version: self.format_version,
             required_features: self.required_features,
+            key_encoding_version: self.key_encoding_version,
+            map_version: self.map_version,
+            map_digest: self.map_digest,
             manifest_digest: self.manifest_digest,
             policy_version: self.policy_version,
             scope_identity: self.scope_identity,
@@ -218,6 +248,7 @@ impl SnapshotDraft {
             commit_version: self.commit_version,
             lease_term: self.lease_term,
             content_digest: ContentDigest::from_bytes([0; 32]),
+            directory_integrity: ContentDigest::from_bytes([0; 32]),
             content_seal: ContentSeal::new(
                 ContentDigest::from_bytes([0; 32]),
                 self.lease_term,
@@ -228,6 +259,7 @@ impl SnapshotDraft {
         let body_offset = u64::try_from(placeholder.len()).unwrap_or(u64::MAX);
         entries = directory_entries(&pages, body_offset);
         let directory_bytes = encode_directory(&entries);
+        header.directory_integrity = ContentDigest::of_bytes(&directory_bytes);
         let content_digest = compute_content_digest(&directory_bytes, &entries);
         header.content_digest = content_digest;
         header.content_seal = ContentSeal::new(content_digest, self.lease_term, None);
@@ -345,6 +377,11 @@ impl SealedSnapshot {
         }
         let required_features = reader.u64().map_err(decode_error)?;
         check_features(required_features)?;
+        let key_encoding_version = KeyEncodingVersion::new(reader.u16().map_err(decode_error)?);
+        let map_version = MapVersion::new(reader.u64().map_err(decode_error)?);
+        let map_digest = MapDigest::from_bytes(reader.hash32().map_err(decode_error)?);
+        let provenance = reader.u8().map_err(decode_error)?;
+        check_provenance(provenance)?;
         let manifest_digest = ManifestDigest::from_bytes(reader.hash32().map_err(decode_error)?);
         let policy_version = PolicyVersion::from_bytes(reader.hash32().map_err(decode_error)?);
         let scope_identity = ScopeIdentity::from_bytes(reader.hash32().map_err(decode_error)?);
@@ -366,7 +403,8 @@ impl SealedSnapshot {
         let content_digest = ContentDigest::from_bytes(reader.hash32().map_err(decode_error)?);
         let seal_digest = ContentDigest::from_bytes(reader.hash32().map_err(decode_error)?);
         let seal_lease = LeaseTerm::new(reader.u64().map_err(decode_error)?);
-        let _signature_flag = reader.u8().map_err(decode_error)?;
+        let signature_flag = reader.u8().map_err(decode_error)?;
+        let directory_integrity = ContentDigest::from_bytes(reader.hash32().map_err(decode_error)?);
         let directory_length = reader.u64().map_err(decode_error)?;
         let directory_length =
             usize::try_from(directory_length).map_err(|_| HydrationError::TruncatedSnapshot {
@@ -374,6 +412,12 @@ impl SealedSnapshot {
                 actual: bytes.len(),
             })?;
         let directory_bytes = reader.exact(directory_length).map_err(decode_error)?;
+        if ContentDigest::of_bytes(directory_bytes) != directory_integrity {
+            return Err(HydrationError::CorruptPage {
+                page_id: None,
+                byte_offset: 0,
+            });
+        }
         let directory = decode_directory(directory_bytes)?;
         let computed_digest = compute_content_digest(directory_bytes, &directory);
         if computed_digest != content_digest {
@@ -381,6 +425,15 @@ impl SealedSnapshot {
                 page_id: None,
                 byte_offset: 0,
             });
+        }
+        if seal_lease != lease_term {
+            return Err(HydrationError::StaleEpoch {
+                expected: lease_term,
+                found: seal_lease,
+            });
+        }
+        if signature_flag != 0 {
+            return Err(HydrationError::UnsupportedSignature);
         }
         let seal = ContentSeal::new(seal_digest, seal_lease, None);
         if !seal.covers(computed_digest) {
@@ -463,6 +516,9 @@ impl SealedSnapshot {
         let header = SnapshotHeader {
             format_version,
             required_features,
+            key_encoding_version,
+            map_version,
+            map_digest,
             manifest_digest,
             policy_version,
             scope_identity,
@@ -473,6 +529,7 @@ impl SealedSnapshot {
             commit_version,
             lease_term,
             content_digest,
+            directory_integrity,
             content_seal: ContentSeal::new(seal_digest, seal_lease, None),
         };
         Ok(Self {
@@ -495,6 +552,9 @@ pub(crate) fn directory_and_digest(
     let header = SnapshotHeader {
         format_version: descriptor.format_version,
         required_features: descriptor.required_features,
+        key_encoding_version: KeyEncodingVersion::new(1),
+        map_version: MapVersion::new(0),
+        map_digest: MapDigest::from_bytes([0; 32]),
         manifest_digest: descriptor.manifest_digest,
         policy_version: descriptor.policy_version,
         scope_identity: descriptor.scope_identity,
@@ -505,6 +565,7 @@ pub(crate) fn directory_and_digest(
         commit_version: descriptor.identity.commit_version,
         lease_term: descriptor.lease_term,
         content_digest: ContentDigest::from_bytes([0; 32]),
+        directory_integrity: ContentDigest::from_bytes([0; 32]),
         content_seal: ContentSeal::new(
             ContentDigest::from_bytes([0; 32]),
             descriptor.lease_term,
@@ -602,6 +663,10 @@ fn encode_header(header: &SnapshotHeader, directory: &[u8], body_length: usize) 
     writer.u16(header.format_version.major());
     writer.u16(header.format_version.minor());
     writer.u64(header.required_features);
+    writer.u16(header.key_encoding_version.get());
+    writer.u64(header.map_version.get());
+    writer.hash32(header.map_digest.as_bytes());
+    writer.u8(PROVENANCE_REQUIRED);
     writer.hash32(header.manifest_digest.as_bytes());
     writer.hash32(header.policy_version.as_bytes());
     writer.hash32(header.scope_identity.as_bytes());
@@ -620,11 +685,31 @@ fn encode_header(header: &SnapshotHeader, directory: &[u8], body_length: usize) 
     writer.hash32(header.content_digest.as_bytes());
     writer.hash32(header.content_seal.content_digest().as_bytes());
     writer.u64(header.content_seal.lease_term().get());
-    writer.u8(0);
+    writer.u8(u8::from(header.content_seal.signature().is_some()));
+    writer.hash32(ContentDigest::of_bytes(directory).as_bytes());
     writer.u64(u64::try_from(directory.len()).unwrap_or(u64::MAX));
     writer.raw(directory);
     writer.u64(u64::try_from(body_length).unwrap_or(u64::MAX));
     writer.into_bytes()
+}
+
+fn check_provenance(mask: u8) -> Result<(), HydrationError> {
+    if mask & PROVENANCE_KEY_ENCODING == 0 {
+        return Err(HydrationError::MissingProvenance {
+            field: "key_encoding_version",
+        });
+    }
+    if mask & PROVENANCE_MAP_VERSION == 0 {
+        return Err(HydrationError::MissingProvenance {
+            field: "map_version",
+        });
+    }
+    if mask & PROVENANCE_MAP_DIGEST == 0 {
+        return Err(HydrationError::MissingProvenance {
+            field: "map_digest",
+        });
+    }
+    Ok(())
 }
 
 fn decode_error(error: DecodeError) -> HydrationError {
@@ -717,6 +802,56 @@ mod tests {
                 .expect_err("the short snapshot fails")
                 .code(),
             "format.truncated_snapshot"
+        );
+    }
+
+    #[test]
+    fn a_missing_provenance_field_is_rejected() {
+        let snapshot = sample_snapshot(LeaseTerm::new(1));
+        let mut bytes = snapshot.to_bytes();
+        bytes[58] = 0;
+        assert_eq!(
+            SealedSnapshot::decode(&bytes)
+                .expect_err("the provenance is missing")
+                .code(),
+            "format.missing_provenance"
+        );
+    }
+
+    #[test]
+    fn a_changed_directory_byte_fails() {
+        let snapshot = sample_snapshot(LeaseTerm::new(1));
+        let mut bytes = snapshot.to_bytes();
+        let body_length = snapshot
+            .pages
+            .iter()
+            .map(|page| page.encode().len())
+            .sum::<usize>();
+        let directory_length = encode_directory(&snapshot.directory).len();
+        let directory_start = bytes.len() - body_length - 8 - directory_length;
+        bytes[directory_start] ^= 0x01;
+        assert_eq!(
+            SealedSnapshot::decode(&bytes)
+                .expect_err("the directory integrity fails")
+                .code(),
+            "format.corrupt_page"
+        );
+    }
+
+    #[test]
+    fn a_mismatched_seal_lease_is_rejected() {
+        let snapshot = sample_snapshot(LeaseTerm::new(1));
+        let mut header = snapshot.header.clone();
+        header.content_seal = ContentSeal::new(header.content_digest, LeaseTerm::new(2), None);
+        let directory = encode_directory(&snapshot.directory);
+        let body = encode_pages(&snapshot.pages);
+        let mut bytes = encode_header(&header, &directory, body.len());
+        bytes.extend_from_slice(&body);
+        assert_eq!(
+            SealedSnapshot::decode(&bytes)
+                .expect_err("the seal lease differs")
+                .code(),
+            "replication.stale_epoch"
         );
     }
 

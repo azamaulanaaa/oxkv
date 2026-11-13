@@ -2,7 +2,9 @@
 
 use core::fmt;
 
-use oxkv_contracts::version::{PageId, PageSequence, ScopeVersionVector, SnapshotPageVersion};
+use oxkv_contracts::version::{
+    LeaseTerm, PageId, PageSequence, ScopeVersionVector, SnapshotPageVersion,
+};
 
 use crate::journal::Phase;
 
@@ -86,6 +88,23 @@ pub enum HydrationError {
         /// The page sequence.
         page_sequence: PageSequence,
     },
+    /// A required provenance field is absent.
+    #[error("The snapshot is missing the required provenance field {field}.")]
+    MissingProvenance {
+        /// The missing provenance field name.
+        field: &'static str,
+    },
+    /// The content seal covers another authority lease term.
+    #[error("The content seal covers lease term {found}. The header names {expected}.")]
+    StaleEpoch {
+        /// The lease term in the header.
+        expected: LeaseTerm,
+        /// The lease term in the content seal.
+        found: LeaseTerm,
+    },
+    /// The snapshot carries a signature that this reader cannot verify.
+    #[error("The snapshot carries a content signature that this reader cannot verify.")]
+    UnsupportedSignature,
     /// A page is larger than the configured page budget.
     #[error("The page has {length} bytes. The page budget is {limit} bytes.")]
     PageTooLarge {
@@ -153,8 +172,12 @@ impl HydrationError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::UnsupportedVersion { .. } => "format.unsupported_version",
-            Self::MissingRequiredFeature { .. } => "format.missing_required_feature",
+            Self::MissingRequiredFeature { .. } | Self::UnsupportedSignature => {
+                "format.missing_required_feature"
+            }
             Self::CorruptPage { .. } => "format.corrupt_page",
+            Self::MissingProvenance { .. } => "format.missing_provenance",
+            Self::StaleEpoch { .. } => "replication.stale_epoch",
             Self::PageOutOfBounds { .. } => "format.page_out_of_bounds",
             Self::PageTooLarge { .. } => "format.page_too_large",
             Self::TruncatedSnapshot { .. } => "format.truncated_snapshot",

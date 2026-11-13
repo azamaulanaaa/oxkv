@@ -7,7 +7,9 @@
 
 use std::fmt;
 
-use oxkv_contracts::version::{DescriptorDigest, ManifestDigest, SyncWireVersion};
+use oxkv_contracts::version::{
+    DescriptorDigest, ManifestDigest, MapDigest, MapVersion, SyncWireVersion,
+};
 use oxkv_contracts::{ErrorCode, ErrorSpec, RetryClass};
 
 fn registered(name: &'static str) -> ErrorCode {
@@ -47,6 +49,20 @@ pub enum ProtocolError {
         expected: ManifestDigest,
         /// The client manifest digest.
         found: ManifestDigest,
+    },
+    /// The client and server shard maps differ.
+    #[error(
+        "The shard map does not match. Expected version {expected_version} with digest {expected_digest}. Found version {found_version} with digest {found_digest}."
+    )]
+    MapMismatch {
+        /// The server shard map version.
+        expected_version: MapVersion,
+        /// The client shard map version.
+        found_version: MapVersion,
+        /// The server shard map digest.
+        expected_digest: MapDigest,
+        /// The client shard map digest.
+        found_digest: MapDigest,
     },
     /// The sync wire version is not supported.
     #[error("The sync wire version is not supported: {found}.")]
@@ -137,7 +153,9 @@ impl ProtocolError {
             Self::DescriptorMismatch { .. } => registered("rpc.descriptor_mismatch"),
             Self::CodecUnsupported { .. } => registered("rpc.codec_unsupported"),
             Self::NegotiationRequired => registered("sync.negotiation_required"),
-            Self::IncompatibleManifest { .. } => registered("sync.incompatible_manifest"),
+            Self::IncompatibleManifest { .. } | Self::MapMismatch { .. } => {
+                registered("sync.incompatible_manifest")
+            }
             Self::UnsupportedSyncVersion { .. } => registered("sync.unsupported_version"),
             Self::AlreadyNegotiated
             | Self::HandlerViolation { .. }
@@ -282,6 +300,12 @@ mod tests {
             ProtocolError::IncompatibleManifest {
                 expected: ManifestDigest::from_bytes([1; 32]),
                 found: ManifestDigest::from_bytes([2; 32]),
+            },
+            ProtocolError::MapMismatch {
+                expected_version: MapVersion::new(1),
+                found_version: MapVersion::new(2),
+                expected_digest: MapDigest::from_bytes([1; 32]),
+                found_digest: MapDigest::from_bytes([2; 32]),
             },
             ProtocolError::UnsupportedSyncVersion {
                 expected: SyncWireVersion::new(1),

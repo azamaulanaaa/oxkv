@@ -76,7 +76,8 @@ pub use frame::{
     SnapshotTail, Subscribe, Subscribed,
 };
 pub use session::{
-    Command, DiffsReady, Event, Negotiated, Session, SessionConfig, SessionPhase, SnapshotReady,
+    Command, DiffsReady, Event, LivenessOutcome, Negotiated, Session, SessionConfig, SessionPhase,
+    SnapshotReady,
 };
 pub use types::{
     CAPABILITY_DIFF_V1, CAPABILITY_FLOW_CONTROL_V1, CAPABILITY_KEEPALIVE_V1,

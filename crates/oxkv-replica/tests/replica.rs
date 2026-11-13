@@ -10,8 +10,8 @@ use oxkv_replica::{
     ReplicaIndex, ReplicaStatus, ScopeFootprint, Scorer, SearchRequest, StalenessBound,
 };
 use support::{
-    SCOPE, config, golden_rows, hex, key, page, row, scope, shard, snapshot, two_row_snapshot,
-    unhex, vector,
+    SCOPE, config, golden_rows, hex, key, page, row, scope, shard, snapshot, two_page_snapshot,
+    two_row_snapshot, unhex, vector,
 };
 
 fn hydrated(commit_version: u64) -> Replica {
@@ -342,6 +342,76 @@ fn the_outbox_stays_separate_from_the_mirror() {
         .get(&read_request(&replica, "alice", StalenessBound::Unbounded))
         .expect("the mirror is unchanged");
     assert_eq!(read.value, b"red green");
+}
+
+#[test]
+fn a_single_page_publish_of_a_two_page_snapshot_fails() {
+    let mut snapshot = two_page_snapshot(5);
+    snapshot.pages.truncate(1);
+    let mut replica = Replica::new(config(u64::MAX / 4, u64::MAX / 4), scope());
+    let error = replica
+        .hydrate(snapshot)
+        .expect_err("a partial generation must not publish");
+    assert_eq!(error.code(), "format.truncated_snapshot");
+    assert!(!replica.is_hydrated());
+}
+
+#[test]
+fn a_crash_and_resume_publishes_one_complete_generation() {
+    let snapshot = two_page_snapshot(5);
+    let mut replica = Replica::new(config(u64::MAX / 4, u64::MAX / 4), scope());
+    replica
+        .begin_hydration(oxkv_replica::HydrationTarget::for_snapshot(&snapshot))
+        .expect("the hydration starts");
+    replica
+        .hydrate_page(snapshot.pages[0].clone())
+        .expect("the first page verifies");
+    let journal = replica.journal().expect("the journal exists").clone();
+    assert_eq!(journal.phase, oxkv_replica::HydrationPhase::Transfer);
+    assert!(journal.is_verified(PageSequence::new(1)));
+
+    let mut resumed = Replica::with_journal(config(u64::MAX / 4, u64::MAX / 4), scope(), journal);
+    let report = resumed
+        .hydrate(snapshot)
+        .expect("the resumed hydration publishes");
+    assert_eq!(report.page_count, 2);
+    let journal = resumed.journal().expect("the journal exists");
+    assert_eq!(journal.phase, oxkv_replica::HydrationPhase::Published);
+    assert_eq!(journal.swap_commit, Some(report.generation));
+    let read = resumed
+        .get(&read_request(&resumed, "bob", StalenessBound::Unbounded))
+        .expect("the resumed generation serves");
+    assert_eq!(read.value, b"green blue");
+}
+
+#[test]
+fn a_diff_gap_is_rejected_before_apply() {
+    let mut mirror = Mirror::new(scope(), 1_000_000, 1);
+    let first = DiffFrame {
+        shard_id: shard(),
+        commit_version: CommitVersion::new(3),
+        key: key("alice"),
+        value: Some(b"red green".to_vec()),
+        key_version: KeyVersion::new(1),
+        scope_identity: ScopeIdentity::from_bytes(SCOPE),
+    };
+    assert_eq!(
+        mirror.apply_diff(&first).expect("the first frame applies"),
+        Ingest::Applied
+    );
+    let gap = DiffFrame {
+        shard_id: shard(),
+        commit_version: CommitVersion::new(5),
+        key: key("bob"),
+        value: Some(b"green blue".to_vec()),
+        key_version: KeyVersion::new(1),
+        scope_identity: ScopeIdentity::from_bytes(SCOPE),
+    };
+    let error = mirror.apply_diff(&gap).expect_err("the gap must not apply");
+    assert_eq!(error.code(), "sync.gap_too_large");
+    assert!(matches!(error, oxkv_replica::ReplicaError::DiffGap { .. }));
+    assert!(mirror.row(&key("bob")).is_none());
+    assert_eq!(mirror.applied().get(&shard()), Some(CommitVersion::new(3)));
 }
 
 #[test]

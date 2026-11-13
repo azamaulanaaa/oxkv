@@ -85,14 +85,22 @@ impl Generation {
     }
 
     /// Applies one diff frame.
+    ///
+    /// The applied version vector never decreases. A frame below the current
+    /// shard version keeps the higher version.
     pub fn apply_diff(&mut self, frame: &DiffFrame) {
         if let Some(value) = &frame.value {
             self.rows.insert(frame.key.clone(), value.clone());
         } else {
             self.rows.remove(&frame.key);
         }
-        self.version
-            .set(frame.shard_id.clone(), frame.commit_version);
+        let current = self
+            .version
+            .get(&frame.shard_id)
+            .map_or(frame.commit_version, |current| {
+                current.max(frame.commit_version)
+            });
+        self.version.set(frame.shard_id.clone(), current);
     }
 
     /// Returns the resident bytes of this generation.
@@ -357,5 +365,44 @@ impl DurableStore for MemoryStore {
 
     fn generation_ids(&self) -> Vec<GenerationId> {
         self.generations.keys().copied().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use oxkv_contracts::version::{CommitVersion, LeaseTerm, PrefixBounds, ShardId};
+
+    use super::{DiffFrame, Generation, GenerationId};
+    use crate::page::SnapshotPage;
+    use crate::snapshot::SnapshotDraft;
+
+    #[test]
+    fn a_lower_diff_version_does_not_lower_the_applied_vector() {
+        let bounds = PrefixBounds::new(vec![b'a'], vec![b'z']);
+        let page = SnapshotPage::with_records(
+            0,
+            vec![(b"alpha".to_vec(), b"one".to_vec())],
+            bounds.clone(),
+        );
+        let snapshot = SnapshotDraft::sample(bounds, LeaseTerm::new(1))
+            .seal(vec![page])
+            .expect("the sample snapshot seals");
+        let mut generation = Generation::new(GenerationId::new(1), snapshot.descriptor());
+        let shard = ShardId::new(vec![1]);
+        generation.apply_diff(&DiffFrame::new(
+            1,
+            shard.clone(),
+            CommitVersion::new(5),
+            b"alpha".to_vec(),
+            Some(b"two".to_vec()),
+        ));
+        generation.apply_diff(&DiffFrame::new(
+            2,
+            shard.clone(),
+            CommitVersion::new(3),
+            b"alpha".to_vec(),
+            Some(b"three".to_vec()),
+        ));
+        assert_eq!(generation.version.get(&shard), Some(CommitVersion::new(5)));
     }
 }

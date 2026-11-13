@@ -64,6 +64,7 @@
 mod codec;
 pub mod error;
 pub mod index;
+pub mod journal;
 pub mod mirror;
 pub mod outbox;
 pub mod page;
@@ -78,11 +79,12 @@ pub use error::ReplicaError;
 pub use index::{
     INDEX_VERSION, IndexHeader, IndexVersion, ReplicaIndex, Scorer, SearchHit, tokenize,
 };
+pub use journal::{HydrationJournal, HydrationJournalStore, HydrationPhase, MemoryJournalStore};
 pub use mirror::{DiffFrame, FactEntry, Ingest, Mirror, RowEntry};
 pub use outbox::{Outbox, OutboxRecord};
 pub use page::{
     MirroredRecord, PageDescriptor, PageHeader, RecordBody, SUPPORTED_PAGE_VERSION, ScopeSnapshot,
-    ScopeSnapshotPage,
+    ScopeSnapshotPage, snapshot_digest,
 };
 pub use read::{
     HydrationState, Pin, ReadRequest, ReadResponse, ReplicaStatus, SearchRequest, SearchResponse,

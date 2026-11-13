@@ -10,9 +10,9 @@
 
 use oxkv_contracts::cursor::{CursorToken, ScopeGeneration};
 use oxkv_contracts::version::{
-    CommitVersion, DescriptorDigest, Hash32, ManifestDigest, ManifestRevision, MapVersion, PageId,
-    PageSequence, PolicyVersion, ScopeIdentity, ScopeVersionVector, ShardId, SyncWireVersion,
-    VersionVector,
+    CommitVersion, DescriptorDigest, Hash32, ManifestDigest, ManifestRevision, MapDigest,
+    MapVersion, PageId, PageSequence, PolicyVersion, ScopeIdentity, ScopeVersionVector, ShardId,
+    SyncWireVersion, VersionVector,
 };
 use oxkv_wire::cursor::{CursorPolicy, CursorSigner};
 use oxkv_wire::diff::{DiffBatch, DiffEntry, DiffOperation};
@@ -67,6 +67,7 @@ pub fn config() -> SessionConfig {
         manifest_revision: ManifestRevision::new(5),
         minimum_manifest_revision: ManifestRevision::new(3),
         map_version: MapVersion::new(4),
+        map_digest: MapDigest::from_bytes([6; 32]),
         minimum_sync_version: SyncWireVersion::new(1),
         maximum_sync_version: SyncWireVersion::new(1),
         capabilities: capabilities(),
@@ -104,6 +105,7 @@ pub fn hello() -> Frame {
         manifest_digest: ManifestDigest::from_bytes([2; 32]),
         manifest_revision: ManifestRevision::new(5),
         map_version: MapVersion::new(4),
+        map_digest: MapDigest::from_bytes([6; 32]),
         required_capabilities: Capabilities::from_names([
             CAPABILITY_DIFF_V1,
             CAPABILITY_SNAPSHOT_V1,

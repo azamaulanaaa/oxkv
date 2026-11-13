@@ -356,6 +356,10 @@ pub struct ScopeSnapshot {
     pub scope_version: ScopeVersionVector,
     /// The authority watermark at the snapshot.
     pub authority_watermark: ScopeVersionVector,
+    /// The expected page count.
+    pub page_count: u64,
+    /// The content digest of every page.
+    pub content_digest: ContentDigest,
     /// The pages in page sequence order.
     pub pages: Vec<ScopeSnapshotPage>,
 }
@@ -369,10 +373,14 @@ impl ScopeSnapshot {
         authority_watermark: ScopeVersionVector,
         pages: Vec<ScopeSnapshotPage>,
     ) -> Self {
+        let page_count = as_u64(pages.len());
+        let content_digest = snapshot_digest(pages.iter());
         Self {
             scope_identity,
             scope_version,
             authority_watermark,
+            page_count,
+            content_digest,
             pages,
         }
     }
@@ -384,6 +392,47 @@ impl ScopeSnapshot {
             total.saturating_add(page.resident_bytes())
         })
     }
+
+    /// Checks the expected page count and content digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReplicaError::PartialGeneration`] for a missing page. Returns
+    /// [`ReplicaError::ContentDigestMismatch`] for changed page bytes.
+    pub fn verify(&self) -> Result<(), ReplicaError> {
+        if as_u64(self.pages.len()) != self.page_count {
+            return Err(ReplicaError::PartialGeneration {
+                expected: self.page_count,
+                found: as_u64(self.pages.len()),
+            });
+        }
+        let digest = snapshot_digest(self.pages.iter());
+        if digest != self.content_digest {
+            return Err(ReplicaError::ContentDigestMismatch {
+                expected: self.content_digest,
+                found: digest,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Returns the deterministic content digest of one page set.
+#[must_use]
+pub fn snapshot_digest<'a>(
+    pages: impl IntoIterator<Item = &'a ScopeSnapshotPage>,
+) -> ContentDigest {
+    let mut pages = pages.into_iter().collect::<Vec<_>>();
+    pages.sort_by_key(|page| page.header.page_sequence);
+    let mut encoder = Encoder::with_capacity(32 + pages.len().saturating_mul(80));
+    encoder.bytes(b"oxkv/scope-snapshot/v1\0");
+    encoder.u64(as_u64(pages.len()));
+    for page in pages {
+        encoder.bytes(page.header.page_id.as_bytes());
+        encoder.u64(page.header.page_sequence.get());
+        encoder.bytes(page.header.content_digest.as_bytes());
+    }
+    ContentDigest::of_bytes(&encoder.into_bytes())
 }
 
 fn compute_digest(descriptor: &PageDescriptor, records: &[MirroredRecord]) -> ContentDigest {

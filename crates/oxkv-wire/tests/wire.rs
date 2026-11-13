@@ -208,6 +208,20 @@ fn an_old_manifest_returns_incompatible_manifest() {
 }
 
 #[test]
+fn a_map_digest_mismatch_returns_incompatible_manifest() {
+    let mut transport = ReferenceTransport::new(config());
+    let Frame::SessionHello(mut frame) = hello() else {
+        panic!("expected hello");
+    };
+    frame.map_digest = oxkv_contracts::version::MapDigest::from_bytes([9; 32]);
+    let responses = transport.send(Frame::SessionHello(frame));
+    assert_eq!(responses.len(), 2);
+    assert_eq!(error_code(&responses[0]), ErrorCode::IncompatibleManifest);
+    assert!(matches!(responses[1], Frame::Close(_)));
+    assert_eq!(transport.authority.phase(), SessionPhase::Closed);
+}
+
+#[test]
 fn unknown_required_capability_returns_unknown_capability() {
     let mut transport = ReferenceTransport::new(config());
     let Frame::SessionHello(mut frame) = hello() else {
@@ -275,6 +289,47 @@ fn flow_control_never_exceeds_credit() {
     assert_eq!(sent.len(), 1);
     assert!(matches!(sent[0], Frame::SnapshotOffer(_)));
     assert!(transport.authority.is_paused());
+}
+
+#[test]
+fn a_producer_without_credit_cannot_grow_the_queue() {
+    let mut config = config();
+    config.limits.max_in_flight_messages = 2;
+    let mut transport = ReferenceTransport::new(config);
+    transport.send(hello());
+    transport.send(subscribe(None));
+    let responses = transport.deliver(Event::SnapshotReady(snapshot_ready()));
+    assert!(
+        responses.iter().any(
+            |frame| matches!(frame, Frame::Error(error) if error.code == ErrorCode::ConsumerTooSlow)
+        ),
+        "the bounded queue must return consumer.too_slow"
+    );
+    assert!(transport.authority.pending_len() <= 2);
+    assert_eq!(transport.authority.pending_bytes(), 0);
+}
+
+#[test]
+fn a_dead_peer_is_detected_by_keepalive() {
+    let mut transport = ReferenceTransport::new(config());
+    transport.send(hello());
+    let session = &mut transport.authority;
+    session.note_activity(1_000);
+    assert_eq!(
+        session.check_liveness(1_000),
+        oxkv_wire::session::LivenessOutcome::Alive
+    );
+    let now = 1_000 + 30_000 * 3 + 1;
+    assert!(matches!(
+        session.check_liveness(now),
+        oxkv_wire::session::LivenessOutcome::DeadPeer { .. }
+    ));
+    let commands = session.tick(now);
+    assert!(matches!(
+        commands.first(),
+        Some(Command::Send(Frame::Error(error))) if error.code == ErrorCode::ShardUnavailable
+    ));
+    assert_eq!(session.phase(), SessionPhase::Closed);
 }
 
 #[test]
@@ -524,6 +579,7 @@ fn ready_frame() -> oxkv_wire::frame::SessionReady {
         manifest_digest: ManifestDigest::from_bytes([2; 32]),
         manifest_revision: ManifestRevision::new(5),
         map_version: MapVersion::new(4),
+        map_digest: oxkv_contracts::version::MapDigest::from_bytes([6; 32]),
         capabilities: Capabilities::from_names(["sync.diff.v1"]),
         limits: oxkv_wire::types::Limits::standard(),
     }

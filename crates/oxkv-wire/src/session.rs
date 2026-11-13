@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, VecDeque};
 
 use oxkv_contracts::cursor::{CursorError, CursorToken, ScopeGeneration, SyncCursor};
 use oxkv_contracts::version::{
-    DescriptorDigest, Hash32, ManifestDigest, ManifestRevision, MapVersion, ScopeIdentity,
-    ScopeVersionVector, SyncWireVersion, VersionVector,
+    DescriptorDigest, Hash32, ManifestDigest, ManifestRevision, MapDigest, MapVersion,
+    ScopeIdentity, ScopeVersionVector, SyncWireVersion, VersionVector,
 };
 
 use crate::codec::Encoder;
@@ -41,6 +41,8 @@ pub struct Negotiated {
     pub manifest_digest: ManifestDigest,
     /// The chosen shard map version.
     pub map_version: MapVersion,
+    /// The chosen shard map digest.
+    pub map_digest: MapDigest,
     /// The capability intersection.
     pub capabilities: Capabilities,
     /// The negotiated limits.
@@ -60,6 +62,8 @@ pub struct SessionConfig {
     pub minimum_manifest_revision: ManifestRevision,
     /// The authority shard map version.
     pub map_version: MapVersion,
+    /// The authority shard map digest.
+    pub map_digest: MapDigest,
     /// The lowest supported sync wire version.
     pub minimum_sync_version: SyncWireVersion,
     /// The highest supported sync wire version.
@@ -71,6 +75,23 @@ pub struct SessionConfig {
     /// The cursor policy and retention window.
     pub cursor: CursorPolicy,
 }
+
+/// The liveness of the remote peer at one injected time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LivenessOutcome {
+    /// The peer sent activity inside the keepalive window.
+    Alive,
+    /// The peer sent no activity inside the keepalive window.
+    DeadPeer {
+        /// The last injected time that the peer showed activity.
+        last_seen_at: u64,
+        /// The current injected time.
+        now: u64,
+    },
+}
+
+/// The number of keepalive intervals that a peer may stay silent.
+const DEAD_PEER_INTERVALS: u64 = 3;
 
 /// A change batch that the authority data layer produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,8 +161,10 @@ pub struct Session {
     negotiated: Option<Negotiated>,
     subscriptions: BTreeMap<SubscriptionId, SubscriptionState>,
     pending: VecDeque<Frame>,
+    pending_bytes: u64,
     credit_bytes: u64,
     credit_messages: u32,
+    last_seen_at: u64,
 }
 
 impl Session {
@@ -154,8 +177,10 @@ impl Session {
             negotiated: None,
             subscriptions: BTreeMap::new(),
             pending: VecDeque::new(),
+            pending_bytes: 0,
             credit_bytes: 0,
             credit_messages: 0,
+            last_seen_at: 0,
         }
     }
 
@@ -183,6 +208,34 @@ impl Session {
         !self.pending.is_empty()
     }
 
+    /// Returns the buffered pending byte count.
+    #[must_use]
+    pub const fn pending_bytes(&self) -> u64 {
+        self.pending_bytes
+    }
+
+    /// Returns the last injected time that the peer showed activity.
+    #[must_use]
+    pub const fn last_seen_at(&self) -> u64 {
+        self.last_seen_at
+    }
+
+    /// Records peer activity at one injected time.
+    pub fn note_activity(&mut self, now: u64) {
+        self.last_seen_at = self.last_seen_at.max(now);
+    }
+
+    /// Processes one event with an injected time.
+    ///
+    /// An incoming frame updates the last-seen time. The session never reads a
+    /// clock.
+    pub fn on_event_at(&mut self, event: Event, now: u64) -> Vec<Command> {
+        if matches!(event, Event::Incoming(_)) {
+            self.note_activity(now);
+        }
+        self.on_event(event)
+    }
+
     /// Processes one event and returns the output commands in order.
     pub fn on_event(&mut self, event: Event) -> Vec<Command> {
         let mut commands = Vec::new();
@@ -191,9 +244,56 @@ impl Session {
             Event::Disconnected => {
                 self.phase = SessionPhase::Closed;
                 self.pending.clear();
+                self.pending_bytes = 0;
             }
             Event::DiffsReady(diffs) => self.on_diffs_ready(&diffs, &mut commands),
             Event::SnapshotReady(snapshot) => self.on_snapshot_ready(&snapshot, &mut commands),
+        }
+        commands
+    }
+
+    /// Returns the peer liveness at one injected time.
+    #[must_use]
+    pub fn check_liveness(&self, now: u64) -> LivenessOutcome {
+        let limits = self
+            .negotiated
+            .as_ref()
+            .map_or(self.config.limits, |negotiated| negotiated.limits);
+        let window =
+            u64::from(limits.keepalive_interval_millis).saturating_mul(DEAD_PEER_INTERVALS);
+        if now.saturating_sub(self.last_seen_at) > window {
+            LivenessOutcome::DeadPeer {
+                last_seen_at: self.last_seen_at,
+                now,
+            }
+        } else {
+            LivenessOutcome::Alive
+        }
+    }
+
+    /// Checks the peer liveness and closes a dead session.
+    ///
+    /// A dead peer returns one `sync.shard_unavailable` error and one close
+    /// frame.
+    pub fn tick(&mut self, now: u64) -> Vec<Command> {
+        let mut commands = Vec::new();
+        if self.phase != SessionPhase::Ready {
+            return commands;
+        }
+        if let LivenessOutcome::DeadPeer { .. } = self.check_liveness(now) {
+            push_error(
+                self.config.cursor.snapshot_available,
+                ErrorCode::ShardUnavailable,
+                "The peer sent no keepalive inside the window.",
+                &mut commands,
+            );
+            commands.push(Command::Close(CloseFrame::new(
+                ErrorCode::ShardUnavailable,
+                "The peer is dead.",
+            )));
+            self.phase = SessionPhase::Closed;
+            self.pending.clear();
+            self.pending_bytes = 0;
         }
         commands
     }
@@ -261,10 +361,11 @@ impl Session {
         if hello.manifest_digest != self.config.manifest_digest
             || hello.manifest_revision < self.config.minimum_manifest_revision
             || hello.map_version != self.config.map_version
+            || hello.map_digest != self.config.map_digest
         {
             self.reject_hello(
                 ErrorCode::IncompatibleManifest,
-                "The client manifest is not compatible.",
+                "The client manifest or shard map is not compatible.",
                 commands,
             );
             return;
@@ -294,6 +395,7 @@ impl Session {
             sync_version: hello.sync_version,
             manifest_digest: hello.manifest_digest,
             map_version: hello.map_version,
+            map_digest: hello.map_digest,
             capabilities: capabilities.clone(),
             limits,
         };
@@ -304,6 +406,7 @@ impl Session {
             manifest_digest: self.config.manifest_digest,
             manifest_revision: self.config.manifest_revision,
             map_version: self.config.map_version,
+            map_digest: self.config.map_digest,
             capabilities,
             limits,
         };
@@ -734,7 +837,38 @@ impl Session {
     }
 
     fn send_stream(&mut self, frame: Frame, commands: &mut Vec<Command>) {
+        if self.phase == SessionPhase::Closed {
+            return;
+        }
+        let bytes = u64::try_from(frame.encode().len()).unwrap_or(u64::MAX);
+        let limits = self
+            .negotiated
+            .as_ref()
+            .map_or(self.config.limits, |negotiated| negotiated.limits);
+        let message_limit =
+            usize::try_from(limits.max_in_flight_messages.max(1)).unwrap_or(usize::MAX);
+        let byte_limit = u64::from(limits.max_frame_bytes)
+            .saturating_mul(u64::from(limits.max_in_flight_messages.max(1)));
+        if self.pending.len() >= message_limit
+            || self.pending_bytes.saturating_add(bytes) > byte_limit
+        {
+            push_error(
+                self.config.cursor.snapshot_available,
+                ErrorCode::ConsumerTooSlow,
+                "The pending queue is full. Grant credit or slow down.",
+                commands,
+            );
+            commands.push(Command::Close(CloseFrame::new(
+                ErrorCode::ConsumerTooSlow,
+                "The pending queue is full.",
+            )));
+            self.phase = SessionPhase::Closed;
+            self.pending.clear();
+            self.pending_bytes = 0;
+            return;
+        }
         self.pending.push_back(frame);
+        self.pending_bytes = self.pending_bytes.saturating_add(bytes);
         self.flush(commands);
     }
 
@@ -747,6 +881,7 @@ impl Session {
             self.credit_messages -= 1;
             self.credit_bytes -= bytes;
             if let Some(frame) = self.pending.pop_front() {
+                self.pending_bytes = self.pending_bytes.saturating_sub(bytes);
                 commands.push(Command::Send(frame));
             }
         }
@@ -780,6 +915,7 @@ fn session_identity(hello: &SessionHello) -> Hash32 {
     encoder.digest(hello.manifest_digest.as_bytes());
     encoder.u64(hello.manifest_revision.get());
     encoder.u64(hello.map_version.get());
+    encoder.digest(hello.map_digest.as_bytes());
     hello.required_capabilities.encode(&mut encoder);
     hello.optional_capabilities.encode(&mut encoder);
     hello.limits.encode(&mut encoder);

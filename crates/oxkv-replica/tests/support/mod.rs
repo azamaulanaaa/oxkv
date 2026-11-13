@@ -108,6 +108,16 @@ pub fn two_row_snapshot(commit_version: u64) -> ScopeSnapshot {
     )
 }
 
+pub fn two_page_snapshot(commit_version: u64) -> ScopeSnapshot {
+    snapshot(
+        commit_version,
+        vec![
+            page(1, commit_version, vec![row("alice", "red green", 1)]),
+            page(2, commit_version, vec![row("bob", "green blue", 1)]),
+        ],
+    )
+}
+
 pub struct GoldenFile {
     pub contract: String,
     pub cases: Vec<GoldenCase>,

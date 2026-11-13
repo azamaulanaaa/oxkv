@@ -18,7 +18,7 @@ use oxkv_contracts::version::{
 
 use crate::codec::as_u64;
 use crate::error::ReplicaError;
-use crate::page::{MirroredRecord, RecordBody, ScopeSnapshotPage};
+use crate::page::{MirroredRecord, RecordBody, ScopeSnapshotPage, snapshot_digest};
 use crate::residency::EvictionReport;
 use crate::scope::Scope;
 use crate::versions::set_version;
@@ -142,6 +142,12 @@ impl Mirror {
         self.tail_entries
     }
 
+    /// Returns the content digest of the stored page set.
+    #[must_use]
+    pub fn snapshot_digest(&self) -> oxkv_contracts::version::ContentDigest {
+        snapshot_digest(self.pages.values())
+    }
+
     /// Returns the live member keys in canonical order.
     #[must_use]
     pub fn membership(&self) -> BTreeSet<Vec<u8>> {
@@ -244,12 +250,18 @@ impl Mirror {
         if diff.scope_identity != self.scope.identity() {
             return Err(ReplicaError::ScopePinMismatch);
         }
-        if self
-            .applied
-            .get(&diff.shard_id)
-            .is_some_and(|current| diff.commit_version <= current)
-        {
-            return Ok(Ingest::Duplicate);
+        if let Some(current) = self.applied.get(&diff.shard_id) {
+            if diff.commit_version <= current {
+                return Ok(Ingest::Duplicate);
+            }
+            let expected = CommitVersion::new(current.get().saturating_add(1));
+            if diff.commit_version != expected {
+                return Err(ReplicaError::DiffGap {
+                    shard_id: diff.shard_id.clone(),
+                    expected,
+                    found: diff.commit_version,
+                });
+            }
         }
         let tail_bytes = diff_bytes(diff);
         if !self.scope.admits_row(&diff.key) {
