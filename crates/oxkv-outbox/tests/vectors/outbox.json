@@ -1,0 +1,103 @@
+{
+  "contract": "receipt-error/v1",
+  "cases": [
+    {
+      "name": "receipt_states",
+      "expected": {
+        "count": 4,
+        "names": ["Queued", "Committed", "Rejected", "Conflict"],
+        "terminal": [false, true, true, true],
+        "wire_tags": [1, 2, 3, 4]
+      }
+    },
+    {
+      "name": "three_deliveries_one_terminal_receipt",
+      "expected": {
+        "deliveries": 3,
+        "receipt_count": 1,
+        "state": "Committed",
+        "commit_version": 7
+      }
+    },
+    {
+      "name": "cancelled_offline_write_later_commits",
+      "expected": {
+        "disposition": "Abandoned",
+        "receipt_count": 1,
+        "state": "Committed",
+        "cancel_is_receipt": false,
+        "reconciliation": "Committed"
+      }
+    },
+    {
+      "name": "rejected_write_has_one_receipt",
+      "expected": {
+        "receipt_count": 1,
+        "state": "Rejected",
+        "reason": "policy.unknown_field",
+        "error": "write.idempotency_key_reuse"
+      }
+    },
+    {
+      "name": "reused_key_with_different_body",
+      "expected": {
+        "error": "write.idempotency_key_reuse",
+        "receipt_count": 1
+      }
+    },
+    {
+      "name": "terminal_immutability",
+      "expected": {
+        "error": "receipt.state_invalid",
+        "state": "Committed"
+      }
+    },
+    {
+      "name": "cursor_expiry",
+      "expected": {
+        "error": "receipt.expired",
+        "cursor_sequence": 1,
+        "oldest_retained": 2
+      }
+    },
+    {
+      "name": "unknown_receipt",
+      "expected": {
+        "read_error": "receipt.not_found",
+        "resume_error": "receipt.not_found"
+      }
+    },
+    {
+      "name": "outbox_full",
+      "expected": {
+        "error": "outbox.full",
+        "entries": 2,
+        "oldest_present": true
+      }
+    },
+    {
+      "name": "dependency_cycle",
+      "expected": {
+        "self_error": "outbox.dependency_cycle",
+        "forward_error": "outbox.dependency_cycle"
+      }
+    },
+    {
+      "name": "cross_shard_edge",
+      "expected": {
+        "error": "outbox.cross_shard_edge"
+      }
+    },
+    {
+      "name": "per_key_fifo",
+      "expected": {
+        "first_is_a": true,
+        "in_flight_on_key": 1,
+        "second_is_c": true,
+        "blocked_while_first_in_flight": true,
+        "third_is_b": true,
+        "in_flight_on_key_after": 1
+      }
+    }
+  ]
+}

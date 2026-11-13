@@ -1290,6 +1290,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxkv-outbox"
+version = "0.11.0"
+dependencies = [
+ "oxkv-contracts",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "oxkv-policy"
 version = "0.11.0"
 dependencies = [
