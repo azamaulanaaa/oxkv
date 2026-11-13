@@ -578,7 +578,7 @@ mod tests {
                 .search(&unknown, &crate::scope::AllScope)
                 .expect_err("the flag is undeclared")
                 .code(),
-            "manifest.index_unknown_field"
+            "index.unknown_flag"
         );
     }
 

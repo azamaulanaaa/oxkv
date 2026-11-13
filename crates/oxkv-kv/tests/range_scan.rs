@@ -92,5 +92,5 @@ fn a_delete_removes_the_key_from_later_scans() {
 fn an_inverted_range_fails() {
     let error = KeyRange::new(b"d".to_vec(), b"b".to_vec()).expect_err("the range is inverted");
     assert_eq!(error, KvError::MalformedRange);
-    assert_eq!(error.code(), "key.malformed");
+    assert_eq!(error.code(), "kv.malformed_range");
 }

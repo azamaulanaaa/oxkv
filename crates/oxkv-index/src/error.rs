@@ -156,18 +156,19 @@ impl IndexError {
             Self::TokenCountExceeded { .. } | Self::TokenLengthExceeded { .. } => {
                 "search.token_budget_exceeded"
             }
-            Self::UnknownField { .. }
-            | Self::FieldNotSearchable { .. }
-            | Self::UnknownFlag { .. } => "manifest.index_unknown_field",
+            Self::UnknownField { .. } => "manifest.index_unknown_field",
+            Self::FieldNotSearchable { .. } => "index.field_not_searchable",
+            Self::UnknownFlag { .. } => "index.unknown_flag",
             Self::OutOfScope { .. } => "key.outside_table",
-            Self::MalformedDocument { .. } => "key.malformed",
+            Self::MalformedDocument { .. } => "index.malformed_document",
             Self::DuplicateName { .. } => "manifest.duplicate_name",
             Self::PinUnavailable { .. } => "search.pin_expired",
-            Self::VersionNotMonotonic { .. } | Self::EmptyWrite => "internal.invariant_violation",
+            Self::VersionNotMonotonic { .. } => "index.version_not_monotonic",
+            Self::EmptyWrite => "index.empty_write",
             Self::ManifestDrift => "manifest.artifact_drift",
             Self::UnsupportedVersion { .. } => "format.unsupported_version",
-            Self::InvalidManifest { .. } => "manifest.unsupported_schema",
-            Self::InvalidScorer { .. } => "manifest.float_not_allowed",
+            Self::InvalidManifest { .. } => "index.invalid_manifest",
+            Self::InvalidScorer { .. } => "index.invalid_scorer",
         }
     }
 }

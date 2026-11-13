@@ -129,10 +129,10 @@ impl ProjectionError {
             Self::ChecksumFailed => PROJECTION_CHECKSUM_FAILED,
             Self::FanInExceeded { .. } => PROJECTION_FAN_IN_EXCEEDED,
             Self::ReadSetExceeded { .. } => PROJECTION_READ_SET_EXCEEDED,
-            Self::UnknownFact { .. } => "manifest.rule_unknown_path",
-            Self::DuplicateFact { .. } => "manifest.duplicate_name",
-            Self::FactUnavailable { .. } => PROJECTION_LAGGING,
-            Self::EpochOverflow => "internal.invariant_violation",
+            Self::UnknownFact { .. } => "projection.unknown_fact",
+            Self::DuplicateFact { .. } => "projection.duplicate_fact",
+            Self::FactUnavailable { .. } => "projection.fact_unavailable",
+            Self::EpochOverflow => "projection.epoch_overflow",
         }
     }
 

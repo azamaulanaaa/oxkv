@@ -395,7 +395,7 @@ mod tests {
         let session = session();
         let wrong = facts().with_map(MapVersion::new(1), MapDigest::from_bytes([9; 32]));
         let error = session.check_compatibility(&wrong).unwrap_err();
-        assert_eq!(error.code().as_str(), "sync.incompatible_manifest");
+        assert_eq!(error.code().as_str(), "sync.map_mismatch");
         assert!(matches!(error, ProtocolError::MapMismatch { .. }));
     }
 

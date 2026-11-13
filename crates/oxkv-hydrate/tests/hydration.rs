@@ -290,7 +290,7 @@ fn a_crash_before_the_swap_publishes_one_generation() {
     let mut hydrator = Hydrator::new(&mut store, &mut transport);
     hydrator.start(&request).expect("the start succeeds");
     let error = hydrator.run().expect_err("the swap fails");
-    assert_eq!(error.code(), "internal.invariant_violation");
+    assert_eq!(error.code(), "hydrate.storage_failed");
     assert_eq!(store.published_generation(), None);
 
     store.publish_mode = PublishMode::Normal;
@@ -316,7 +316,7 @@ fn a_crash_after_the_swap_leaves_one_published_generation() {
     let mut hydrator = Hydrator::new(&mut store, &mut transport);
     hydrator.start(&request).expect("the start succeeds");
     let error = hydrator.run().expect_err("the swap reports a crash");
-    assert_eq!(error.code(), "internal.invariant_violation");
+    assert_eq!(error.code(), "hydrate.storage_failed");
     let published = store
         .published_generation()
         .expect("the pointer moved before the crash");

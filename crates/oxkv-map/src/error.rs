@@ -100,14 +100,15 @@ impl MapError {
         match self {
             Self::UnknownVersion { .. } => "map.unknown_version",
             Self::UnknownKeyVersion { .. } => "key.unknown_version",
-            Self::MalformedKey { .. } | Self::InvalidTable { .. } => "key.malformed",
+            Self::MalformedKey { .. } => "map.malformed_key",
+            Self::InvalidTable { .. } => "map.invalid_table",
             Self::Overlap { .. } => "map.overlap",
             Self::Gap { .. } => "map.gap",
             Self::DuplicateId { .. } => "map.duplicate_id",
             Self::EmptyRange { .. } => "map.empty_range",
             Self::TableUnmapped { .. } => "map.table_unmapped",
             Self::TableSplitUnsupported { .. } => "map.table_split_unsupported",
-            Self::MalformedCanonical { .. } => "format.unsupported_version",
+            Self::MalformedCanonical { .. } => "map.malformed_canonical",
         }
     }
 }

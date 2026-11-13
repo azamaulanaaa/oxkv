@@ -375,7 +375,7 @@ mod tests {
         ];
         let error = merge_streams(&streams, MergeOptions::new(MergeOrder::Search, 10, 2))
             .expect_err("the key has two contents");
-        assert_eq!(error.code().as_str(), "internal.invariant_violation");
+        assert_eq!(error.code().as_str(), "query.duplicate_key");
     }
 
     #[test]

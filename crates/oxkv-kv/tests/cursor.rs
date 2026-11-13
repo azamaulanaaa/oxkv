@@ -210,6 +210,6 @@ fn a_zero_page_size_fails() {
         let error = engine
             .page(&cursor, &KeyRange::all(), 0)
             .expect_err("the page size is zero");
-        assert_eq!(error.code(), "key.malformed");
+        assert_eq!(error.code(), "kv.malformed_page");
     });
 }

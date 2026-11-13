@@ -153,14 +153,13 @@ impl ProtocolError {
             Self::DescriptorMismatch { .. } => registered("rpc.descriptor_mismatch"),
             Self::CodecUnsupported { .. } => registered("rpc.codec_unsupported"),
             Self::NegotiationRequired => registered("sync.negotiation_required"),
-            Self::IncompatibleManifest { .. } | Self::MapMismatch { .. } => {
-                registered("sync.incompatible_manifest")
-            }
+            Self::IncompatibleManifest { .. } => registered("sync.incompatible_manifest"),
+            Self::MapMismatch { .. } => registered("sync.map_mismatch"),
             Self::UnsupportedSyncVersion { .. } => registered("sync.unsupported_version"),
-            Self::AlreadyNegotiated
-            | Self::HandlerViolation { .. }
-            | Self::InvalidEnvelope
-            | Self::UnknownRemoteCode { .. } => registered("internal.invariant_violation"),
+            Self::AlreadyNegotiated => registered("rpc.already_negotiated"),
+            Self::HandlerViolation { .. } => registered("rpc.handler_violation"),
+            Self::InvalidEnvelope => registered("rpc.invalid_envelope"),
+            Self::UnknownRemoteCode { .. } => registered("rpc.unknown_remote_code"),
             Self::Transport { failure } => failure.code(),
             Self::Handler { code, .. } => *code,
         }
@@ -215,7 +214,8 @@ impl TransportFailure {
     pub fn code(self) -> ErrorCode {
         match self {
             Self::Closed => registered("sync.shard_unavailable"),
-            Self::CorruptFrame | Self::Protocol => registered("sync.unsupported_version"),
+            Self::CorruptFrame => registered("sync.corrupt_frame"),
+            Self::Protocol => registered("sync.protocol_error"),
             Self::Backpressure => registered("consumer.too_slow"),
         }
     }
@@ -362,6 +362,6 @@ mod tests {
                 raw: "rpc.from_the_future".to_owned()
             }
         );
-        assert_eq!(error.code().as_str(), "internal.invariant_violation");
+        assert_eq!(error.code().as_str(), "rpc.unknown_remote_code");
     }
 }

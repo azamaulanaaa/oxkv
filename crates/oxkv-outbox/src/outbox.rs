@@ -63,10 +63,10 @@ impl OutboxError {
         match self {
             Self::NotFound { .. } => "receipt.not_found",
             Self::KeyReuse { .. } => "write.idempotency_key_reuse",
-            Self::Immutable { .. }
-            | Self::TerminalEntry { .. }
-            | Self::MissingOutcome { .. }
-            | Self::NotTerminal { .. } => "receipt.state_invalid",
+            Self::Immutable { .. } => "receipt.state_invalid",
+            Self::TerminalEntry { .. } => "receipt.terminal_entry",
+            Self::MissingOutcome { .. } => "receipt.missing_outcome",
+            Self::NotTerminal { .. } => "receipt.not_terminal",
         }
     }
 }

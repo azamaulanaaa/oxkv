@@ -1394,6 +1394,708 @@
         "terminal": true
       },
       "name": "internal.resource_exhausted"
+    },
+    {
+      "name": "projection.unknown_fact",
+      "expected": {
+        "kind": "projection",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "projection.duplicate_fact",
+      "expected": {
+        "kind": "projection",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "projection.fact_unavailable",
+      "expected": {
+        "kind": "projection",
+        "receipt": null,
+        "retry": "Backoff",
+        "terminal": true
+      }
+    },
+    {
+      "name": "projection.epoch_overflow",
+      "expected": {
+        "kind": "projection",
+        "receipt": null,
+        "retry": "After rebuild",
+        "terminal": true
+      }
+    },
+    {
+      "name": "scope.empty_scope",
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "scope.invalid_table_name",
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "scope.invalid_rule_set_selector",
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "scope.invalid_field_name",
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "scope.byte_count_overflow",
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "scope.shard_not_at_pin",
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Backoff",
+        "terminal": true
+      }
+    },
+    {
+      "name": "scope.duplicate_response",
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "scope.duplicate_row",
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "scope.unsupported_diff_version",
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "scope.duplicate_diff_record",
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "scope.version_regression",
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "scope.diff_sequence_invalid",
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "scope.base_version_mismatch",
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "scope.malformed_diff",
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "scope.duplicate_table_assignment",
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "scope.page_not_found",
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "scope.in_scope_member",
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "scope.not_evictable",
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "scope.shard_not_pinned",
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "manifest.duplicate_key",
+      "expected": {
+        "kind": "manifest",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "manifest.unsupported_value",
+      "expected": {
+        "kind": "manifest",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "kv.malformed_range",
+      "expected": {
+        "kind": "key",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "kv.malformed_cursor",
+      "expected": {
+        "kind": "key",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "kv.malformed_batch",
+      "expected": {
+        "kind": "key",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "kv.malformed_page",
+      "expected": {
+        "kind": "key",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "map.malformed_key",
+      "expected": {
+        "kind": "map",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "map.invalid_table",
+      "expected": {
+        "kind": "map",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "map.malformed_canonical",
+      "expected": {
+        "kind": "map",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "index.field_not_searchable",
+      "expected": {
+        "kind": "search",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "index.unknown_flag",
+      "expected": {
+        "kind": "search",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "index.malformed_document",
+      "expected": {
+        "kind": "search",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "index.version_not_monotonic",
+      "expected": {
+        "kind": "search",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "index.empty_write",
+      "expected": {
+        "kind": "search",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "index.invalid_manifest",
+      "expected": {
+        "kind": "search",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "index.invalid_scorer",
+      "expected": {
+        "kind": "search",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "hydrate.unsupported_signature",
+      "expected": {
+        "kind": "format",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "hydrate.storage_failed",
+      "expected": {
+        "kind": "internal",
+        "receipt": null,
+        "retry": "Backoff",
+        "terminal": true
+      }
+    },
+    {
+      "name": "hydrate.not_started",
+      "expected": {
+        "kind": "internal",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "hydrate.already_published",
+      "expected": {
+        "kind": "internal",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "replica.content_digest_mismatch",
+      "expected": {
+        "kind": "format",
+        "receipt": null,
+        "retry": "Refetch",
+        "terminal": true
+      }
+    },
+    {
+      "name": "replica.scope_violation",
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "replica.scope_pin_mismatch",
+      "expected": {
+        "kind": "scope",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "replica.local_mutation_rejected",
+      "expected": {
+        "kind": "write",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "replica.version_regression",
+      "expected": {
+        "kind": "replication",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "replica.hydration_in_progress",
+      "expected": {
+        "kind": "replication",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "replica.hydration_not_started",
+      "expected": {
+        "kind": "replication",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "replica.partial_generation",
+      "expected": {
+        "kind": "format",
+        "receipt": null,
+        "retry": "Refetch",
+        "terminal": true
+      }
+    },
+    {
+      "name": "replica.tab_lease_held",
+      "expected": {
+        "kind": "replication",
+        "receipt": null,
+        "retry": "After hint",
+        "terminal": true
+      }
+    },
+    {
+      "name": "replica.stale_tab_lease",
+      "expected": {
+        "kind": "replication",
+        "receipt": null,
+        "retry": "After re-acquire",
+        "terminal": true
+      }
+    },
+    {
+      "name": "query.duplicate_shard",
+      "expected": {
+        "kind": "query",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "query.duplicate_key",
+      "expected": {
+        "kind": "query",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "query.counter_overflow",
+      "expected": {
+        "kind": "query",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "search.pin_missing_shard",
+      "expected": {
+        "kind": "search",
+        "receipt": null,
+        "retry": "New pin",
+        "terminal": true
+      }
+    },
+    {
+      "name": "search.unordered_shard",
+      "expected": {
+        "kind": "search",
+        "receipt": null,
+        "retry": "Rebuild",
+        "terminal": true
+      }
+    },
+    {
+      "name": "search.duplicate_hit",
+      "expected": {
+        "kind": "search",
+        "receipt": null,
+        "retry": "Rebuild",
+        "terminal": true
+      }
+    },
+    {
+      "name": "sync.map_mismatch",
+      "expected": {
+        "kind": "sync",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "rpc.already_negotiated",
+      "expected": {
+        "kind": "rpc",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "rpc.handler_violation",
+      "expected": {
+        "kind": "rpc",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "rpc.invalid_envelope",
+      "expected": {
+        "kind": "rpc",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "rpc.unknown_remote_code",
+      "expected": {
+        "kind": "rpc",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "sync.corrupt_frame",
+      "expected": {
+        "kind": "sync",
+        "receipt": null,
+        "retry": "Refetch",
+        "terminal": true
+      }
+    },
+    {
+      "name": "sync.protocol_error",
+      "expected": {
+        "kind": "sync",
+        "receipt": null,
+        "retry": "Reconnect",
+        "terminal": true
+      }
+    },
+    {
+      "name": "format.malformed_header",
+      "expected": {
+        "kind": "format",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "format.duplicate_record_key",
+      "expected": {
+        "kind": "format",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "format.forbidden_namespace",
+      "expected": {
+        "kind": "format",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "format.system_key_not_allowed",
+      "expected": {
+        "kind": "format",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "format.not_projection_fact",
+      "expected": {
+        "kind": "format",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "format.out_of_scope_record",
+      "expected": {
+        "kind": "format",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "replication.artifact_missing",
+      "expected": {
+        "kind": "replication",
+        "receipt": null,
+        "retry": "Backoff",
+        "terminal": true
+      }
+    },
+    {
+      "name": "replication.replica_authority_lease",
+      "expected": {
+        "kind": "replication",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "replication.term_exhausted",
+      "expected": {
+        "kind": "replication",
+        "receipt": null,
+        "retry": "Operator action",
+        "terminal": true
+      }
+    },
+    {
+      "name": "receipt.terminal_entry",
+      "expected": {
+        "kind": "receipt",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "receipt.missing_outcome",
+      "expected": {
+        "kind": "receipt",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
+    },
+    {
+      "name": "receipt.not_terminal",
+      "expected": {
+        "kind": "receipt",
+        "receipt": null,
+        "retry": "Never",
+        "terminal": true
+      }
     }
   ],
   "contract": "receipt-error/v1"

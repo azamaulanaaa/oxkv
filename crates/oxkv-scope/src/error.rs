@@ -182,10 +182,11 @@ impl ScopeError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::EmptyScope | Self::InvalidTableName { .. } => "key.malformed",
+            Self::EmptyScope => "scope.empty_scope",
+            Self::InvalidTableName { .. } => "scope.invalid_table_name",
             Self::SystemNamespace { .. } => "manifest.reserved_table_name",
-            Self::InvalidRuleSetSelector { .. } => "policy.parse_error",
-            Self::InvalidFieldName { .. } => "manifest.unknown_field",
+            Self::InvalidRuleSetSelector { .. } => "scope.invalid_rule_set_selector",
+            Self::InvalidFieldName { .. } => "scope.invalid_field_name",
             Self::UnmappedTable { .. } => "map.table_unmapped",
             Self::UnknownShard { .. } => "scope.unknown_shard",
             Self::MissingPinShard { .. } => "scope.missing_pin_shard",
@@ -193,16 +194,16 @@ impl ScopeError {
             Self::DeviceBudgetExceeded { .. } => "scope.device_budget_exceeded",
             Self::HydrationBudgetExceeded { .. } => "scope.hydration_budget_exceeded",
             Self::IdentityMismatch { .. } => "scope.identity_mismatch",
-            Self::UnsupportedDiffVersion { .. } => "sync.unsupported_version",
-            Self::DuplicateDiffRecord { .. }
-            | Self::VersionRegression { .. }
-            | Self::DiffSequence { .. }
-            | Self::BaseVersionMismatch
-            | Self::MalformedDiff => "sync.cursor_invalid",
-            Self::DuplicateTableAssignment { .. } => "map.duplicate_id",
+            Self::UnsupportedDiffVersion { .. } => "scope.unsupported_diff_version",
+            Self::DuplicateDiffRecord { .. } => "scope.duplicate_diff_record",
+            Self::VersionRegression { .. } => "scope.version_regression",
+            Self::DiffSequence { .. } => "scope.diff_sequence_invalid",
+            Self::BaseVersionMismatch => "scope.base_version_mismatch",
+            Self::MalformedDiff => "scope.malformed_diff",
+            Self::DuplicateTableAssignment { .. } => "scope.duplicate_table_assignment",
             Self::RemoveUnknownMember { .. } => "scope.remove_unknown_member",
             Self::SystemKey { .. } => "scope.system_key_rejected",
-            Self::ByteCountOverflow => "format.page_too_large",
+            Self::ByteCountOverflow => "scope.byte_count_overflow",
         }
     }
 }
@@ -237,10 +238,9 @@ impl ResidencyError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::PageNotFound { .. } => "key.not_found",
-            Self::InScopeMember { .. } | Self::NotEvictable { .. } => {
-                "replication.only_copy_eviction"
-            }
+            Self::PageNotFound { .. } => "scope.page_not_found",
+            Self::InScopeMember { .. } => "scope.in_scope_member",
+            Self::NotEvictable { .. } => "scope.not_evictable",
         }
     }
 }
@@ -301,13 +301,13 @@ impl QueryError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::ShardUnreachable { .. } | Self::ShardNotAtPin { .. } => "scope.shard_unreachable",
+            Self::ShardUnreachable { .. } => "scope.shard_unreachable",
+            Self::ShardNotAtPin { .. } => "scope.shard_not_at_pin",
             Self::PinIncomplete { .. } => "scope.missing_pin_shard",
             Self::UnknownShard { .. } => "scope.unknown_shard",
             Self::SystemKey { .. } => "scope.system_key_rejected",
-            Self::DuplicateResponse { .. } | Self::DuplicateRow { .. } => {
-                "internal.invariant_violation"
-            }
+            Self::DuplicateResponse { .. } => "scope.duplicate_response",
+            Self::DuplicateRow { .. } => "scope.duplicate_row",
         }
     }
 }

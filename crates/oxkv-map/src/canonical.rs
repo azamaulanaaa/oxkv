@@ -349,7 +349,7 @@ mod tests {
         bytes.push(0x00);
         assert_eq!(
             ShardMap::from_canonical_bytes(&bytes).unwrap_err().code(),
-            "format.unsupported_version"
+            "map.malformed_canonical"
         );
     }
 
@@ -361,7 +361,7 @@ mod tests {
             ShardMap::from_canonical_bytes(&bytes[..bytes.len() - 1])
                 .unwrap_err()
                 .code(),
-            "format.unsupported_version"
+            "map.malformed_canonical"
         );
     }
 
@@ -371,7 +371,7 @@ mod tests {
             ShardMap::from_canonical_bytes(b"not a map")
                 .unwrap_err()
                 .code(),
-            "format.unsupported_version"
+            "map.malformed_canonical"
         );
     }
 }

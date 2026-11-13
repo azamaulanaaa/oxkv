@@ -23,7 +23,7 @@
     {
       "name": "replica authority lease refused",
       "expected": {
-        "code": "internal.invariant_violation"
+        "code": "replication.replica_authority_lease"
       }
     },
     {

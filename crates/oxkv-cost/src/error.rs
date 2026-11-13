@@ -20,6 +20,14 @@ pub enum CostCode {
     SearchPinExpired,
     /// A targeted shard cannot answer.
     ScopeShardUnreachable,
+    /// A reply names a shard outside the pin.
+    ScopeShardNotPinned,
+    /// One shard appears more than one time.
+    QueryDuplicateShard,
+    /// One canonical key appears with different content.
+    QueryDuplicateKey,
+    /// A counter overflowed.
+    QueryCounterOverflow,
     /// An internal invariant failed.
     InternalInvariantViolation,
 }
@@ -32,6 +40,10 @@ impl CostCode {
         Self::SearchTokenBudgetExceeded,
         Self::SearchPinExpired,
         Self::ScopeShardUnreachable,
+        Self::ScopeShardNotPinned,
+        Self::QueryDuplicateShard,
+        Self::QueryDuplicateKey,
+        Self::QueryCounterOverflow,
         Self::InternalInvariantViolation,
     ];
 
@@ -44,6 +56,10 @@ impl CostCode {
             Self::SearchTokenBudgetExceeded => "search.token_budget_exceeded",
             Self::SearchPinExpired => "search.pin_expired",
             Self::ScopeShardUnreachable => "scope.shard_unreachable",
+            Self::ScopeShardNotPinned => "scope.shard_not_pinned",
+            Self::QueryDuplicateShard => "query.duplicate_shard",
+            Self::QueryDuplicateKey => "query.duplicate_key",
+            Self::QueryCounterOverflow => "query.counter_overflow",
             Self::InternalInvariantViolation => "internal.invariant_violation",
         }
     }
@@ -135,12 +151,11 @@ impl CostError {
             Self::FanoutExceeded { .. } => CostCode::SearchFanoutExceeded,
             Self::TokenBudgetExceeded { .. } => CostCode::SearchTokenBudgetExceeded,
             Self::PinExpired { .. } => CostCode::SearchPinExpired,
-            Self::ShardUnavailable { .. } | Self::ShardNotPinned { .. } => {
-                CostCode::ScopeShardUnreachable
-            }
-            Self::DuplicateShard { .. }
-            | Self::DuplicateKey { .. }
-            | Self::CounterOverflow { .. } => CostCode::InternalInvariantViolation,
+            Self::ShardUnavailable { .. } => CostCode::ScopeShardUnreachable,
+            Self::ShardNotPinned { .. } => CostCode::ScopeShardNotPinned,
+            Self::DuplicateShard { .. } => CostCode::QueryDuplicateShard,
+            Self::DuplicateKey { .. } => CostCode::QueryDuplicateKey,
+            Self::CounterOverflow { .. } => CostCode::QueryCounterOverflow,
         }
     }
 }
@@ -172,7 +187,7 @@ mod tests {
             CostCode::InternalInvariantViolation.as_str(),
             "internal.invariant_violation"
         );
-        assert_eq!(CostCode::ALL.len(), 6);
+        assert_eq!(CostCode::ALL.len(), 10);
     }
 
     #[test]

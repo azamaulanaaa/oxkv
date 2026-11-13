@@ -2,10 +2,13 @@
   "contract": "receipt-error/v1",
   "cases": [
     { "name": "pin-expired", "code": "search.pin_expired" },
+    { "name": "pin-missing-shard", "code": "search.pin_missing_shard" },
     { "name": "cursor-invalid", "code": "search.cursor_invalid" },
     { "name": "fanout-exceeded", "code": "search.fanout_exceeded" },
     { "name": "shard-unavailable", "code": "scope.shard_unreachable" },
     { "name": "index-mismatch", "code": "search.index_mismatch" },
+    { "name": "unordered-shard", "code": "search.unordered_shard" },
+    { "name": "duplicate-hit", "code": "search.duplicate_hit" },
     { "name": "tokenizer-mismatch", "code": "search.tokenizer_mismatch" },
     { "name": "tokenizer-unknown", "code": "search.tokenizer_unknown" },
     { "name": "token-budget-exceeded", "code": "search.token_budget_exceeded" },

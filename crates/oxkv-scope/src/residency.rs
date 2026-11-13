@@ -309,7 +309,7 @@ mod tests {
                 key: b"accounts/1".to_vec()
             }
         );
-        assert_eq!(error.code(), "replication.only_copy_eviction");
+        assert_eq!(error.code(), "scope.in_scope_member");
         assert_eq!(membership.len(), 1);
         assert!(membership.contains(b"accounts/1"));
     }

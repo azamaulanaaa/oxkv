@@ -81,10 +81,10 @@ impl KvError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::KeyNotFound { .. } => "key.not_found",
-            Self::MalformedRange
-            | Self::MalformedCursor
-            | Self::MalformedBatch
-            | Self::MalformedPage => "key.malformed",
+            Self::MalformedRange => "kv.malformed_range",
+            Self::MalformedCursor => "kv.malformed_cursor",
+            Self::MalformedBatch => "kv.malformed_batch",
+            Self::MalformedPage => "kv.malformed_page",
             Self::UnknownVersion { .. } => "key.unknown_version",
             Self::CrossShardMutation { .. } => "shard.cross_mutation_rejected",
             Self::KeyTooLarge { .. } => "key.too_large",
@@ -103,10 +103,10 @@ mod tests {
     fn every_error_names_its_registered_code() {
         let errors = [
             (KvError::KeyNotFound { key: vec![1] }, "key.not_found"),
-            (KvError::MalformedRange, "key.malformed"),
-            (KvError::MalformedCursor, "key.malformed"),
-            (KvError::MalformedBatch, "key.malformed"),
-            (KvError::MalformedPage, "key.malformed"),
+            (KvError::MalformedRange, "kv.malformed_range"),
+            (KvError::MalformedCursor, "kv.malformed_cursor"),
+            (KvError::MalformedBatch, "kv.malformed_batch"),
+            (KvError::MalformedPage, "kv.malformed_page"),
             (
                 KvError::UnknownVersion { version: 2 },
                 "key.unknown_version",

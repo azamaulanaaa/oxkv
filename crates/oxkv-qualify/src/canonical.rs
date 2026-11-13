@@ -23,7 +23,7 @@ impl CanonicalError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::FloatNotAllowed => "manifest.float_not_allowed",
-            Self::UnsupportedValue => "manifest.unknown_field",
+            Self::UnsupportedValue => "manifest.unsupported_value",
         }
     }
 }

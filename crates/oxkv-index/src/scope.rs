@@ -169,6 +169,6 @@ mod tests {
             CommitVersion::new(1),
         )
         .expect_err("the duplicate is rejected");
-        assert_eq!(error.code(), "key.malformed");
+        assert_eq!(error.code(), "index.malformed_document");
     }
 }

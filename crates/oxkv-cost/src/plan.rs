@@ -318,6 +318,6 @@ mod tests {
             10,
         )
         .expect_err("the plan has a duplicate shard");
-        assert_eq!(error.code().as_str(), "internal.invariant_violation");
+        assert_eq!(error.code().as_str(), "query.duplicate_shard");
     }
 }

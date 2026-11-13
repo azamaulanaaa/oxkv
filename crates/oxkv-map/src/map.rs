@@ -531,11 +531,11 @@ mod tests {
         let map = valid_map();
         assert_eq!(
             map.route(&[0x01, b'a']).unwrap_err().code(),
-            "key.malformed"
+            "map.malformed_key"
         );
         assert_eq!(
             map.route(&[0x01, b'A', 0x00]).unwrap_err().code(),
-            "key.malformed"
+            "map.malformed_key"
         );
     }
 

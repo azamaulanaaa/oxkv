@@ -51,11 +51,13 @@ impl TierError {
             Self::LeaseExpired => "replication.lease_expired",
             Self::LeaseHeld => "replication.lease_held",
             Self::OnlyCopyEviction => "replication.only_copy_eviction",
-            Self::TierUnavailable | Self::ArtifactMissing => "replication.tier_unavailable",
+            Self::TierUnavailable => "replication.tier_unavailable",
+            Self::ArtifactMissing => "replication.artifact_missing",
             Self::WarmupBudgetExceeded => "replication.warmup_budget_exceeded",
             Self::PlacementViolation => "replication.placement_violation",
             Self::ChecksumMismatch => "format.corrupt_page",
-            Self::ReplicaAuthorityLease | Self::TermExhausted => "internal.invariant_violation",
+            Self::ReplicaAuthorityLease => "replication.replica_authority_lease",
+            Self::TermExhausted => "replication.term_exhausted",
         }
     }
 }

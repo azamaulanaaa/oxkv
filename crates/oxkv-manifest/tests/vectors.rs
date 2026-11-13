@@ -4,12 +4,12 @@
 //! case. It does not change a released case.
 
 use oxkv_manifest::{
-    CODE_ARTIFACT_DRIFT, CODE_DUPLICATE_NAME, CODE_FLOAT_NOT_ALLOWED, CODE_INDEX_SCOPE_UNREACHABLE,
-    CODE_INDEX_UNKNOWN_FIELD, CODE_INVALID_VALUE, CODE_JSON_SYNTAX, CODE_KEY_SCHEMA_MISSING,
-    CODE_MISSING_FIELD, CODE_OPERATION_CROSS_SHARD, CODE_OPERATION_UNKNOWN_FIELD,
-    CODE_POLICY_CATALOG_MISSING, CODE_RESERVED_TABLE_NAME, CODE_RULE_UNBOUNDED,
-    CODE_RULE_UNKNOWN_PATH, CODE_TYPE_MISMATCH, CODE_UNKNOWN_FIELD, CODE_UNSUPPORTED_SCHEMA,
-    Manifest, ManifestError, compile,
+    CODE_ARTIFACT_DRIFT, CODE_DUPLICATE_KEY, CODE_DUPLICATE_NAME, CODE_FLOAT_NOT_ALLOWED,
+    CODE_INDEX_SCOPE_UNREACHABLE, CODE_INDEX_UNKNOWN_FIELD, CODE_INVALID_VALUE, CODE_JSON_SYNTAX,
+    CODE_KEY_SCHEMA_MISSING, CODE_MISSING_FIELD, CODE_OPERATION_CROSS_SHARD,
+    CODE_OPERATION_UNKNOWN_FIELD, CODE_POLICY_CATALOG_MISSING, CODE_RESERVED_TABLE_NAME,
+    CODE_RULE_UNBOUNDED, CODE_RULE_UNKNOWN_PATH, CODE_TYPE_MISMATCH, CODE_UNKNOWN_FIELD,
+    CODE_UNSUPPORTED_SCHEMA, Manifest, ManifestError, compile,
 };
 
 /// The full manifest fixture.
@@ -211,7 +211,7 @@ fn every_named_error_fixture_matches_its_code() {
     let cases = [
         ("unknown-field", CODE_UNKNOWN_FIELD),
         ("unsupported-schema", CODE_UNSUPPORTED_SCHEMA),
-        ("duplicate-key", CODE_DUPLICATE_NAME),
+        ("duplicate-key", CODE_DUPLICATE_KEY),
         ("duplicate-name", CODE_DUPLICATE_NAME),
         ("reserved-table-name", CODE_RESERVED_TABLE_NAME),
         ("missing-key-schema", CODE_KEY_SCHEMA_MISSING),
@@ -263,5 +263,5 @@ fn a_float_fails_before_schema_checks() {
 #[test]
 fn a_duplicate_key_fails_before_schema_checks() {
     let error = Manifest::parse(fixture("duplicate-key")).expect_err("the duplicate is rejected");
-    assert_eq!(error.code(), CODE_DUPLICATE_NAME);
+    assert_eq!(error.code(), CODE_DUPLICATE_KEY);
 }

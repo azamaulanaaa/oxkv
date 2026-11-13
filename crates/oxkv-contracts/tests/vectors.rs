@@ -6,7 +6,7 @@
 mod support;
 
 use oxkv_contracts::cursor::{CursorExpiry, CursorToken, CursorType};
-use oxkv_contracts::error::{ERROR_REGISTRY, lookup};
+use oxkv_contracts::error::{ERROR_REGISTRY, find_duplicate_code, is_valid_code_shape, lookup};
 use oxkv_contracts::keyspace::SYSTEM_NAMESPACES;
 use oxkv_contracts::receipt::ReceiptState;
 use oxkv_contracts::version::{ArtifactKind, VersionAxis};
@@ -49,6 +49,37 @@ fn error_registry_golden_vector_is_pinned() {
         assert_eq!(expected_str(case, "retry"), spec.retry.name());
         assert_eq!(expected_bool(case, "terminal"), spec.terminal);
     }
+}
+
+#[test]
+fn the_registry_scan_rejects_a_duplicate_code_and_an_invalid_shape() {
+    for spec in ERROR_REGISTRY {
+        assert!(
+            is_valid_code_shape(spec.code),
+            "the registry holds the invalid code {}",
+            spec.code
+        );
+    }
+    assert_eq!(
+        find_duplicate_code(ERROR_REGISTRY),
+        None,
+        "the registry holds a duplicate code"
+    );
+
+    let mut table = ERROR_REGISTRY.to_vec();
+    table.push(ERROR_REGISTRY[0]);
+    assert_eq!(
+        find_duplicate_code(&table),
+        Some(ERROR_REGISTRY[0].code),
+        "the scan does not find a duplicate code"
+    );
+
+    let mut invalid = ERROR_REGISTRY[0];
+    invalid.code = "Bad.Code";
+    assert!(
+        !is_valid_code_shape(invalid.code),
+        "the scan accepts an invalid code shape"
+    );
 }
 
 #[test]

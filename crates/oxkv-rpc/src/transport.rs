@@ -276,7 +276,7 @@ mod tests {
         assert_eq!(error.failure(), TransportFailure::Protocol);
         assert_eq!(
             error.into_protocol_error().code().as_str(),
-            "sync.unsupported_version"
+            "sync.protocol_error"
         );
     }
 }

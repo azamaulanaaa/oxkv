@@ -115,16 +115,15 @@ impl SnapshotError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::UnsupportedVersion { .. } | Self::MalformedHeader { .. } => {
-                "format.unsupported_version"
-            }
+            Self::UnsupportedVersion { .. } => "format.unsupported_version",
+            Self::MalformedHeader { .. } => "format.malformed_header",
             Self::MissingRequiredFeature { .. } => "format.missing_required_feature",
-            Self::CorruptPage { .. }
-            | Self::DuplicateKey { .. }
-            | Self::ForbiddenNamespace { .. } => "format.corrupt_page",
-            Self::SystemKeyNotAllowed { .. }
-            | Self::NotProjectionFact { .. }
-            | Self::OutOfScopeRecord { .. } => "internal.invariant_violation",
+            Self::CorruptPage { .. } => "format.corrupt_page",
+            Self::DuplicateKey { .. } => "format.duplicate_record_key",
+            Self::ForbiddenNamespace { .. } => "format.forbidden_namespace",
+            Self::SystemKeyNotAllowed { .. } => "format.system_key_not_allowed",
+            Self::NotProjectionFact { .. } => "format.not_projection_fact",
+            Self::OutOfScopeRecord { .. } => "format.out_of_scope_record",
             Self::PageOutOfBounds { .. } => "format.page_out_of_bounds",
             Self::TruncatedSnapshot { .. } => "format.truncated_snapshot",
             Self::MissingProvenance { .. } => "format.missing_provenance",

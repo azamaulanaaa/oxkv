@@ -172,9 +172,8 @@ impl HydrationError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::UnsupportedVersion { .. } => "format.unsupported_version",
-            Self::MissingRequiredFeature { .. } | Self::UnsupportedSignature => {
-                "format.missing_required_feature"
-            }
+            Self::MissingRequiredFeature { .. } => "format.missing_required_feature",
+            Self::UnsupportedSignature => "hydrate.unsupported_signature",
             Self::CorruptPage { .. } => "format.corrupt_page",
             Self::MissingProvenance { .. } => "format.missing_provenance",
             Self::StaleEpoch { .. } => "replication.stale_epoch",
@@ -185,9 +184,9 @@ impl HydrationError {
             Self::HydrationBudgetExceeded { .. } => "scope.hydration_budget_exceeded",
             Self::IdentityMismatch => "scope.identity_mismatch",
             Self::Transport { .. } => "sync.shard_unavailable",
-            Self::Storage { .. } | Self::NotStarted | Self::AlreadyPublished => {
-                "internal.invariant_violation"
-            }
+            Self::Storage { .. } => "hydrate.storage_failed",
+            Self::NotStarted => "hydrate.not_started",
+            Self::AlreadyPublished => "hydrate.already_published",
         }
     }
 

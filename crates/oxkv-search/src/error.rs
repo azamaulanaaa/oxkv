@@ -157,13 +157,14 @@ impl SearchError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::PinExpired { .. } | Self::PinMissingShard { .. } => "search.pin_expired",
+            Self::PinExpired { .. } => "search.pin_expired",
+            Self::PinMissingShard { .. } => "search.pin_missing_shard",
             Self::CursorInvalid { .. } => "search.cursor_invalid",
             Self::FanoutExceeded { .. } => "search.fanout_exceeded",
             Self::ShardUnavailable { .. } => "scope.shard_unreachable",
-            Self::IndexMismatch { .. }
-            | Self::UnorderedShard { .. }
-            | Self::DuplicateHit { .. } => "search.index_mismatch",
+            Self::IndexMismatch { .. } => "search.index_mismatch",
+            Self::UnorderedShard { .. } => "search.unordered_shard",
+            Self::DuplicateHit { .. } => "search.duplicate_hit",
             Self::TokenizerMismatch { .. } => "search.tokenizer_mismatch",
             Self::TokenizerUnknown { .. } => "search.tokenizer_unknown",
             Self::TokenBudgetExceeded { .. } => "search.token_budget_exceeded",

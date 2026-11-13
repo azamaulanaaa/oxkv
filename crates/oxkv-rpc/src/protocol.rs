@@ -124,7 +124,7 @@ impl<H: CallHandler> ProtocolCore<H> {
     /// Returns `rpc.unknown_method` when the path is not generated.
     /// Returns `sync.negotiation_required` before negotiation.
     /// Returns the handler error when the handler fails.
-    /// Returns `internal.invariant_violation` when a unary handler returns a
+    /// Returns `rpc.handler_violation` when a unary handler returns a
     /// message count that is not one.
     pub fn call(
         &mut self,
@@ -279,7 +279,7 @@ mod tests {
             .expect("the facts are compatible");
         core.handler_mut().unary_message_count = Some(2);
         let error = core.call("data/get", &[]).unwrap_err();
-        assert_eq!(error.code().as_str(), "internal.invariant_violation");
+        assert_eq!(error.code().as_str(), "rpc.handler_violation");
     }
 
     #[test]

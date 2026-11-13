@@ -280,6 +280,6 @@ mod tests {
         let error = cursor
             .advance_frontier(ShardId::new(vec![1]), 1)
             .expect_err("the frontier overflows");
-        assert_eq!(error.code(), CostCode::InternalInvariantViolation);
+        assert_eq!(error.code(), CostCode::QueryCounterOverflow);
     }
 }

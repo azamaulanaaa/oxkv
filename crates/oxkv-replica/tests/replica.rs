@@ -64,7 +64,7 @@ fn no_out_of_scope_row_is_stored() {
     let error = mirror
         .ingest_page(page(1, 5, vec![out_of_scope]))
         .expect_err("the page is outside the scope");
-    assert_eq!(error.code(), "scope.identity_mismatch");
+    assert_eq!(error.code(), "replica.scope_violation");
     assert!(mirror.membership().is_empty());
     assert_eq!(mirror.resident_bytes(), 0);
 }
@@ -99,7 +99,7 @@ fn the_applied_vector_never_decreases() {
     let error = replica
         .hydrate(two_row_snapshot(4))
         .expect_err("the snapshot is older");
-    assert_eq!(error.code(), "internal.invariant_violation");
+    assert_eq!(error.code(), "replica.version_regression");
     assert_eq!(
         replica.applied_version().get(&shard()),
         Some(CommitVersion::new(5))
@@ -120,7 +120,7 @@ fn a_local_mirror_mutation_is_rejected() {
     let error = replica
         .apply_local_mutation(&key("alice"), b"mallory")
         .expect_err("the mirror is read-only");
-    assert_eq!(error.code(), "projection.client_write_rejected");
+    assert_eq!(error.code(), "replica.local_mutation_rejected");
     assert_eq!(replica.residency(), before);
     let read = replica
         .get(&read_request(&replica, "alice", StalenessBound::Unbounded))
@@ -280,7 +280,7 @@ fn one_cursor_advancer_exists_per_replica_identity() {
     let error = replica
         .acquire_advancer(oxkv_replica::TabId::new("tab-b"))
         .expect_err("the lease is held");
-    assert_eq!(error.code(), "replication.lease_held");
+    assert_eq!(error.code(), "replica.tab_lease_held");
 
     let diff = DiffFrame {
         shard_id: shard(),
@@ -352,7 +352,7 @@ fn a_single_page_publish_of_a_two_page_snapshot_fails() {
     let error = replica
         .hydrate(snapshot)
         .expect_err("a partial generation must not publish");
-    assert_eq!(error.code(), "format.truncated_snapshot");
+    assert_eq!(error.code(), "replica.partial_generation");
     assert!(!replica.is_hydrated());
 }
 

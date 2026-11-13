@@ -341,5 +341,5 @@ fn a_session_hello_negotiates_only_supported_facts() {
     core.negotiate(&hello)
         .expect("the hello facts are compatible");
     let error = core.negotiate(&hello).unwrap_err();
-    assert_eq!(error.code().as_str(), "internal.invariant_violation");
+    assert_eq!(error.code().as_str(), "rpc.already_negotiated");
 }

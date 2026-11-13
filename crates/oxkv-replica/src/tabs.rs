@@ -171,7 +171,7 @@ mod tests {
                 .acquire(TabId::new("tab-b"))
                 .expect_err("the lease is held")
                 .code(),
-            "replication.lease_held"
+            "replica.tab_lease_held"
         );
         lease.release(&first).expect("the guard matches");
         assert!(lease.acquire(TabId::new("tab-b")).is_ok());
@@ -189,7 +189,7 @@ mod tests {
                 .release(&first)
                 .expect_err("the guard is stale")
                 .code(),
-            "replication.stale_epoch"
+            "replica.stale_tab_lease"
         );
     }
 

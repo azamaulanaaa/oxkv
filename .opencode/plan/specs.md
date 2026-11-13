@@ -1742,6 +1742,85 @@ The receipt state column applies when the error occurs in an admitted write requ
 | `internal.invariant_violation` | Internal | None | Never |
 | `internal.resource_exhausted` | Internal | Rejected | Backoff |
 
+| `projection.unknown_fact` | Projection | None | Never |
+| `projection.duplicate_fact` | Projection | None | Never |
+| `projection.fact_unavailable` | Projection | None | Backoff |
+| `projection.epoch_overflow` | Projection | None | After rebuild |
+| `scope.empty_scope` | Scope | None | Never |
+| `scope.invalid_table_name` | Scope | None | Never |
+| `scope.invalid_rule_set_selector` | Scope | None | Never |
+| `scope.invalid_field_name` | Scope | None | Never |
+| `scope.byte_count_overflow` | Scope | None | Never |
+| `scope.shard_not_at_pin` | Scope | None | Backoff |
+| `scope.duplicate_response` | Scope | None | Never |
+| `scope.duplicate_row` | Scope | None | Never |
+| `scope.unsupported_diff_version` | Scope | None | Never |
+| `scope.duplicate_diff_record` | Scope | None | Never |
+| `scope.version_regression` | Scope | None | Never |
+| `scope.diff_sequence_invalid` | Scope | None | Never |
+| `scope.base_version_mismatch` | Scope | None | Never |
+| `scope.malformed_diff` | Scope | None | Never |
+| `scope.duplicate_table_assignment` | Scope | None | Never |
+| `scope.page_not_found` | Scope | None | Never |
+| `scope.in_scope_member` | Scope | None | Never |
+| `scope.not_evictable` | Scope | None | Never |
+| `scope.shard_not_pinned` | Scope | None | Never |
+| `manifest.duplicate_key` | Manifest | None | Never |
+| `manifest.unsupported_value` | Manifest | None | Never |
+| `kv.malformed_range` | Key | None | Never |
+| `kv.malformed_cursor` | Key | None | Never |
+| `kv.malformed_batch` | Key | None | Never |
+| `kv.malformed_page` | Key | None | Never |
+| `map.malformed_key` | Map | None | Never |
+| `map.invalid_table` | Map | None | Never |
+| `map.malformed_canonical` | Map | None | Never |
+| `index.field_not_searchable` | Search | None | Never |
+| `index.unknown_flag` | Search | None | Never |
+| `index.malformed_document` | Search | None | Never |
+| `index.version_not_monotonic` | Search | None | Never |
+| `index.empty_write` | Search | None | Never |
+| `index.invalid_manifest` | Search | None | Never |
+| `index.invalid_scorer` | Search | None | Never |
+| `hydrate.unsupported_signature` | Format | None | Never |
+| `hydrate.storage_failed` | Internal | None | Backoff |
+| `hydrate.not_started` | Internal | None | Never |
+| `hydrate.already_published` | Internal | None | Never |
+| `replica.content_digest_mismatch` | Format | None | Refetch |
+| `replica.scope_violation` | Scope | None | Never |
+| `replica.scope_pin_mismatch` | Scope | None | Never |
+| `replica.local_mutation_rejected` | Write | None | Never |
+| `replica.version_regression` | Replication | None | Never |
+| `replica.hydration_in_progress` | Replication | None | Never |
+| `replica.hydration_not_started` | Replication | None | Never |
+| `replica.partial_generation` | Format | None | Refetch |
+| `replica.tab_lease_held` | Replication | None | After hint |
+| `replica.stale_tab_lease` | Replication | None | After re-acquire |
+| `query.duplicate_shard` | Query | None | Never |
+| `query.duplicate_key` | Query | None | Never |
+| `query.counter_overflow` | Query | None | Never |
+| `search.pin_missing_shard` | Search | None | New pin |
+| `search.unordered_shard` | Search | None | Rebuild |
+| `search.duplicate_hit` | Search | None | Rebuild |
+| `sync.map_mismatch` | Sync | None | Never |
+| `rpc.already_negotiated` | RPC | None | Never |
+| `rpc.handler_violation` | RPC | None | Never |
+| `rpc.invalid_envelope` | RPC | None | Never |
+| `rpc.unknown_remote_code` | RPC | None | Never |
+| `sync.corrupt_frame` | Sync | None | Refetch |
+| `sync.protocol_error` | Sync | None | Reconnect |
+| `format.malformed_header` | Format | None | Never |
+| `format.duplicate_record_key` | Format | None | Never |
+| `format.forbidden_namespace` | Format | None | Never |
+| `format.system_key_not_allowed` | Format | None | Never |
+| `format.not_projection_fact` | Format | None | Never |
+| `format.out_of_scope_record` | Format | None | Never |
+| `replication.artifact_missing` | Replication | None | Backoff |
+| `replication.replica_authority_lease` | Replication | None | Never |
+| `replication.term_exhausted` | Replication | None | Operator action |
+| `receipt.terminal_entry` | Receipt | None | Never |
+| `receipt.missing_outcome` | Receipt | None | Never |
+| `receipt.not_terminal` | Receipt | None | Never |
+
 ### 8.4 Reserved keyspace
 
 | System ID | Label | Owner | Scope visible | Commit domain |

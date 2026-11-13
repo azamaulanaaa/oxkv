@@ -704,7 +704,7 @@ fn a_duplicate_key_with_different_content_is_rejected() {
     ];
     let error = merge_streams(&streams, MergeOptions::new(MergeOrder::Search, 10, 2))
         .expect_err("the key has two contents");
-    assert_eq!(error.code(), CostCode::InternalInvariantViolation);
+    assert_eq!(error.code(), CostCode::QueryDuplicateKey);
     assert_eq!(error, CostError::DuplicateKey { key: b"a".to_vec() });
 }
 

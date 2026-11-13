@@ -92,7 +92,7 @@ mod tests {
             KeyRange::new(vec![b'd'], vec![b'b'])
                 .expect_err("the range is invalid")
                 .code(),
-            "key.malformed"
+            "kv.malformed_range"
         );
     }
 

@@ -461,7 +461,7 @@ mod tests {
     #[test]
     fn a_duplicate_key_is_rejected() {
         let error = parse(r#"{"a":1,"a":2}"#).expect_err("the key is duplicated");
-        assert_eq!(error.code(), "manifest.duplicate_name");
+        assert_eq!(error.code(), "manifest.duplicate_key");
     }
 
     #[test]

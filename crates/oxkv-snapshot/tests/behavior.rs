@@ -169,7 +169,7 @@ fn duplicate_records_are_rejected() {
     ];
     let error = ShardSnapshot::build(&support::sample_params(), &records)
         .expect_err("duplicate records are rejected");
-    assert_eq!("format.corrupt_page", error.code());
+    assert_eq!("format.duplicate_record_key", error.code());
     assert!(matches!(error, SnapshotError::DuplicateKey { .. }));
 }
 
@@ -261,7 +261,7 @@ fn a_real_authority_system_key_is_rejected() {
             .expect_err("the authority key is rejected");
         assert_eq!(forbidden_namespace(&key), Some(id));
         assert_eq!(error, SnapshotError::ForbiddenNamespace { id });
-        assert_eq!("format.corrupt_page", error.code());
+        assert_eq!("format.forbidden_namespace", error.code());
     }
 }
 
@@ -314,7 +314,7 @@ fn an_out_of_scope_user_row_is_rejected() {
         )
         .expect_err("the row is outside the scope");
     assert!(matches!(error, SnapshotError::OutOfScopeRecord { .. }));
-    assert_eq!("internal.invariant_violation", error.code());
+    assert_eq!("format.out_of_scope_record", error.code());
 }
 
 #[test]
@@ -367,7 +367,7 @@ fn the_scope_builder_rejects_a_wrong_commit_version() {
 fn a_scope_snapshot_does_not_read_as_a_shard_snapshot() {
     let bytes = build_scope(&[0, 1, 2]);
     let error = ShardSnapshot::read(&bytes).expect_err("the artifact is a scope snapshot");
-    assert_eq!("format.unsupported_version", error.code());
+    assert_eq!("format.malformed_header", error.code());
 }
 
 #[test]

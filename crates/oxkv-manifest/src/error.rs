@@ -11,6 +11,8 @@ pub const CODE_UNSUPPORTED_SCHEMA: &str = "manifest.unsupported_schema";
 pub const CODE_UNKNOWN_FIELD: &str = "manifest.unknown_field";
 /// The canonical code for two declarations with one name.
 pub const CODE_DUPLICATE_NAME: &str = "manifest.duplicate_name";
+/// The canonical code for one JSON object key that appears two times.
+pub const CODE_DUPLICATE_KEY: &str = "manifest.duplicate_key";
 /// The canonical code for a reserved user table name.
 pub const CODE_RESERVED_TABLE_NAME: &str = "manifest.reserved_table_name";
 /// The canonical code for a table without a key schema.
@@ -175,7 +177,8 @@ impl ManifestError {
             Self::MissingField { .. } => CODE_MISSING_FIELD,
             Self::TypeMismatch { .. } => CODE_TYPE_MISMATCH,
             Self::InvalidValue { .. } => CODE_INVALID_VALUE,
-            Self::DuplicateKey { .. } | Self::DuplicateName { .. } => CODE_DUPLICATE_NAME,
+            Self::DuplicateKey { .. } => CODE_DUPLICATE_KEY,
+            Self::DuplicateName { .. } => CODE_DUPLICATE_NAME,
             Self::FloatNotAllowed { .. } => CODE_FLOAT_NOT_ALLOWED,
             Self::UnsupportedSchema { .. } => CODE_UNSUPPORTED_SCHEMA,
             Self::ReservedTableName { .. } => CODE_RESERVED_TABLE_NAME,
