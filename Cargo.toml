@@ -2,6 +2,7 @@
 members = [
   "crates/oxkv-contracts",
   "crates/oxkv-kv",
+  "crates/oxkv-portable",
   "crates/oxkv-wasm",
   "crates/oxkv-otel",
   "crates/oxkv-s3",

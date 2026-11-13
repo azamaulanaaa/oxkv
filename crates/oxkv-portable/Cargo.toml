@@ -1,0 +1,21 @@
+[package]
+name = "oxkv-portable"
+version = "0.11.0"
+edition = "2024"
+description = "Portable parity contract for oxkv: one semantic core with injected platform adapters for native and wasm32."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/azamaulanaaa/oxkv"
+readme = "../../README.md"
+keywords = ["portable", "wasm", "keyvalue", "determinism"]
+categories = ["database", "wasm"]
+
+[dependencies]
+blake3 = "1.8"
+oxkv-contracts = { path = "../oxkv-contracts", version = "0.11.0" }
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true
