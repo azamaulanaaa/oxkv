@@ -1,0 +1,20 @@
+[package]
+name = "oxkv-contracts"
+version = "0.11.0"
+edition = "2024"
+description = "Shared 1.0 contract foundation for oxkv: error registry, version axes, cursors, receipts, and reserved keyspace."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/azamaulanaaa/oxkv"
+readme = "../../README.md"
+keywords = ["contract", "keyvalue", "database", "registry"]
+categories = ["database"]
+
+[dependencies]
+blake3 = "1.8"
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true
