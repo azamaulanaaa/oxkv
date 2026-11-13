@@ -9,6 +9,13 @@
 //! `wasm32-unknown-unknown`. It uses no network, clock, randomness, I/O,
 //! floating point, or `unsafe`. The caller injects time and transport.
 //!
+//! # The hydration journal seam
+//!
+//! The core takes a [`HydrationJournalStore`] seam. It holds no I/O. The
+//! [`MemoryJournalStore`] adapter serves tests. The `FileJournalStore` adapter
+//! is native-only and uses `std::fs` with a caller-supplied path. A wasm32
+//! caller supplies its own store over the host storage API.
+//!
 //! # What the replica does not store
 //!
 //! - A user row outside its scope.
@@ -79,6 +86,8 @@ pub use error::ReplicaError;
 pub use index::{
     INDEX_VERSION, IndexHeader, IndexVersion, ReplicaIndex, Scorer, SearchHit, tokenize,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use journal::FileJournalStore;
 pub use journal::{HydrationJournal, HydrationJournalStore, HydrationPhase, MemoryJournalStore};
 pub use mirror::{DiffFrame, FactEntry, Ingest, Mirror, RowEntry};
 pub use outbox::{Outbox, OutboxRecord};

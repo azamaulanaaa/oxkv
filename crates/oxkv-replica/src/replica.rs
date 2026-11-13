@@ -185,11 +185,19 @@ impl Replica {
     }
 
     /// Creates a replica from the journal in one durable store.
-    #[must_use]
-    pub fn resume(config: ReplicaConfig, scope: Scope, store: &impl HydrationJournalStore) -> Self {
-        match store.load_journal() {
-            Some(journal) => Self::with_journal(config, scope, journal),
-            None => Self::new(config, scope),
+    ///
+    /// # Errors
+    ///
+    /// Returns a named error when the store cannot read the journal or the
+    /// stored journal is corrupt.
+    pub fn resume(
+        config: ReplicaConfig,
+        scope: Scope,
+        store: &impl HydrationJournalStore,
+    ) -> Result<Self, ReplicaError> {
+        match store.load_journal()? {
+            Some(journal) => Ok(Self::with_journal(config, scope, journal)),
+            None => Ok(Self::new(config, scope)),
         }
     }
 
@@ -206,10 +214,18 @@ impl Replica {
     }
 
     /// Saves the hydration journal to one durable store.
-    pub fn persist_journal(&self, store: &mut impl HydrationJournalStore) {
+    ///
+    /// # Errors
+    ///
+    /// Returns a named error when the store cannot write the journal.
+    pub fn persist_journal(
+        &self,
+        store: &mut impl HydrationJournalStore,
+    ) -> Result<(), ReplicaError> {
         if let Some(journal) = &self.journal {
-            store.save_journal(journal);
+            store.save_journal(journal)?;
         }
+        Ok(())
     }
 
     /// Returns the scope.

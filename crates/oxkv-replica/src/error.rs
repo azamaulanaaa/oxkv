@@ -175,6 +175,18 @@ pub enum ReplicaError {
     /// The outbox already holds the idempotency key with another payload.
     #[error("The idempotency key is already in use with another payload.")]
     IdempotencyKeyReuse,
+    /// The durable hydration journal is corrupt.
+    #[error("The durable hydration journal is corrupt. Reason: {reason}. The replica stays cold.")]
+    JournalCorrupt {
+        /// The plain reason.
+        reason: &'static str,
+    },
+    /// The durable hydration journal failed during one file operation.
+    #[error("The durable hydration journal failed during the {operation} operation.")]
+    JournalIo {
+        /// The plain operation name.
+        operation: &'static str,
+    },
 }
 
 impl ReplicaError {
@@ -197,9 +209,11 @@ impl ReplicaError {
             Self::HydrationBudgetExceeded { .. } => "scope.hydration_budget_exceeded",
             Self::ResourceExhausted { .. } => "internal.resource_exhausted",
             Self::LocalMutationRejected => "projection.client_write_rejected",
-            Self::VersionRegression | Self::HydrationInProgress | Self::HydrationNotStarted => {
-                "internal.invariant_violation"
-            }
+            Self::VersionRegression
+            | Self::HydrationInProgress
+            | Self::HydrationNotStarted
+            | Self::JournalCorrupt { .. }
+            | Self::JournalIo { .. } => "internal.invariant_violation",
             Self::DiffGap { .. } => "sync.gap_too_large",
             Self::PartialGeneration { .. } => "format.truncated_snapshot",
             Self::TabLeaseHeld => "replication.lease_held",
@@ -301,6 +315,10 @@ mod tests {
             ReplicaError::HydrationInProgress,
             ReplicaError::HydrationNotStarted,
             ReplicaError::IdempotencyKeyReuse,
+            ReplicaError::JournalCorrupt {
+                reason: "the journal digest does not match",
+            },
+            ReplicaError::JournalIo { operation: "load" },
         ]
     }
 

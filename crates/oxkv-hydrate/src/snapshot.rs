@@ -29,10 +29,19 @@ const PROVENANCE_REQUIRED: u8 =
     PROVENANCE_KEY_ENCODING | PROVENANCE_MAP_VERSION | PROVENANCE_MAP_DIGEST;
 
 /// The identity and budget fields of one snapshot.
+///
+/// The descriptor carries the required provenance block of section 8.1. A
+/// reader must not accept a descriptor that omits a required field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotDescriptor {
     /// The snapshot identity: shard, commit version, and content digest.
     pub identity: SnapshotIdentity,
+    /// The key encoding annex version.
+    pub key_encoding_version: KeyEncodingVersion,
+    /// The shard map version.
+    pub map_version: MapVersion,
+    /// The shard map digest.
+    pub map_digest: MapDigest,
     /// The manifest digest.
     pub manifest_digest: ManifestDigest,
     /// The policy version.
@@ -60,6 +69,9 @@ impl SnapshotDescriptor {
     #[must_use]
     pub fn same_identity(&self, other: &Self) -> bool {
         self.identity == other.identity
+            && self.key_encoding_version == other.key_encoding_version
+            && self.map_version == other.map_version
+            && self.map_digest == other.map_digest
             && self.manifest_digest == other.manifest_digest
             && self.policy_version == other.policy_version
             && self.scope_identity == other.scope_identity
@@ -311,6 +323,9 @@ impl SealedSnapshot {
                 self.header.commit_version,
                 self.header.content_digest,
             ),
+            key_encoding_version: self.header.key_encoding_version,
+            map_version: self.header.map_version,
+            map_digest: self.header.map_digest,
             manifest_digest: self.header.manifest_digest,
             policy_version: self.header.policy_version,
             scope_identity: self.header.scope_identity,
@@ -552,9 +567,9 @@ pub(crate) fn directory_and_digest(
     let header = SnapshotHeader {
         format_version: descriptor.format_version,
         required_features: descriptor.required_features,
-        key_encoding_version: KeyEncodingVersion::new(1),
-        map_version: MapVersion::new(0),
-        map_digest: MapDigest::from_bytes([0; 32]),
+        key_encoding_version: descriptor.key_encoding_version,
+        map_version: descriptor.map_version,
+        map_digest: descriptor.map_digest,
         manifest_digest: descriptor.manifest_digest,
         policy_version: descriptor.policy_version,
         scope_identity: descriptor.scope_identity,
@@ -884,5 +899,45 @@ mod tests {
             .seal(vec![page])
             .expect_err("the page is outside the snapshot");
         assert_eq!(error.code(), "format.page_out_of_bounds");
+    }
+
+    #[test]
+    fn a_descriptor_carries_the_required_provenance() {
+        let snapshot = sample_snapshot(LeaseTerm::new(1));
+        let descriptor = snapshot.descriptor();
+        assert_eq!(
+            descriptor.key_encoding_version,
+            snapshot.header.key_encoding_version
+        );
+        assert_eq!(descriptor.map_version, snapshot.header.map_version);
+        assert_eq!(descriptor.map_digest, snapshot.header.map_digest);
+    }
+
+    #[test]
+    fn a_descriptor_identity_includes_the_map_provenance() {
+        let snapshot = sample_snapshot(LeaseTerm::new(1));
+        let descriptor = snapshot.descriptor();
+        assert!(descriptor.same_identity(&snapshot.descriptor()));
+
+        let mut other_key_encoding = descriptor.clone();
+        other_key_encoding.key_encoding_version = KeyEncodingVersion::new(2);
+        assert!(!descriptor.same_identity(&other_key_encoding));
+
+        let mut other_map_version = descriptor.clone();
+        other_map_version.map_version = MapVersion::new(2);
+        assert!(!descriptor.same_identity(&other_map_version));
+
+        let mut other_map_digest = descriptor.clone();
+        other_map_digest.map_digest = MapDigest::from_bytes([9; 32]);
+        assert!(!descriptor.same_identity(&other_map_digest));
+    }
+
+    #[test]
+    fn the_descriptor_provenance_rebuilds_the_snapshot_digest() {
+        let snapshot = sample_snapshot(LeaseTerm::new(1));
+        let descriptor = snapshot.descriptor();
+        let (entries, digest) = directory_and_digest(&descriptor, &snapshot.pages);
+        assert_eq!(entries, snapshot.directory);
+        assert_eq!(digest, snapshot.header.content_digest);
     }
 }
