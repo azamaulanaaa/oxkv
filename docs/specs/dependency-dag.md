@@ -48,7 +48,8 @@ These nodes are the shared 1.0 contract foundation in `crates/oxkv-contracts`.
 
 This issue delivers `K-ERR`, `K-VER`, `K-CUR`, `K-RCP`, `K-KEY`, and
 `K-VEC`. `K-ADR` and `K-FAULT` are separate wave 0 work. The graph lists them
-because the wave 0 gate names them.
+because the wave 0 gate names them. `K-VEC` is the wave 0 part of essay 30.
+`K-FAULT` is the wave 0 part of the fault harness.
 
 ## 3. Contract nodes
 
