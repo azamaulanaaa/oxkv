@@ -1,0 +1,19 @@
+[package]
+name = "oxkv-key"
+version = "0.11.0"
+edition = "2024"
+description = "Canonical key encoding v1 for oxkv: typed components, system keys, and half-open table bounds."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/azamaulanaaa/oxkv"
+readme = "README.md"
+keywords = ["key", "encoding", "keyvalue", "database"]
+categories = ["database"]
+
+[dependencies]
+oxkv-contracts = { path = "../oxkv-contracts" }
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

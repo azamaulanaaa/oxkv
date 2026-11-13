@@ -1,0 +1,108 @@
+{
+  "contract": "key-encoding/v1",
+  "cases": [
+    {
+      "name": "receipt",
+      "table": "accounts",
+      "components": [
+        {
+          "type": "text",
+          "value": "receipt-1"
+        }
+      ],
+      "hex": "016163636f756e747300ff0110726563656970742d310000",
+      "system_id": 1
+    },
+    {
+      "name": "event",
+      "table": "accounts",
+      "components": [
+        {
+          "type": "bytes",
+          "hex": "0001"
+        }
+      ],
+      "hex": "016163636f756e747300ff021100ff010000",
+      "system_id": 2
+    },
+    {
+      "name": "audit",
+      "table": "accounts",
+      "components": [
+        {
+          "type": "u64",
+          "value": "7"
+        }
+      ],
+      "hex": "016163636f756e747300ff03200000000000000007",
+      "system_id": 3
+    },
+    {
+      "name": "projection",
+      "table": "accounts",
+      "components": [
+        {
+          "type": "i64",
+          "value": "-1"
+        }
+      ],
+      "hex": "016163636f756e747300ff04217fffffffffffffff",
+      "system_id": 4
+    },
+    {
+      "name": "index",
+      "table": "accounts",
+      "components": [
+        {
+          "type": "bool",
+          "value": true
+        }
+      ],
+      "hex": "016163636f756e747300ff053001",
+      "system_id": 5
+    },
+    {
+      "name": "lease",
+      "table": "accounts",
+      "components": [
+        {
+          "type": "text",
+          "value": "lease"
+        }
+      ],
+      "hex": "016163636f756e747300ff06106c656173650000",
+      "system_id": 6
+    },
+    {
+      "name": "statistics",
+      "table": "accounts",
+      "components": [
+        {
+          "type": "bytes",
+          "hex": "7374617473"
+        }
+      ],
+      "hex": "016163636f756e747300ff071173746174730000",
+      "system_id": 7
+    },
+    {
+      "name": "catalog_audit",
+      "table": "_catalog",
+      "components": [
+        {
+          "type": "text",
+          "value": "audit"
+        }
+      ],
+      "hex": "015f636174616c6f6700ff031061756469740000",
+      "system_id": 3
+    },
+    {
+      "name": "system_no_payload",
+      "table": "accounts",
+      "components": [],
+      "hex": "016163636f756e747300ff01",
+      "system_id": 1
+    }
+  ]
+}

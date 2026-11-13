@@ -1,0 +1,51 @@
+{
+  "contract": "key-encoding/v1",
+  "cases": [
+    {
+      "name": "a",
+      "table": "a",
+      "prefix_hex": "016100",
+      "upper_hex": "016101"
+    },
+    {
+      "name": "accounts",
+      "table": "accounts",
+      "prefix_hex": "016163636f756e747300",
+      "upper_hex": "016163636f756e747301"
+    },
+    {
+      "name": "catalog",
+      "table": "_catalog",
+      "prefix_hex": "015f636174616c6f6700",
+      "upper_hex": "015f636174616c6f6701"
+    },
+    {
+      "name": "max_table_name",
+      "table": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "prefix_hex": "0161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616100",
+      "upper_hex": "0161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616101"
+    }
+  ],
+  "after_key_cases": [
+    {
+      "name": "empty",
+      "last_hex": "",
+      "after_hex": "00"
+    },
+    {
+      "name": "ascii",
+      "last_hex": "61",
+      "after_hex": "6100"
+    },
+    {
+      "name": "key",
+      "last_hex": "016163636f756e74730010616c6963650000",
+      "after_hex": "016163636f756e74730010616c696365000000"
+    },
+    {
+      "name": "last_byte_max",
+      "last_hex": "ff",
+      "after_hex": "ff00"
+    }
+  ]
+}
