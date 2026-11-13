@@ -34,7 +34,7 @@ The default feature is `oxkv`. The other surfaces are opt-in:
 `oxkv-s3` are separate workspace crates. All workspace crates release in
 lockstep. The `oxkv-query` crate is a standalone legacy crate. It is not part
 of the 1.0 search contract. See [MIGRATING.md](MIGRATING.md) for the 0.10 to
-1.0 upgrade guide and the [crate compatibility table](MIGRATING.md#crate-compatibility).
+0.12 upgrade guide and the [crate compatibility table](MIGRATING.md#crate-compatibility).
 The [0.11 feedback response](docs/feedback-0.11-response.md) lists each item,
 its status, and the matching public API.
 
@@ -51,7 +51,7 @@ its status, and the matching public API.
 | [`store::Cas`] / [`store::CasResult`] | Atomic single-key conditional writes: `set_if_absent`, `compare_and_set`, and `delete_if`; `CasResult` reports `Applied` or `Conflict { current }` |
 | [`store::TxCas`] | Transaction-level conditional writes: `set_if_absent`, `compare_and_set`, and `delete_if` stage a write and a precondition; `commit` checks every precondition against committed state under the write lock or write gate; one conflict rejects every staged write with `StoreError::TxConflict` |
 | [`store::KeyPrefix`] / [`store::Page`] / [`store::ScanExt`] | Prefix-bounded scans that return one page at a time: `scan_keys`, `scan` (values optional), `scan_older_than` (keys below an exclusive cutoff), and `count_prefix`; `Page::next` carries the cursor |
-| [`store::BatchExt`] / [`store::BatchOp`] | Batch helpers: `get_many` (sequential reads), `write_batch` (its own transaction), `delete_prefix_chunked` (bounded chunks, not atomic across chunks), and `delete_prefix_before` (bounded chunks below an exclusive cutoff); `BatchOp::set` and `BatchOp::delete` build operations; `delete_prefix` is a deprecated alias |
+| [`store::BatchExt`] / [`store::BatchOp`] | Batch helpers: `get_many` (sequential reads), `write_batch` (its own transaction), `delete_prefix_chunked` (bounded chunks, not atomic across chunks), and `delete_prefix_before` (bounded chunks below an exclusive cutoff); `BatchOp::set` and `BatchOp::delete` build operations |
 | [`store::ChangeFeed`] / [`store::FeedEntry`] | Durable append-only event log under `{prefix}/{seq:020}` with a CAS counter at `{prefix}/next`: `next_seq`, `append`, `append_in_tx`, `since`, and chunked `prune`; at-least-once delivery, caller-supplied events (not automatic change capture) |
 | [`store::StoreExt`] | Save/Load the entire store contents as binary; `save_stream`/`load_stream` stream it as byte chunks; `snapshot` returns a fixed read-only `Snapshot`; `load_chunked` commits one transaction per page |
 | [`store::Snapshot`] / [`store::SnapshotTx`] | Read-only copy of every key and value at one point in time; writes are rejected; an empty transaction commit is a no-op |

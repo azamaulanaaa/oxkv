@@ -109,24 +109,6 @@ pub trait BatchExt: Store {
     /// [`StoreError`] if a scan or a write fails.
     async fn delete_prefix_chunked(&self, prefix: &str, batch: usize) -> Result<usize>;
 
-    /// Deletes every key that starts with `prefix` in chunks.
-    ///
-    /// This method is deprecated. Use [`BatchExt::delete_prefix_chunked`].
-    ///
-    /// The delete is not atomic across chunks. The method can stop between
-    /// chunks and leave some keys deleted.
-    ///
-    /// Returns the number of keys deleted.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError::Other`] when `batch` is 0. Returns a
-    /// [`StoreError`] if a scan or a write fails.
-    #[deprecated(note = "use `delete_prefix_chunked`; the delete is not atomic across chunks")]
-    async fn delete_prefix(&self, prefix: &str, batch: usize) -> Result<usize> {
-        self.delete_prefix_chunked(prefix, batch).await
-    }
-
     /// Deletes every key that starts with `prefix` and is less than `cutoff`.
     ///
     /// `cutoff` is an exclusive lexicographic bound. A key that is equal to
@@ -487,32 +469,6 @@ mod tests {
         }
     }
 
-    #[allow(deprecated)]
-    async fn assert_delete_prefix_chunked_and_alias<S: Store + Send + Sync + ?Sized>(store: &S) {
-        for key in ["same:1", "same:2", "keep:1"] {
-            store.set_bytes(key, b"v").await.unwrap();
-        }
-
-        let chunked = store.delete_prefix_chunked("same:", 1).await.unwrap();
-        assert_eq!(chunked, 2);
-        for key in ["same:1", "same:2"] {
-            assert!(!store.has(key).await.unwrap(), "must delete {key:?}");
-        }
-        assert!(store.has("keep:1").await.unwrap(), "must keep keep:1");
-
-        // Refill the same prefix. The deprecated alias must delete the same
-        // keys.
-        for key in ["same:1", "same:2"] {
-            store.set_bytes(key, b"v").await.unwrap();
-        }
-        let alias = store.delete_prefix("same:", 1).await.unwrap();
-        assert_eq!(alias, 2);
-        for key in ["same:1", "same:2"] {
-            assert!(!store.has(key).await.unwrap(), "must delete {key:?}");
-        }
-        assert!(store.has("keep:1").await.unwrap(), "must keep keep:1");
-    }
-
     #[cfg(feature = "btree")]
     #[tokio::test]
     async fn btree_batch_operations() {
@@ -521,7 +477,6 @@ mod tests {
         assert_write_batch_applies_all_ops(&store).await;
         assert_delete_prefix_chunked(&store).await;
         assert_delete_prefix_chunked_boundaries(&store).await;
-        assert_delete_prefix_chunked_and_alias(&store).await;
 
         let store = crate::store::BTreeStore::default();
         store.add_validator(RejectBad);
@@ -622,7 +577,6 @@ mod tests {
         assert_write_batch_applies_all_ops(&store).await;
         assert_delete_prefix_chunked(&store).await;
         assert_delete_prefix_chunked_boundaries(&store).await;
-        assert_delete_prefix_chunked_and_alias(&store).await;
 
         let store = build().await.unwrap();
         store.add_validator(RejectBad);

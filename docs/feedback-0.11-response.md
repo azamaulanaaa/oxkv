@@ -24,7 +24,7 @@
 | TTL and retention | Intentionally limited. There is no expiry metadata and no background job. The new helpers remove old keys when the caller runs them. | `ScanExt::scan_older_than`, `BatchExt::delete_prefix_before` |
 | Durable change feed | Fixed. The feed writes `{prefix}/{seq:020}` and keeps the counter at `{prefix}/next`. Delivery is at-least-once. It is not automatic change capture. | `ChangeFeed`, `FeedEntry`, `ChangeFeed::{next_seq, append, append_in_tx, since, prune}` |
 | Metrics and scoped handles | Fixed. The counters are client-side. The scoped handle maps keys and keeps scans inside the scope. | `StatsStore`, `StoreStats`, `StatsStore::{stats, reset, into_inner}`, `ScopedStore`, `ScopedTx`, `StoreExt::scoped` |
-| Batch helpers | Fixed. The chunked delete has a name that shows the non-atomic behavior. The old name remains as a deprecated alias. `get_many` cost is documented. | `BatchExt::delete_prefix_chunked`, deprecated `BatchExt::delete_prefix`, `BatchExt::delete_prefix_before`, `BatchExt::get_many` |
+| Batch helpers | Fixed. The chunked delete has a name that shows the non-atomic behavior. `get_many` cost is documented. | `BatchExt::delete_prefix_chunked`, `BatchExt::delete_prefix_before`, `BatchExt::get_many` |
 | Load size | Fixed. A chunked load commits one transaction per page. The one-transaction load keeps its documented memory and object-size cost. | `load_stream_chunked`, `StoreExt::load_chunked` |
 
 ## Checks
@@ -80,7 +80,7 @@ run used the workspace path patch that the release workflow uses.
   store must use a transaction type that is `Sync`.
 - `ChangeFeed::append_in_tx` now requires `T: Transaction + Sync`. It uses
   `put_bytes` because the event key is new.
-- `BatchExt::delete_prefix` is deprecated. It still works.
+- `BatchExt::delete_prefix` is removed. Use `BatchExt::delete_prefix_chunked`.
 - The WASM and JavaScript limit type does not change. It stays `Option<u32>`.
 
 ## Remaining limits and open decisions
@@ -125,7 +125,7 @@ design note.
   materialized snapshot is a different cost and must say so. The export pages
   live reads. The snapshot copies every pair.
 - Names should show behavior. `delete_prefix_chunked` makes non-atomicity
-  visible. `delete_prefix` hid the chunk boundary and the partial result.
+  visible.
 - A string error class forces callers to parse messages. A structured cause
   is required for operational decisions. `StorageCause` lets a caller tell a
   missing object from a corrupt object without text matching.

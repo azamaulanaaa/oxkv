@@ -4,7 +4,7 @@ This document states the behavior that the code on this branch provides. It
 covers the in-memory B-tree backend and the durable LSM backend. Each claim
 names the source file and function that implements it.
 
-The crate version is 1.0.0. The contracts below describe this branch only.
+The crate version is 0.12.0. The contracts below describe this branch only.
 They do not describe requested features that are absent from this branch. The
 legacy Lucene-style query filter lives in the standalone `oxkv-query` crate at
 `crates/oxkv-query`. The 1.0 release still supports it. It is not part of the
@@ -706,7 +706,7 @@ provide. Do not rely on an absent feature.
 | Stable snapshot reads | Present. `StoreExt::snapshot` returns a read-only `Snapshot` that copies every key and value one time. A later write or delete does not change the snapshot. The snapshot uses memory equal to the size of the store. |
 | Public conditional writes | Present. `Cas` provides `set_if_absent`, `compare_and_set`, and `delete_if` for one key. `CasResult` reports `Applied` or `Conflict { current }`. `TxCas` provides the same three methods for several keys in one transaction and reports `StoreError::TxConflict` at commit. |
 | Keys-only scans | Present. `GetSet::gets_keys`, `ScanExt::scan_keys`, and `ScanExt::scan` with `values = false` return keys without output values. |
-| Batch helpers | Present. `BatchExt` provides `get_many`, `write_batch`, `delete_prefix_chunked`, and `delete_prefix_before`. `delete_prefix` is a deprecated alias. `BatchOp` describes one write. |
+| Batch helpers | Present. `BatchExt` provides `get_many`, `write_batch`, `delete_prefix_chunked`, and `delete_prefix_before`. `BatchOp` describes one write. |
 | Durable change feed | Present. `ChangeFeed` writes an append-only event log under `{prefix}/{seq:020}` and keeps the counter at `{prefix}/next`. It gives cursor reads, CAS sequence allocation, and chunked pruning. Delivery is at-least-once. It is not automatic change capture. |
 | Cross-store transactions | Absent. A transaction covers one store. |
 | Lease and fencing helpers | Absent. `ownership.json` epoch fencing is internal to the LSM writer. There is no public lease type and no fencing token API. |
@@ -908,7 +908,7 @@ directly.
 
 `BatchExt::delete_prefix_chunked` commits one chunk per transaction. A failure
 between chunks leaves the earlier chunks deleted. The method is not atomic
-across chunks. The deprecated `delete_prefix` alias behaves the same way.
+across chunks.
 
 ### 8.8 One store per consistency domain
 

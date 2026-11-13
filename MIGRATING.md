@@ -23,7 +23,7 @@ The 1.0 search contract has no regular expressions. A policy with a regex
 fails with `policy.regex_not_supported`. The legacy filter supports regular
 expressions, because it keeps the 0.12 behavior. The `*` and `?` wildcard
 forms work in both surfaces. All workspace crates release in lockstep at
-1.0.0.
+0.12.0.
 
 # Migrating from 0.11 to 0.12
 
@@ -123,9 +123,8 @@ applies.
 
 ## 5. Batch helper names
 
-`BatchExt::delete_prefix_chunked` is the current name for the chunked delete.
-`BatchExt::delete_prefix` remains as a deprecated alias. Both commit one chunk
-per transaction and neither is atomic across chunks. Call
+`BatchExt::delete_prefix_chunked` removes keys under a prefix in chunks. It
+commits one chunk per transaction and is not atomic across chunks. Call
 `delete_prefix_before` when the cutoff is a key bound.
 
 # Migrating from 0.10 to 0.11
