@@ -10,6 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use oxkv_contracts::InternalDiagnostic;
 use oxkv_contracts::receipt::RequestId;
 use oxkv_contracts::version::{Hash32, ShardId};
 
@@ -398,6 +399,20 @@ impl TransitionError {
             | Self::UnknownRequest { .. }
             | Self::InvalidTransition { .. }
             | Self::KeyNotFree { .. } => "internal.invariant_violation",
+        }
+    }
+
+    /// Returns the operator diagnostic for the failed transition check.
+    ///
+    /// The diagnostic is for operators and logs. It is not a wire value. The
+    /// public code stays `internal.invariant_violation`.
+    #[must_use]
+    pub const fn diagnostic(&self) -> InternalDiagnostic {
+        match self {
+            Self::UnknownShard { .. }
+            | Self::UnknownRequest { .. }
+            | Self::InvalidTransition { .. }
+            | Self::KeyNotFree { .. } => InternalDiagnostic::SchedulerTransition,
         }
     }
 }

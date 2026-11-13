@@ -8,6 +8,8 @@
 //! The harness compiles for wasm32. It uses no OS thread. The lane count
 //! models scheduling capacity and does not change a result.
 
+use oxkv_contracts::InternalDiagnostic;
+
 use crate::core::{CoreError, Observation, Operation, Ports, SemanticCore};
 
 /// One ordered input transcript.
@@ -261,6 +263,19 @@ impl ParityError {
         match self {
             Self::Length { .. } | Self::Observation { .. } | Self::Bytes => {
                 "internal.invariant_violation"
+            }
+        }
+    }
+
+    /// Returns the operator diagnostic for an internal invariant violation.
+    ///
+    /// The diagnostic is for operators and logs. It is not a wire value. The
+    /// public code stays `internal.invariant_violation`.
+    #[must_use]
+    pub const fn diagnostic(&self) -> InternalDiagnostic {
+        match self {
+            Self::Length { .. } | Self::Observation { .. } | Self::Bytes => {
+                InternalDiagnostic::PortableCodec
             }
         }
     }

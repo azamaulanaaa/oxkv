@@ -3,6 +3,8 @@
 //! This crate holds the registries that every essay consumes:
 //!
 //! - [`error`] defines one canonical error code per cause.
+//! - [`internal`] names the failed check behind an internal invariant
+//!   violation for operators and logs.
 //! - [`version`] defines qualified version axes and the provenance block.
 //! - [`cursor`] defines the eight cursor token types.
 //! - [`receipt`] defines the four receipt states and the receipt envelope.
@@ -28,6 +30,7 @@
 
 pub mod cursor;
 pub mod error;
+pub mod internal;
 pub mod keyspace;
 pub mod receipt;
 pub mod version;
@@ -41,6 +44,7 @@ pub use cursor::{
 pub use error::{
     ERROR_REGISTRY, ErrorCode, ErrorKind, ErrorRegistryError, ErrorSpec, RetryClass, lookup,
 };
+pub use internal::InternalDiagnostic;
 pub use keyspace::{
     CATALOG_TABLE, CommitDomain, KEY_ENCODING_VERSION, KeyspaceError, SYSTEM_ID_AUDIT,
     SYSTEM_ID_EVENT, SYSTEM_ID_INDEX, SYSTEM_ID_LEASE, SYSTEM_ID_PROJECTION, SYSTEM_ID_RECEIPT,

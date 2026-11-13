@@ -12,7 +12,7 @@
 use std::fmt::Write as _;
 
 use oxkv_contracts::version::{DescriptorDigest, DescriptorVersion, Hash32, ManifestDigest};
-use oxkv_contracts::{ErrorCode, ErrorSpec};
+use oxkv_contracts::{ErrorCode, ErrorSpec, InternalDiagnostic};
 
 /// The descriptor contract version.
 pub const DESCRIPTOR_VERSION: DescriptorVersion = DescriptorVersion::new(1);
@@ -399,6 +399,31 @@ impl DescriptorError {
             Self::ZeroFieldNumber { .. }
             | Self::MissingMessageType { .. }
             | Self::UnexpectedMessageType { .. } => "manifest.unknown_field",
+        }
+    }
+
+    /// Returns the operator diagnostic for the failed descriptor check.
+    ///
+    /// The diagnostic is for operators and logs. It is not a wire value. The
+    /// public code stays one of the `manifest.*` codes.
+    #[must_use]
+    pub const fn diagnostic(&self) -> InternalDiagnostic {
+        match self {
+            Self::NoMethods
+            | Self::NoMessages
+            | Self::EmptyMethodPath
+            | Self::EmptyMessageName
+            | Self::EmptyFieldName { .. }
+            | Self::NamespacePrefix { .. }
+            | Self::DuplicateMethod { .. }
+            | Self::DuplicateMessage { .. }
+            | Self::DuplicateFieldName { .. }
+            | Self::DuplicateFieldNumber { .. }
+            | Self::ZeroFieldNumber { .. }
+            | Self::MissingMessageType { .. }
+            | Self::UnexpectedMessageType { .. }
+            | Self::UnknownMessage { .. }
+            | Self::UnknownErrorCode { .. } => InternalDiagnostic::RpcDescriptor,
         }
     }
 }

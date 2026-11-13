@@ -9,6 +9,7 @@
 //! environment, locale, filesystem, network, or thread call. It uses no
 //! floating point.
 
+use oxkv_contracts::InternalDiagnostic;
 use oxkv_contracts::cursor::{CursorDirection, CursorToken, KeyCursor};
 use oxkv_contracts::keyspace::KEY_ENCODING_VERSION;
 use oxkv_contracts::version::SnapshotVersion;
@@ -310,6 +311,19 @@ impl CoreError {
             Self::Transport(error) => error.code(),
             Self::Encode(error) => error.code(),
             Self::Incomplete { .. } => "internal.invariant_violation",
+        }
+    }
+
+    /// Returns the operator diagnostic for an internal invariant violation.
+    ///
+    /// The diagnostic is for operators and logs. It is not a wire value. The
+    /// public code stays `internal.invariant_violation`.
+    #[must_use]
+    pub const fn diagnostic(&self) -> Option<InternalDiagnostic> {
+        match self {
+            Self::Incomplete { .. } => Some(InternalDiagnostic::PortableCodec),
+            Self::Storage(error) => error.diagnostic(),
+            Self::Key(_) | Self::Snapshot(_) | Self::Transport(_) | Self::Encode(_) => None,
         }
     }
 }

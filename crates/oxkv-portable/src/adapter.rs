@@ -9,6 +9,8 @@
 use core::cell::Cell;
 use std::collections::BTreeMap;
 
+use oxkv_contracts::InternalDiagnostic;
+
 /// The declared durability of one storage commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Durability {
@@ -54,6 +56,18 @@ impl StorageError {
             Self::Unavailable => "replication.tier_unavailable",
             Self::Corrupt => "format.corrupt_page",
             Self::BatchNotAtomic => "internal.invariant_violation",
+        }
+    }
+
+    /// Returns the operator diagnostic for an internal invariant violation.
+    ///
+    /// The diagnostic is for operators and logs. It is not a wire value. The
+    /// public code stays `internal.invariant_violation`.
+    #[must_use]
+    pub const fn diagnostic(self) -> Option<InternalDiagnostic> {
+        match self {
+            Self::BatchNotAtomic => Some(InternalDiagnostic::PortableCodec),
+            Self::Unavailable | Self::Corrupt => None,
         }
     }
 }

@@ -2,6 +2,8 @@
 
 use core::fmt;
 
+use oxkv_contracts::InternalDiagnostic;
+
 use crate::batch::Key;
 use crate::rule::RuleId;
 
@@ -201,6 +203,22 @@ impl HookError {
         self.code.as_str()
     }
 
+    /// Returns the operator diagnostic for an internal invariant violation.
+    ///
+    /// The diagnostic is for operators and logs. It is not a wire value. The
+    /// public code stays `internal.invariant_violation`.
+    #[must_use]
+    pub const fn diagnostic(&self) -> Option<InternalDiagnostic> {
+        match self.code {
+            HookErrorCode::InternalInvariantViolation => Some(InternalDiagnostic::HookPipeline),
+            HookErrorCode::PolicyUnknownField
+            | HookErrorCode::PolicyBudgetExhausted
+            | HookErrorCode::WriteValueTooLarge
+            | HookErrorCode::WriteBatchTooLarge
+            | HookErrorCode::EventPayloadTooLarge => None,
+        }
+    }
+
     /// Returns the rule id when the error names one.
     #[must_use]
     pub fn rule_id(&self) -> Option<&RuleId> {
@@ -308,6 +326,19 @@ impl PipelineBuildError {
     #[must_use]
     pub const fn code_str(&self) -> &'static str {
         self.code().as_str()
+    }
+
+    /// Returns the operator diagnostic for the failed pipeline check.
+    ///
+    /// The diagnostic is for operators and logs. It is not a wire value. The
+    /// public code stays `internal.invariant_violation`.
+    #[must_use]
+    pub const fn diagnostic(&self) -> InternalDiagnostic {
+        match self.reason {
+            BuildErrorReason::EmptyRuleId | BuildErrorReason::DuplicateRuleId => {
+                InternalDiagnostic::HookPipeline
+            }
+        }
     }
 }
 

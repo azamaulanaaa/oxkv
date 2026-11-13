@@ -15,6 +15,7 @@
 
 use std::collections::BTreeMap;
 
+use oxkv_contracts::InternalDiagnostic;
 use oxkv_contracts::cursor::EventSequence;
 
 use crate::backoff::RetryPolicy;
@@ -315,6 +316,23 @@ impl ConsumerError {
             Self::NotPending { .. } | Self::InvalidTransition { .. } => {
                 "internal.invariant_violation"
             }
+        }
+    }
+
+    /// Returns the operator diagnostic for an internal invariant violation.
+    ///
+    /// The diagnostic is for operators and logs. It is not a wire value. The
+    /// public code stays `internal.invariant_violation`.
+    #[must_use]
+    pub const fn diagnostic(&self) -> Option<InternalDiagnostic> {
+        match self {
+            Self::NotPending { .. } | Self::InvalidTransition { .. } => {
+                Some(InternalDiagnostic::ConsumerDeadLetter)
+            }
+            Self::TooSlow { .. }
+            | Self::CursorExpired { .. }
+            | Self::SequenceGap { .. }
+            | Self::MalformedPayload { .. } => None,
         }
     }
 }
