@@ -1,0 +1,80 @@
+{
+  "migration_steps": [
+    "quiesce_writes",
+    "drain_scheduler",
+    "rewrite_epoch",
+    "verify_checksums",
+    "flip_pointer"
+  ],
+  "rollback": [
+    {
+      "first_new_format_write": false,
+      "allowed": true,
+      "code": null
+    },
+    {
+      "first_new_format_write": true,
+      "allowed": false,
+      "code": "ops.downgrade_not_allowed"
+    }
+  ],
+  "error_codes": {
+    "backup_pin_lost": "ops.backup_pin_lost",
+    "restore_checksum_mismatch": "ops.restore_checksum_mismatch",
+    "migration_incomplete": "ops.migration_incomplete",
+    "downgrade_not_allowed": "ops.downgrade_not_allowed",
+    "client_outbox_stale": "ops.client_outbox_stale",
+    "quota_exceeded": "ops.quota_exceeded",
+    "rate_limited": "ops.rate_limited",
+    "maintenance_freeze": "shard.frozen_for_maintenance"
+  },
+  "backup_vector": [
+    {
+      "shard": 1,
+      "version": 18
+    },
+    {
+      "shard": 2,
+      "version": 9
+    }
+  ],
+  "quota": [
+    {
+      "resource": "stored_bytes",
+      "limit": 100,
+      "usage": 90,
+      "request": 10,
+      "code": null
+    },
+    {
+      "resource": "stored_bytes",
+      "limit": 100,
+      "usage": 95,
+      "request": 10,
+      "code": "ops.quota_exceeded"
+    }
+  ],
+  "rate_limit": {
+    "capacity": 2,
+    "refill_per_second": 1,
+    "cost": 1,
+    "acquires": 3,
+    "code": "ops.rate_limited"
+  },
+  "artifact": {
+    "from": [1, 0],
+    "to": [1, 1],
+    "changes": [
+      {
+        "field": "page_sequence",
+        "before": "absent",
+        "after": "u64"
+      },
+      {
+        "field": "provenance",
+        "before": "v1",
+        "after": "v1 plus key encoding"
+      }
+    ]
+  }
+}
