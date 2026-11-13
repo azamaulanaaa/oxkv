@@ -1,0 +1,22 @@
+{
+  "contract": "freeze-corpus/v1",
+  "entries": [
+    {"contract": "C1", "vector": "vector-C1"},
+    {"contract": "C2", "vector": "vector-C2"},
+    {"contract": "C3", "vector": "vector-C3"},
+    {"contract": "C4", "vector": "vector-C4"},
+    {"contract": "C5", "vector": "vector-C5"},
+    {"contract": "A1", "vector": "vector-A1"},
+    {"contract": "A2", "vector": "vector-A2"},
+    {"contract": "A3", "vector": "vector-A3"},
+    {"contract": "A4", "vector": "vector-A4"},
+    {"contract": "A5", "vector": "vector-A5"},
+    {"contract": "A6", "vector": "vector-A6"},
+    {"contract": "A7", "vector": "vector-A7"},
+    {"contract": "A8", "vector": "vector-A8"},
+    {"contract": "A9", "vector": "vector-A9"},
+    {"contract": "A10", "vector": "vector-A10"},
+    {"contract": "A11", "vector": "vector-A11"},
+    {"contract": "A12", "vector": "vector-A12"}
+  ]
+}

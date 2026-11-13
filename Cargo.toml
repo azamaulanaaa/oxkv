@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/oxkv-contracts",
+  "crates/oxkv-freeze",
   "crates/oxkv-falsify",
   "crates/oxkv-qualify",
   "crates/oxkv-security",

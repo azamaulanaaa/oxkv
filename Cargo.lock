@@ -1274,6 +1274,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxkv-freeze"
+version = "0.11.0"
+dependencies = [
+ "oxkv-contracts",
+ "serde_json",
+]
+
+[[package]]
 name = "oxkv-hooks"
 version = "0.11.0"
 dependencies = [

@@ -1,0 +1,95 @@
+{
+  "contract": "essay-freeze-index/v1",
+  "claims": [
+    {
+      "essay": "05-key-encoding.md",
+      "statement": "Key encoding freezes as annex A1 (key-encoding/v1).",
+      "rows": ["A1"]
+    },
+    {
+      "essay": "06-snapshot-format.md",
+      "statement": "The snapshot and page format freezes as contract C2 (snapshot-page/v1).",
+      "rows": ["C2"]
+    },
+    {
+      "essay": "07-manifest.md",
+      "statement": "The manifest schema freezes as contract C1 (oxkv/manifest/v1).",
+      "rows": ["C1"]
+    },
+    {
+      "essay": "08-policy-language.md",
+      "statement": "The policy AST freezes as contract C4 (policy-ast/v1).",
+      "rows": ["C4"]
+    },
+    {
+      "essay": "10-receipts-outbox.md",
+      "statement": "Receipt and error semantics freeze as contract C5 (receipt-error/v1).",
+      "rows": ["C5"]
+    },
+    {
+      "essay": "12-enforcement-audit.md",
+      "statement": "The audit envelope freezes as annex A7 (audit/v1).",
+      "rows": ["A7"]
+    },
+    {
+      "essay": "13-scope.md",
+      "statement": "Scope semantics freeze as annex A5 (scope/v1).",
+      "rows": ["A5"]
+    },
+    {
+      "essay": "14-wire-protocol.md",
+      "statement": "The sync wire protocol freezes as contract C3 (sync-wire/v1). The cursor annex A9 freezes with it.",
+      "rows": ["C3", "A9"]
+    },
+    {
+      "essay": "17-policy-projection.md",
+      "statement": "Projection staleness freezes as annex A6 (projection/v1).",
+      "rows": ["A6"]
+    },
+    {
+      "essay": "18-inverted-index.md",
+      "statement": "The tokenizer freezes as annex A2 (tokenizer/v1).",
+      "rows": ["A2"]
+    },
+    {
+      "essay": "19-snapshot-consistent-search.md",
+      "statement": "The read pin freezes as annex A11 (read-pin/v1).",
+      "rows": ["A11"]
+    },
+    {
+      "essay": "20-query-cost-model.md",
+      "statement": "Cost and explain freeze as annex A8 (cost/v1).",
+      "rows": ["A8"]
+    },
+    {
+      "essay": "22-shard-map.md",
+      "statement": "The shard map freezes as annex A4 (oxkv/map/v1).",
+      "rows": ["A4"]
+    },
+    {
+      "essay": "24-event-stream.md",
+      "statement": "The event envelope freezes as annex A3 (event/v1).",
+      "rows": ["A3"]
+    },
+    {
+      "essay": "25-generated-rpc.md",
+      "statement": "The descriptor freezes as annex A10 (descriptor/v1).",
+      "rows": ["A10"]
+    },
+    {
+      "essay": "28-operations.md",
+      "statement": "Migration and backup freeze as annex A12 (migration/v1).",
+      "rows": ["A12"]
+    },
+    {
+      "essay": "30-qualification-suite.md",
+      "statement": "The qualification suite freezes a vector corpus for every register row C1, C2, C3, C4, C5, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, and A12.",
+      "rows": ["C1", "C2", "C3", "C4", "C5", "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9", "A10", "A11", "A12"]
+    },
+    {
+      "essay": "32-one-zero-freeze.md",
+      "statement": "Contract C1 and contract C2 and contract C3 and contract C4 and contract C5 freeze at 1.0. Annex A1, annex A2, annex A3, annex A4, annex A5, annex A6, annex A7, annex A8, annex A9, annex A10, annex A11, and annex A12 freeze at 1.0.",
+      "rows": ["C1", "C2", "C3", "C4", "C5", "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9", "A10", "A11", "A12"]
+    }
+  ]
+}

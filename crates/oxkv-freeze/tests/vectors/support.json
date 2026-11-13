@@ -1,0 +1,76 @@
+{
+  "contract": "freeze-support/v1",
+  "policy": {
+    "fixes_after_next_major_months": 24,
+    "security_fixes_last_minor_months": 12,
+    "supported_minors": 2,
+    "removal_notice_months": 12,
+    "requires_automated_migration": true,
+    "allows_downgrade": false,
+    "published_in": "docs/specs/freeze.md"
+  },
+  "removal_cases": [
+    {
+      "name": "major_with_notice_and_migration",
+      "at_major": true,
+      "notice_months": 12,
+      "automated_migration": true,
+      "accepted": true,
+      "error": null
+    },
+    {
+      "name": "minor_release",
+      "at_major": false,
+      "notice_months": 24,
+      "automated_migration": true,
+      "accepted": false,
+      "error": "removal_not_at_major"
+    },
+    {
+      "name": "short_notice",
+      "at_major": true,
+      "notice_months": 11,
+      "automated_migration": true,
+      "accepted": false,
+      "error": "notice_too_short"
+    },
+    {
+      "name": "no_automated_migration",
+      "at_major": true,
+      "notice_months": 12,
+      "automated_migration": false,
+      "accepted": false,
+      "error": "migration_required"
+    }
+  ],
+  "downgrade_cases": [
+    {
+      "name": "before_first_write",
+      "written": null,
+      "target": "0.12",
+      "accepted": true,
+      "error_code": null
+    },
+    {
+      "name": "same_format",
+      "written": "1.0",
+      "target": "1.0",
+      "accepted": true,
+      "error_code": null
+    },
+    {
+      "name": "upgrade",
+      "written": "1.0",
+      "target": "1.1",
+      "accepted": true,
+      "error_code": null
+    },
+    {
+      "name": "after_new_format_write",
+      "written": "1.1",
+      "target": "1.0",
+      "accepted": false,
+      "error_code": "ops.downgrade_not_allowed"
+    }
+  ]
+}
