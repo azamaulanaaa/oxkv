@@ -226,28 +226,57 @@ pub(crate) fn sample_scope_params() -> ScopeSnapshotParams {
     )
 }
 
+/// Returns one real v1 user key.
+pub(crate) fn user_key(table: &str, text: &str) -> Vec<u8> {
+    let mut key = vec![0x01];
+    key.extend_from_slice(table.as_bytes());
+    key.push(0x00);
+    key.push(0x10);
+    key.extend_from_slice(text.as_bytes());
+    key.extend_from_slice(&[0x00, 0x00]);
+    key
+}
+
+/// Returns one real v1 system key.
+pub(crate) fn system_key(table: &str, id: u8, text: &str) -> Vec<u8> {
+    let mut key = vec![0x01];
+    key.extend_from_slice(table.as_bytes());
+    key.push(0x00);
+    key.push(0xff);
+    key.push(id);
+    key.push(0x10);
+    key.extend_from_slice(text.as_bytes());
+    key.extend_from_slice(&[0x00, 0x00]);
+    key
+}
+
+/// Admits every record. Use a narrower predicate to test a scope boundary.
+pub(crate) fn admit_all(_key: &[u8], _value: &[u8]) -> bool {
+    true
+}
+
 /// Builds the sample scope snapshot.
 pub(crate) fn sample_scope_snapshot() -> Vec<u8> {
-    let mut builder = ScopeProjectionBuilder::new(sample_scope_params());
+    let mut builder = ScopeProjectionBuilder::new(sample_scope_params(), admit_all);
     builder
         .insert(
             ShardId::new(vec![0x01]),
             CommitVersion::new(9),
-            Record::new(b"a1".to_vec(), b"one".to_vec()),
+            Record::new(user_key("accounts", "alice"), b"one".to_vec()),
         )
         .expect("the row is admitted");
     builder
-        .insert(
+        .insert_projection(
             ShardId::new(vec![0x01]),
             CommitVersion::new(9),
-            Record::new(vec![0xff, 0x04, b'f', 0x01], b"fact".to_vec()),
+            Record::new(system_key("accounts", 0x04, "fact"), b"fact".to_vec()),
         )
         .expect("the fact is admitted");
     builder
         .insert(
             ShardId::new(vec![0x02]),
             CommitVersion::new(7),
-            Record::new(b"b1".to_vec(), b"two".to_vec()),
+            Record::new(user_key("ledger_entry", "entry"), b"two".to_vec()),
         )
         .expect("the row is admitted");
     builder.build().expect("the scope builds")

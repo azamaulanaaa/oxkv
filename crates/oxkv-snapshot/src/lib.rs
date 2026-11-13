@@ -45,7 +45,7 @@ pub use header::{
     SUPPORTED_KEY_ENCODING_VERSION, ScopeHeader, ShardHeader,
 };
 pub use page::{PAGE_MAGIC, Page, Record, page_id_for};
-pub use scope::{ScopeProjectionBuilder, forbidden_namespace};
+pub use scope::{ScopeAdmission, ScopeProjectionBuilder, forbidden_namespace, system_namespace_id};
 pub use seal::{CONTENT_DIGEST_TAG, content_digest_for, verify_content_digest, verify_seal};
 pub use snapshot::{
     ScopeShard, ScopeSnapshot, ScopeSnapshotParams, ShardSnapshot, ShardSnapshotParams,

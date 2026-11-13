@@ -169,6 +169,12 @@ pub enum ScopeError {
         /// The shard without a pin entry.
         shard_id: ShardId,
     },
+    /// A user scope received a system key.
+    #[error("The user scope cannot contain the system key {key:?}.")]
+    SystemKey {
+        /// The rejected system key.
+        key: Vec<u8>,
+    },
 }
 
 impl ScopeError {
@@ -195,7 +201,8 @@ impl ScopeError {
             | Self::BaseVersionMismatch
             | Self::MalformedDiff
             | Self::ByteCountOverflow
-            | Self::MissingPinShard { .. } => "internal.invariant_violation",
+            | Self::MissingPinShard { .. }
+            | Self::SystemKey { .. } => "internal.invariant_violation",
         }
     }
 }
@@ -281,6 +288,12 @@ pub enum QueryError {
         /// The duplicated key.
         key: Vec<u8>,
     },
+    /// A user scope result received a system key.
+    #[error("The user scope result cannot contain the system key {key:?}.")]
+    SystemKey {
+        /// The rejected system key.
+        key: Vec<u8>,
+    },
 }
 
 impl QueryError {
@@ -292,7 +305,8 @@ impl QueryError {
             Self::PinIncomplete { .. }
             | Self::UnknownShard { .. }
             | Self::DuplicateResponse { .. }
-            | Self::DuplicateRow { .. } => "internal.invariant_violation",
+            | Self::DuplicateRow { .. }
+            | Self::SystemKey { .. } => "internal.invariant_violation",
         }
     }
 }

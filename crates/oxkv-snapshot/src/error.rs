@@ -84,6 +84,24 @@ pub enum SnapshotError {
         /// The forbidden system identifier.
         id: u8,
     },
+    /// A user row path received a system key.
+    #[error("The user row path cannot include the system namespace {id}.")]
+    SystemKeyNotAllowed {
+        /// The system identifier.
+        id: u8,
+    },
+    /// A projection path received a key that is not a projection fact.
+    #[error("The key {key:?} is not a projection fact.")]
+    NotProjectionFact {
+        /// The rejected key.
+        key: Vec<u8>,
+    },
+    /// The scope does not admit a record.
+    #[error("The scope does not admit the record {key:?}.")]
+    OutOfScopeRecord {
+        /// The rejected key.
+        key: Vec<u8>,
+    },
     /// A builder input has two records with one key.
     #[error("The record key is duplicated at byte {offset}.")]
     DuplicateKey {
@@ -104,6 +122,9 @@ impl SnapshotError {
             Self::CorruptPage { .. }
             | Self::DuplicateKey { .. }
             | Self::ForbiddenNamespace { .. } => "format.corrupt_page",
+            Self::SystemKeyNotAllowed { .. }
+            | Self::NotProjectionFact { .. }
+            | Self::OutOfScopeRecord { .. } => "internal.invariant_violation",
             Self::PageOutOfBounds { .. } => "format.page_out_of_bounds",
             Self::TruncatedSnapshot { .. } => "format.truncated_snapshot",
             Self::MissingProvenance { .. } => "format.missing_provenance",
@@ -125,7 +146,11 @@ impl SnapshotError {
             | Self::StaleSeal { offset }
             | Self::MalformedHeader { offset, .. }
             | Self::DuplicateKey { offset } => *offset,
-            Self::MissingProvenance { .. } | Self::ForbiddenNamespace { .. } => 0,
+            Self::MissingProvenance { .. }
+            | Self::ForbiddenNamespace { .. }
+            | Self::SystemKeyNotAllowed { .. }
+            | Self::NotProjectionFact { .. }
+            | Self::OutOfScopeRecord { .. } => 0,
         }
     }
 }

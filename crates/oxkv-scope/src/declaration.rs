@@ -75,9 +75,25 @@ impl TablePrefix {
     }
 
     /// Returns the inclusive lower bound and the exclusive upper bound.
+    ///
+    /// The bounds cover the user key space and the system sub-namespaces for
+    /// the table. Use [`TablePrefix::user_bounds`] for the user key space only.
     #[must_use]
     pub fn bounds(&self) -> &PrefixBounds {
         &self.bounds
+    }
+
+    /// Returns the inclusive lower bound and the exclusive upper bound of the
+    /// user key space.
+    ///
+    /// The upper bound is the prefix plus the `0xFF` system marker. The range
+    /// excludes every system sub-namespace. The table range in
+    /// [`TablePrefix::bounds`] stays unchanged.
+    #[must_use]
+    pub fn user_bounds(&self) -> PrefixBounds {
+        let mut upper = self.bytes.clone();
+        upper.push(SYSTEM_MARKER);
+        PrefixBounds::new(self.bytes.clone(), upper)
     }
 }
 
@@ -742,6 +758,19 @@ mod tests {
         );
         assert_eq!(prefix.bounds().lower(), prefix.as_bytes());
         assert_eq!(prefix.bounds().upper().last(), Some(&0x01));
+    }
+
+    #[test]
+    fn the_user_bounds_exclude_the_system_sub_namespace() {
+        let prefix = prefix("accounts");
+        let user = prefix.user_bounds();
+        assert_eq!(user.lower(), prefix.as_bytes());
+        assert_eq!(user.upper().last(), Some(&SYSTEM_MARKER));
+        let user_key: &[u8] = b"\x01accounts\x00\x10alice\x00\x00";
+        let system_key: &[u8] = b"\x01accounts\x00\xff\x01\x10receipt\x00\x00";
+        assert!(user_key >= user.lower());
+        assert!(user_key < user.upper());
+        assert!(system_key >= user.upper());
     }
 
     #[test]

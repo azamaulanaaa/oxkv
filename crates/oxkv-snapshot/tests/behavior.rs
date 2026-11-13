@@ -2,6 +2,9 @@
 
 mod support;
 
+use oxkv_contracts::keyspace::{
+    SYSTEM_ID_AUDIT, SYSTEM_ID_EVENT, SYSTEM_ID_LEASE, SYSTEM_ID_PROJECTION, SYSTEM_ID_RECEIPT,
+};
 use oxkv_contracts::version::{CommitVersion, LeaseTerm, PrefixBounds, ShardId};
 use oxkv_snapshot::{
     Header, Record, ScopeProjectionBuilder, ScopeSnapshot, ShardSnapshot, SnapshotError,
@@ -239,30 +242,108 @@ fn the_scope_projection_is_deterministic() {
 }
 
 #[test]
-fn the_scope_snapshot_excludes_forbidden_namespaces() {
-    let mut builder = ScopeProjectionBuilder::new(support::sample_scope_params());
+fn a_real_authority_system_key_is_rejected() {
+    for id in [
+        SYSTEM_ID_RECEIPT,
+        SYSTEM_ID_EVENT,
+        SYSTEM_ID_AUDIT,
+        SYSTEM_ID_LEASE,
+    ] {
+        let mut builder =
+            ScopeProjectionBuilder::new(support::sample_scope_params(), support::admit_all);
+        let key = support::system_key("accounts", id, "authority");
+        let error = builder
+            .insert(
+                ShardId::new(vec![1]),
+                CommitVersion::new(9),
+                Record::new(key.clone(), b"authority".to_vec()),
+            )
+            .expect_err("the authority key is rejected");
+        assert_eq!(forbidden_namespace(&key), Some(id));
+        assert_eq!(error, SnapshotError::ForbiddenNamespace { id });
+        assert_eq!("format.corrupt_page", error.code());
+    }
+}
+
+#[test]
+fn a_real_projection_key_uses_the_projection_path_only() {
+    let projection = support::system_key("accounts", SYSTEM_ID_PROJECTION, "fact");
+    assert_eq!(forbidden_namespace(&projection), None);
+
+    let mut user_builder =
+        ScopeProjectionBuilder::new(support::sample_scope_params(), support::admit_all);
+    let error = user_builder
+        .insert(
+            ShardId::new(vec![1]),
+            CommitVersion::new(9),
+            Record::new(projection.clone(), b"fact".to_vec()),
+        )
+        .expect_err("the user row path rejects a projection key");
+    assert_eq!(
+        error,
+        SnapshotError::SystemKeyNotAllowed {
+            id: SYSTEM_ID_PROJECTION
+        }
+    );
+
+    let mut builder =
+        ScopeProjectionBuilder::new(support::sample_scope_params(), support::admit_all);
+    builder
+        .insert_projection(
+            ShardId::new(vec![1]),
+            CommitVersion::new(9),
+            Record::new(projection, b"fact".to_vec()),
+        )
+        .expect("the projection fact is admitted");
+    let bytes = builder.build().expect("the scope builds");
+    let snapshot = ScopeSnapshot::read(&bytes).expect("the scope reads");
+    assert_eq!(1, snapshot.records().count());
+}
+
+#[test]
+fn an_out_of_scope_user_row_is_rejected() {
+    let mut builder = ScopeProjectionBuilder::new(
+        support::sample_scope_params(),
+        |key: &[u8], _value: &[u8]| key.starts_with(b"\x01accounts\x00"),
+    );
     let error = builder
         .insert(
             ShardId::new(vec![1]),
             CommitVersion::new(9),
-            Record::new(vec![0xff, 0x01], b"receipt".to_vec()),
+            Record::new(support::user_key("ledger_entry", "entry"), b"two".to_vec()),
         )
-        .expect_err("the receipt namespace is rejected");
-    assert_eq!("format.corrupt_page", error.code());
-    assert!(matches!(
-        error,
-        SnapshotError::ForbiddenNamespace { id: 0x01 }
-    ));
+        .expect_err("the row is outside the scope");
+    assert!(matches!(error, SnapshotError::OutOfScopeRecord { .. }));
+    assert_eq!("internal.invariant_violation", error.code());
+}
+
+#[test]
+fn an_admitted_user_row_succeeds() {
+    let mut builder = ScopeProjectionBuilder::new(
+        support::sample_scope_params(),
+        |key: &[u8], _value: &[u8]| key.starts_with(b"\x01accounts\x00"),
+    );
+    builder
+        .insert(
+            ShardId::new(vec![1]),
+            CommitVersion::new(9),
+            Record::new(support::user_key("accounts", "alice"), b"one".to_vec()),
+        )
+        .expect("the row is inside the scope");
+    let bytes = builder.build().expect("the scope builds");
+    let snapshot = ScopeSnapshot::read(&bytes).expect("the scope reads");
+    assert_eq!(1, snapshot.records().count());
 }
 
 #[test]
 fn the_scope_builder_rejects_an_unknown_shard() {
-    let mut builder = ScopeProjectionBuilder::new(support::sample_scope_params());
+    let mut builder =
+        ScopeProjectionBuilder::new(support::sample_scope_params(), support::admit_all);
     let error = builder
         .insert(
             ShardId::new(vec![9]),
             CommitVersion::new(1),
-            Record::new(b"a1".to_vec(), b"one".to_vec()),
+            Record::new(support::user_key("accounts", "alice"), b"one".to_vec()),
         )
         .expect_err("the shard is not in the version vector");
     assert_eq!("format.corrupt_page", error.code());
@@ -270,12 +351,13 @@ fn the_scope_builder_rejects_an_unknown_shard() {
 
 #[test]
 fn the_scope_builder_rejects_a_wrong_commit_version() {
-    let mut builder = ScopeProjectionBuilder::new(support::sample_scope_params());
+    let mut builder =
+        ScopeProjectionBuilder::new(support::sample_scope_params(), support::admit_all);
     let error = builder
         .insert(
             ShardId::new(vec![1]),
             CommitVersion::new(8),
-            Record::new(b"a1".to_vec(), b"one".to_vec()),
+            Record::new(support::user_key("accounts", "alice"), b"one".to_vec()),
         )
         .expect_err("the commit version is wrong");
     assert_eq!("format.corrupt_page", error.code());
@@ -303,29 +385,39 @@ fn the_first_page_entry_matches_the_page() {
 }
 
 fn build_scope(order: &[usize]) -> Vec<u8> {
-    let mut builder = ScopeProjectionBuilder::new(support::sample_scope_params());
+    let mut builder =
+        ScopeProjectionBuilder::new(support::sample_scope_params(), support::admit_all);
     let rows = [
         (
             ShardId::new(vec![1]),
             CommitVersion::new(9),
-            Record::new(b"a1".to_vec(), b"one".to_vec()),
+            Record::new(support::user_key("accounts", "alice"), b"one".to_vec()),
         ),
         (
             ShardId::new(vec![1]),
             CommitVersion::new(9),
-            Record::new(vec![0xff, 0x04, b'f', 0x01], b"fact".to_vec()),
+            Record::new(
+                support::system_key("accounts", SYSTEM_ID_PROJECTION, "fact"),
+                b"fact".to_vec(),
+            ),
         ),
         (
             ShardId::new(vec![2]),
             CommitVersion::new(7),
-            Record::new(b"b1".to_vec(), b"two".to_vec()),
+            Record::new(support::user_key("ledger_entry", "entry"), b"two".to_vec()),
         ),
     ];
     for index in order {
         let (shard_id, commit_version, record) = rows[*index].clone();
-        builder
-            .insert(shard_id, commit_version, record)
-            .expect("the row is admitted");
+        if *index == 1 {
+            builder
+                .insert_projection(shard_id, commit_version, record)
+                .expect("the fact is admitted");
+        } else {
+            builder
+                .insert(shard_id, commit_version, record)
+                .expect("the row is admitted");
+        }
     }
     builder.build().expect("the scope builds")
 }

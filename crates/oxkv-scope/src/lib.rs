@@ -60,6 +60,7 @@ pub mod declaration;
 pub mod diff;
 pub mod error;
 pub mod identity;
+mod key;
 pub mod membership;
 pub mod plan;
 pub mod residency;

@@ -298,8 +298,8 @@ impl ScopeSnapshot {
     /// Builds one `ScopeSnapshot` from ordered shard inputs.
     ///
     /// The function sorts the shard inputs by shard identifier. It does not
-    /// sort the records inside one shard. It rejects a scope key in the
-    /// receipt, event, audit, or lease namespace.
+    /// sort the records inside one shard. It rejects every system key except a
+    /// projection fact.
     ///
     /// # Errors
     ///

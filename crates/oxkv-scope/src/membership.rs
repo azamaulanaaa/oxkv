@@ -3,6 +3,9 @@
 //! Membership is exact at a complete coverage pin. One add enters the scope and
 //! one remove leaves it. A record that re-enters receives a new add. The crate
 //! stores logical members only. It does not store pages or the search index.
+//!
+//! A table range includes the system sub-namespace. Membership rejects a
+//! system key at the row level, because a user scope admits user keys only.
 
 use std::collections::BTreeMap;
 
@@ -204,6 +207,7 @@ impl Membership {
     /// Returns [`ScopeError::BaseVersionMismatch`] for a wrong base vector.
     /// Returns [`ScopeError::VersionRegression`] for a decreasing target.
     /// Returns [`ScopeError::RemoveUnknownMember`] for a remove of a non-member.
+    /// Returns [`ScopeError::SystemKey`] for a system key.
     /// Returns [`ScopeError::ByteCountOverflow`] for an overflowing byte count.
     pub fn apply(&mut self, interval: &DiffInterval) -> Result<Churn, ScopeError> {
         if interval.scope_identity() != self.identity() {
@@ -214,6 +218,13 @@ impl Membership {
         }
         if !self.version.same_as(interval.base()) {
             return Err(ScopeError::BaseVersionMismatch);
+        }
+        for record in interval.records() {
+            if crate::key::is_system_key(record.key()) {
+                return Err(ScopeError::SystemKey {
+                    key: record.key().to_vec(),
+                });
+            }
         }
         let mut next_version = self.version.clone();
         next_version.advance_to(interval.target())?;
@@ -299,6 +310,9 @@ mod tests {
     use super::*;
     use crate::diff::{DiffRecord, RemoveReason};
     use oxkv_contracts::version::{CommitVersion, ShardId, VersionVector};
+
+    const USER_KEY: &[u8] = b"\x01accounts\x00\x10alice\x00\x00";
+    const SYSTEM_KEY: &[u8] = b"\x01accounts\x00\xff\x01\x10receipt\x00\x00";
 
     fn identity() -> ScopeIdentity {
         ScopeIdentity::from_bytes([3; 32])
@@ -503,5 +517,39 @@ mod tests {
             membership.materialization().policy_version,
             PolicyVersion::from_bytes([2; 32])
         );
+    }
+
+    #[test]
+    fn a_real_system_key_is_rejected_in_membership() {
+        let mut membership = Membership::new(materialization());
+        let error = membership
+            .apply(&interval(
+                1,
+                1,
+                ScopeVersionVector::new(),
+                vector(&[(&[1], 1)]),
+                vec![DiffRecord::add(SYSTEM_KEY.to_vec(), KeyVersion::new(1), 1)],
+            ))
+            .expect_err("the system key is rejected");
+        assert!(matches!(error, ScopeError::SystemKey { .. }));
+        assert_eq!("internal.invariant_violation", error.code());
+        assert!(membership.is_empty());
+        assert!(membership.local_pin().is_empty());
+    }
+
+    #[test]
+    fn a_real_user_key_is_accepted_in_membership() {
+        let mut membership = Membership::new(materialization());
+        membership
+            .apply(&interval(
+                1,
+                1,
+                ScopeVersionVector::new(),
+                vector(&[(&[1], 1)]),
+                vec![DiffRecord::add(USER_KEY.to_vec(), KeyVersion::new(1), 10)],
+            ))
+            .expect("the user key is accepted");
+        assert!(membership.contains(USER_KEY));
+        assert_eq!(membership.len(), 1);
     }
 }

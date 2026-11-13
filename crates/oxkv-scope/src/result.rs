@@ -3,6 +3,9 @@
 //! An exact result requires every targeted shard to serve the pin. A coverage
 //! result carries an explicit coverage descriptor. A caller cannot infer
 //! completeness from a row count.
+//!
+//! A table range includes the system sub-namespace. The query filters a system
+//! key at the row level, because a user scope admits user keys only.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -530,6 +533,9 @@ fn append_rows(
     let mut sorted = rows.to_vec();
     sorted.sort();
     for row in sorted {
+        if crate::key::is_system_key(&row.key) {
+            return Err(QueryError::SystemKey { key: row.key });
+        }
         if !seen.insert(row.key.clone()) {
             return Err(QueryError::DuplicateRow { key: row.key });
         }
@@ -547,6 +553,9 @@ mod tests {
     };
     use crate::plan::ShardAssignment;
     use oxkv_contracts::keyspace::TableName;
+
+    const USER_KEY: &[u8] = b"\x01accounts\x00\x10alice\x00\x00";
+    const SYSTEM_KEY: &[u8] = b"\x01accounts\x00\xff\x01\x10receipt\x00\x00";
 
     fn plan() -> ShardPlan {
         let declaration = ScopeDeclaration::new(
@@ -694,5 +703,50 @@ mod tests {
                 shard_id: ShardId::new(vec![2])
             })
         );
+    }
+
+    #[test]
+    fn a_real_system_key_is_rejected_in_a_scope_result() {
+        let plan = plan();
+        let pin = pin(&plan, 7);
+        let responses: Vec<ShardResponse> = plan
+            .shards()
+            .map(|shard| {
+                let rows = if *shard == ShardId::new(vec![1]) {
+                    vec![ScopeRow::new(SYSTEM_KEY.to_vec(), KeyVersion::new(1))]
+                } else {
+                    Vec::new()
+                };
+                ShardResponse::served(shard.clone(), CommitVersion::new(7), rows)
+            })
+            .collect();
+        let error = plan
+            .query(QueryMode::Exact, &pin, &responses)
+            .expect_err("the system key is rejected");
+        assert!(matches!(error, QueryError::SystemKey { .. }));
+        assert_eq!("internal.invariant_violation", error.code());
+    }
+
+    #[test]
+    fn a_real_user_key_is_accepted_in_a_scope_result() {
+        let plan = plan();
+        let pin = pin(&plan, 7);
+        let responses: Vec<ShardResponse> = plan
+            .shards()
+            .map(|shard| {
+                let rows = if *shard == ShardId::new(vec![1]) {
+                    vec![ScopeRow::new(USER_KEY.to_vec(), KeyVersion::new(1))]
+                } else {
+                    Vec::new()
+                };
+                ShardResponse::served(shard.clone(), CommitVersion::new(7), rows)
+            })
+            .collect();
+        let outcome = plan
+            .query(QueryMode::Exact, &pin, &responses)
+            .expect("the user key is accepted");
+        let exact = outcome.exact().expect("the result is exact");
+        assert_eq!(exact.rows().len(), 1);
+        assert_eq!(exact.rows()[0].key, USER_KEY);
     }
 }
