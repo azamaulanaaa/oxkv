@@ -142,13 +142,63 @@ fn the_descriptor_bytes_are_byte_identical() {
 }
 
 #[test]
-fn an_unsealed_manifest_compiles_to_the_same_descriptor() {
+fn an_unsealed_manifest_fails_validation() {
     let mut unsealed = full_manifest();
-    let sealed = unsealed.clone();
     unsealed.schema.digest = None;
-    let sealed_descriptor = compile(&sealed).expect("the sealed manifest compiles");
-    let unsealed_descriptor = compile(&unsealed).expect("the unsealed manifest compiles");
-    assert_eq!(unsealed_descriptor.bytes(), sealed_descriptor.bytes());
+    let error = unsealed.validate().expect_err("the digest is required");
+    assert_eq!(error.code(), CODE_ARTIFACT_DRIFT);
+    assert!(compile(&unsealed).is_err());
+}
+
+#[test]
+fn a_search_index_requires_a_tokenizer_a_scorer_and_integer_parameters() {
+    let mut manifest = full_manifest();
+    let index = manifest
+        .indexes
+        .iter_mut()
+        .find(|index| index.search)
+        .expect("the fixture has a search index");
+    index.scorer = None;
+    index.scorer_parameters.clear();
+    let error = manifest.validate().expect_err("the scorer is required");
+    assert_eq!(error.code(), CODE_UNKNOWN_FIELD);
+
+    let mut manifest = full_manifest();
+    let index = manifest
+        .indexes
+        .iter_mut()
+        .find(|index| index.search)
+        .expect("the fixture has a search index");
+    index.tokenizer = None;
+    let error = manifest.validate().expect_err("the tokenizer is required");
+    assert_eq!(error.code(), CODE_UNKNOWN_FIELD);
+
+    let mut manifest = full_manifest();
+    let index = manifest
+        .indexes
+        .iter_mut()
+        .find(|index| index.search)
+        .expect("the fixture has a search index");
+    index.scorer_parameters.clear();
+    let error = manifest
+        .validate()
+        .expect_err("the integer parameters are required");
+    assert_eq!(error.code(), CODE_UNKNOWN_FIELD);
+}
+
+#[test]
+fn a_projection_invalidation_cause_is_closed() {
+    let text = FULL_MANIFEST.replace("\"fact-set\"", "\"every_policy_predicate_change\"");
+    let error = Manifest::parse(&text).expect_err("the cause is not declared");
+    assert_eq!(error.code(), CODE_UNKNOWN_FIELD);
+}
+
+#[test]
+fn a_fact_owner_must_name_a_table_or_a_fact() {
+    let mut manifest = full_manifest();
+    manifest.facts[0].owner = "missing_owner".to_owned();
+    let error = manifest.validate().expect_err("the owner is not declared");
+    assert_eq!(error.code(), CODE_UNKNOWN_FIELD);
 }
 
 #[test]

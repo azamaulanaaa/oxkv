@@ -38,6 +38,8 @@ pub struct ContractRow {
     pub surface: Surface,
     /// The vector corpus id.
     pub vector_id: &'static str,
+    /// The migration path for the surface.
+    pub migration_path: &'static str,
 }
 
 impl ContractRow {
@@ -57,6 +59,7 @@ pub static REGISTER: [ContractRow; 17] = [
         parent: None,
         surface: Surface::Core,
         vector_id: "C1-manifest",
+        migration_path: "migration/c1-manifest/v0-to-v1",
     },
     ContractRow {
         id: "C2",
@@ -65,6 +68,7 @@ pub static REGISTER: [ContractRow; 17] = [
         parent: None,
         surface: Surface::Core,
         vector_id: "C2-snapshot",
+        migration_path: "migration/c2-snapshot/v0-to-v1",
     },
     ContractRow {
         id: "C3",
@@ -73,6 +77,7 @@ pub static REGISTER: [ContractRow; 17] = [
         parent: None,
         surface: Surface::Core,
         vector_id: "C3-sync-wire",
+        migration_path: "migration/c3-sync-wire/v0-to-v1",
     },
     ContractRow {
         id: "C4",
@@ -81,6 +86,7 @@ pub static REGISTER: [ContractRow; 17] = [
         parent: None,
         surface: Surface::Core,
         vector_id: "C4-policy",
+        migration_path: "migration/c4-policy/v0-to-v1",
     },
     ContractRow {
         id: "C5",
@@ -89,6 +95,7 @@ pub static REGISTER: [ContractRow; 17] = [
         parent: None,
         surface: Surface::Core,
         vector_id: "C5-receipt-error",
+        migration_path: "migration/c5-receipt-error/v0-to-v1",
     },
     ContractRow {
         id: "A1",
@@ -97,6 +104,7 @@ pub static REGISTER: [ContractRow; 17] = [
         parent: Some("C2"),
         surface: Surface::Annex,
         vector_id: "A1-key-encoding",
+        migration_path: "migration/a1-key-encoding/v0-to-v1",
     },
     ContractRow {
         id: "A2",
@@ -105,6 +113,7 @@ pub static REGISTER: [ContractRow; 17] = [
         parent: Some("C1"),
         surface: Surface::Annex,
         vector_id: "A2-tokenizer",
+        migration_path: "migration/a2-tokenizer/v0-to-v1",
     },
     ContractRow {
         id: "A3",
@@ -113,6 +122,7 @@ pub static REGISTER: [ContractRow; 17] = [
         parent: Some("C5"),
         surface: Surface::Annex,
         vector_id: "A3-event",
+        migration_path: "migration/a3-event/v0-to-v1",
     },
     ContractRow {
         id: "A4",
@@ -121,6 +131,7 @@ pub static REGISTER: [ContractRow; 17] = [
         parent: Some("C1"),
         surface: Surface::Annex,
         vector_id: "A4-shard-map",
+        migration_path: "migration/a4-shard-map/v0-to-v1",
     },
     ContractRow {
         id: "A5",
@@ -129,6 +140,7 @@ pub static REGISTER: [ContractRow; 17] = [
         parent: Some("C3"),
         surface: Surface::Annex,
         vector_id: "A5-scope",
+        migration_path: "migration/a5-scope/v0-to-v1",
     },
     ContractRow {
         id: "A6",
@@ -137,6 +149,7 @@ pub static REGISTER: [ContractRow; 17] = [
         parent: Some("C4"),
         surface: Surface::Annex,
         vector_id: "A6-projection",
+        migration_path: "migration/a6-projection/v0-to-v1",
     },
     ContractRow {
         id: "A7",
@@ -145,6 +158,7 @@ pub static REGISTER: [ContractRow; 17] = [
         parent: Some("C5"),
         surface: Surface::Annex,
         vector_id: "A7-audit",
+        migration_path: "migration/a7-audit/v0-to-v1",
     },
     ContractRow {
         id: "A8",
@@ -153,6 +167,7 @@ pub static REGISTER: [ContractRow; 17] = [
         parent: Some("C1"),
         surface: Surface::Annex,
         vector_id: "A8-cost",
+        migration_path: "migration/a8-cost/v0-to-v1",
     },
     ContractRow {
         id: "A9",
@@ -161,6 +176,7 @@ pub static REGISTER: [ContractRow; 17] = [
         parent: Some("C3"),
         surface: Surface::Annex,
         vector_id: "A9-cursor",
+        migration_path: "migration/a9-cursor/v0-to-v1",
     },
     ContractRow {
         id: "A10",
@@ -169,6 +185,7 @@ pub static REGISTER: [ContractRow; 17] = [
         parent: Some("C1"),
         surface: Surface::Annex,
         vector_id: "A10-descriptor",
+        migration_path: "migration/a10-descriptor/v0-to-v1",
     },
     ContractRow {
         id: "A11",
@@ -177,6 +194,7 @@ pub static REGISTER: [ContractRow; 17] = [
         parent: Some("C3"),
         surface: Surface::Annex,
         vector_id: "A11-read-pin",
+        migration_path: "migration/a11-read-pin/v0-to-v1",
     },
     ContractRow {
         id: "A12",
@@ -185,6 +203,7 @@ pub static REGISTER: [ContractRow; 17] = [
         parent: Some("C2"),
         surface: Surface::Annex,
         vector_id: "A12-migration",
+        migration_path: "migration/a12-migration/v0-to-v1",
     },
 ];
 
@@ -227,6 +246,8 @@ pub struct RegisterFileRow {
     pub surface: String,
     /// The vector corpus id.
     pub vector_id: String,
+    /// The migration path for the surface.
+    pub migration_path: String,
 }
 
 /// Parses the checked-in register file.
@@ -264,6 +285,10 @@ pub fn parse_register_file(text: &str) -> Result<Vec<RegisterFileRow>, String> {
                     .as_str()
                     .ok_or("a register row has no vector id")?
                     .to_owned(),
+                migration_path: row["migration_path"]
+                    .as_str()
+                    .ok_or("a register row has no migration path")?
+                    .to_owned(),
             })
         })
         .collect()
@@ -291,6 +316,14 @@ mod tests {
             assert_eq!(row.parent, file_row.parent.as_deref());
             assert_eq!(row.surface.name(), file_row.surface);
             assert_eq!(row.vector_id, file_row.vector_id);
+            assert_eq!(row.migration_path, file_row.migration_path);
+        }
+    }
+
+    #[test]
+    fn every_row_names_a_migration_path() {
+        for row in &REGISTER {
+            assert!(!row.migration_path.is_empty(), "{} has no path", row.id);
         }
     }
 

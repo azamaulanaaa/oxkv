@@ -186,23 +186,24 @@ impl ScopeError {
             Self::SystemNamespace { .. } => "manifest.reserved_table_name",
             Self::InvalidRuleSetSelector { .. } => "policy.parse_error",
             Self::InvalidFieldName { .. } => "manifest.unknown_field",
-            Self::UnmappedTable { .. } => "map.table_unmapped",
+            Self::UnmappedTable { .. }
+            | Self::UnknownShard { .. }
+            | Self::MissingPinShard { .. } => "map.table_unmapped",
             Self::OverLimit { .. } => "scope.over_limit",
             Self::DeviceBudgetExceeded { .. } => "scope.device_budget_exceeded",
             Self::HydrationBudgetExceeded { .. } => "scope.hydration_budget_exceeded",
             Self::IdentityMismatch { .. } => "scope.identity_mismatch",
             Self::UnsupportedDiffVersion { .. } => "sync.unsupported_version",
             Self::DuplicateDiffRecord { .. }
-            | Self::RemoveUnknownMember { .. }
             | Self::VersionRegression { .. }
-            | Self::UnknownShard { .. }
-            | Self::DuplicateTableAssignment { .. }
             | Self::DiffSequence { .. }
             | Self::BaseVersionMismatch
-            | Self::MalformedDiff
-            | Self::ByteCountOverflow
-            | Self::MissingPinShard { .. }
-            | Self::SystemKey { .. } => "internal.invariant_violation",
+            | Self::MalformedDiff => "sync.cursor_invalid",
+            Self::DuplicateTableAssignment { .. } => "map.duplicate_id",
+            Self::RemoveUnknownMember { .. } | Self::SystemKey { .. } => {
+                "internal.invariant_violation"
+            }
+            Self::ByteCountOverflow => "format.page_too_large",
         }
     }
 }

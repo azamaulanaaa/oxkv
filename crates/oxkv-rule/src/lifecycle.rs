@@ -6,9 +6,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use oxkv_contracts::receipt::{AuditReference, ReceiptId, ReceiptState, RequestId};
+use oxkv_contracts::receipt::{AuditReference, IdempotencyKey, ReceiptId, ReceiptState, RequestId};
 use oxkv_contracts::version::{
-    ContentDigest, DigestDomain, Hash32, PolicyVersion, ProjectionEpoch,
+    CommitVersion, ContentDigest, DigestDomain, Hash32, ManifestDigest, PolicyVersion,
+    ProjectionEpoch,
 };
 
 use crate::audit::{AuditEntry, PolicyAuditLog, PolicyAuditRecord};
@@ -727,9 +728,12 @@ fn report_digest(
 pub struct RuleReceipt {
     receipt_id: ReceiptId,
     request_id: RequestId,
+    idempotency_key: IdempotencyKey,
     policy_id: PolicyId,
     base_version: PolicyVersion,
     new_version: PolicyVersion,
+    commit_version: Option<CommitVersion>,
+    manifest_digest: ManifestDigest,
     cohort: Cohort,
     role: Role,
     dry_run_digest: Option<ContentDigest>,
@@ -751,6 +755,12 @@ impl RuleReceipt {
         self.request_id
     }
 
+    /// Returns the idempotency key.
+    #[must_use]
+    pub const fn idempotency_key(&self) -> &IdempotencyKey {
+        &self.idempotency_key
+    }
+
     /// Returns the policy identity.
     #[must_use]
     pub const fn policy_id(&self) -> &PolicyId {
@@ -767,6 +777,18 @@ impl RuleReceipt {
     #[must_use]
     pub const fn new_version(&self) -> PolicyVersion {
         self.new_version
+    }
+
+    /// Returns the commit version of a committed change.
+    #[must_use]
+    pub const fn commit_version(&self) -> Option<CommitVersion> {
+        self.commit_version
+    }
+
+    /// Returns the manifest digest that the change used.
+    #[must_use]
+    pub const fn manifest_digest(&self) -> ManifestDigest {
+        self.manifest_digest
     }
 
     /// Returns the cohort.
@@ -1029,6 +1051,10 @@ pub enum LifecycleStep {
 /// One activation request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivationRequest {
+    /// The idempotency key that identifies the change.
+    pub idempotency_key: IdempotencyKey,
+    /// The request identity.
+    pub request_id: RequestId,
     /// The policy identity.
     pub policy_id: PolicyId,
     /// The base policy version for the cohort.
@@ -1060,6 +1086,10 @@ pub struct ActivationRequest {
 /// One rollback request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RollbackRequest {
+    /// The idempotency key that identifies the rollback.
+    pub idempotency_key: IdempotencyKey,
+    /// The request identity.
+    pub request_id: RequestId,
     /// The policy identity.
     pub policy_id: PolicyId,
     /// The cohort.
@@ -1114,6 +1144,12 @@ struct Assignment {
     projection: ProjectionStamp,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RequestIdentity {
+    idempotency_key: IdempotencyKey,
+    request_id: RequestId,
+}
+
 /// The rule lifecycle state machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuleLifecycle {
@@ -1122,6 +1158,8 @@ pub struct RuleLifecycle {
     audit: PolicyAuditLog,
     assignments: BTreeMap<String, Assignment>,
     rollouts: BTreeMap<String, Rollout>,
+    changes: BTreeMap<Vec<u8>, RuleChange>,
+    pending_identity: Option<RequestIdentity>,
 }
 
 impl RuleLifecycle {
@@ -1142,6 +1180,8 @@ impl RuleLifecycle {
             audit: PolicyAuditLog::new(),
             assignments: BTreeMap::new(),
             rollouts: BTreeMap::new(),
+            changes: BTreeMap::new(),
+            pending_identity: None,
         })
     }
 
@@ -1160,6 +1200,8 @@ impl RuleLifecycle {
             audit: PolicyAuditLog::new(),
             assignments: BTreeMap::new(),
             rollouts: BTreeMap::new(),
+            changes: BTreeMap::new(),
+            pending_identity: None,
         })
     }
 
@@ -1239,8 +1281,23 @@ impl RuleLifecycle {
     /// approval gate, or rollout limit returns a `Rejected` receipt. A stale
     /// base returns a `Conflict` receipt.
     #[must_use]
-    #[allow(clippy::too_many_lines)]
     pub fn activate(&mut self, request: ActivationRequest) -> RuleChange {
+        let key = request.idempotency_key.as_bytes().to_vec();
+        if let Some(change) = self.changes.get(&key) {
+            return change.clone();
+        }
+        self.pending_identity = Some(RequestIdentity {
+            idempotency_key: request.idempotency_key.clone(),
+            request_id: request.request_id,
+        });
+        let change = self.activate_once(request);
+        self.pending_identity = None;
+        self.changes.insert(key, change.clone());
+        change
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn activate_once(&mut self, request: ActivationRequest) -> RuleChange {
         let key = request.cohort.id().to_owned();
         let assignment = self.assignments.get(&key);
         let from_version = assignment.map_or(request.base_version, |current| current.version);
@@ -1447,6 +1504,22 @@ impl RuleLifecycle {
     /// not edit the catalog and it does not require the active version to
     /// compile.
     pub fn rollback(&mut self, request: &RollbackRequest) -> RuleChange {
+        let key = request.idempotency_key.as_bytes().to_vec();
+        if let Some(change) = self.changes.get(&key) {
+            return change.clone();
+        }
+        self.pending_identity = Some(RequestIdentity {
+            idempotency_key: request.idempotency_key.clone(),
+            request_id: request.request_id,
+        });
+        let change = self.rollback_once(request);
+        self.pending_identity = None;
+        self.changes.insert(key, change.clone());
+        change
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn rollback_once(&mut self, request: &RollbackRequest) -> RuleChange {
         let key = request.cohort.id().to_owned();
         let Some(assignment) = self.assignments.get(&key) else {
             return self.record(
@@ -1495,6 +1568,38 @@ impl RuleLifecycle {
                 );
             }
         };
+        let base_generation = match self.catalog.resolve(request.base_version) {
+            Ok(record) => record.generation(),
+            Err(error) => {
+                return self.record_error(
+                    NoticeKind::RolledBack,
+                    &error,
+                    &request.policy_id,
+                    request.base_version,
+                    request.target_version,
+                    &request.cohort,
+                    request.role,
+                    &request.actor,
+                    None,
+                    request.at,
+                );
+            }
+        };
+        if record.generation() >= base_generation {
+            return self.record(
+                NoticeKind::RolledBack,
+                ReceiptState::Conflict,
+                Some("write.version_conflict"),
+                &request.policy_id,
+                request.base_version,
+                request.target_version,
+                &request.cohort,
+                request.role,
+                &request.actor,
+                None,
+                request.at,
+            );
+        }
         let compiled = match record.content().compile(&self.manifest) {
             Ok(compiled) => compiled,
             Err(error) => {
@@ -1703,6 +1808,7 @@ impl RuleLifecycle {
         dry_run_digest: Option<ContentDigest>,
         at: InjectedTime,
     ) -> RuleChange {
+        let manifest_digest = self.manifest.digest();
         let audit = self.audit.append(AuditEntry {
             actor: actor.to_owned(),
             role,
@@ -1716,13 +1822,30 @@ impl RuleLifecycle {
         });
         let reference = audit.reference();
         let receipt_id = receipt_id(&audit);
-        let request_id = request_id(&audit);
+        let derived_request_id = request_id(&audit);
+        let (idempotency_key, request_id) = self.pending_identity.as_ref().map_or_else(
+            || {
+                (
+                    IdempotencyKey::new(audit.record_hash().as_bytes().to_vec()),
+                    derived_request_id,
+                )
+            },
+            |identity| (identity.idempotency_key.clone(), identity.request_id),
+        );
+        let commit_version = if state == ReceiptState::Committed {
+            Some(CommitVersion::new(audit.sequence().get()))
+        } else {
+            None
+        };
         let receipt = RuleReceipt {
             receipt_id,
             request_id,
+            idempotency_key,
             policy_id: policy_id.clone(),
             base_version: from_version,
             new_version: to_version,
+            commit_version,
+            manifest_digest,
             cohort: cohort.clone(),
             role,
             dry_run_digest,

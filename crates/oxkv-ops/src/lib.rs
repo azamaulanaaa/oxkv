@@ -54,7 +54,7 @@ pub use artifact::{
 };
 pub use backup::{
     BackupImage, BackupManifest, BackupObjectRef, BackupOutcome, BackupPin, BackupPlan,
-    BackupVersions, ConsistencyPoint, PinLedger, PinState, QuiesceState, capture,
+    BackupState, BackupVersions, ConsistencyPoint, PinLedger, PinState, QuiesceState, capture,
 };
 pub use compaction::{
     CompactionBudget, CompactionPass, CompactionPolicy, CompactionReport, CompactionState,

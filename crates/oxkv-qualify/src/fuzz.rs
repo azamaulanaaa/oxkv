@@ -18,7 +18,7 @@ use crate::rng::FixedSeedRng;
 /// The parity digest of the default corpus.
 ///
 /// A native run and a wasm run must produce this value.
-pub const PARITY_DIGEST: &str = "7b93fcd7e128ca170f0895e896a92f4f1230d1c1dc6a19ef2b17b57dbc471ae0";
+pub const PARITY_DIGEST: &str = "8a7d3e4059b4222e64fe7fe75a121e21f9ee3ec003ec9ee6683bf54fdddeec36";
 
 /// The result of one fuzz corpus run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +70,46 @@ pub fn fuzz_artifact(bytes: &[u8]) -> Result<String, String> {
     crate::world::Artifact::decode(bytes)
         .map(|artifact| format!("{}.{}", artifact.format_major, artifact.format_minor))
         .map_err(str::to_owned)
+}
+
+/// Decodes one exported snapshot.
+///
+/// # Errors
+///
+/// Returns the canonical format error code for a bad snapshot.
+pub fn fuzz_snapshot(bytes: &[u8]) -> Result<String, String> {
+    crate::world::World::import(bytes)
+        .map(|world| format!("{}:{}", world.commit_version, world.generation))
+        .map_err(str::to_owned)
+}
+
+/// Decodes one snapshot page.
+///
+/// # Errors
+///
+/// Returns the canonical format error code for a bad page.
+pub fn fuzz_snapshot_page(bytes: &[u8]) -> Result<u64, String> {
+    crate::world::SnapshotPage::decode(bytes)
+        .map(|page| page.sequence)
+        .map_err(str::to_owned)
+}
+
+/// Decodes one event cursor.
+///
+/// # Errors
+///
+/// Returns the canonical event error code for a bad cursor.
+pub fn fuzz_event(bytes: &[u8]) -> Result<(), String> {
+    crate::vectors::decode_cursor(CursorType::Event, bytes).map_err(str::to_owned)
+}
+
+/// Decodes one search cursor.
+///
+/// # Errors
+///
+/// Returns the canonical search error code for a bad cursor.
+pub fn fuzz_search(bytes: &[u8]) -> Result<(), String> {
+    crate::vectors::decode_cursor(CursorType::Search, bytes).map_err(str::to_owned)
 }
 
 /// Parses and evaluates one policy text.
@@ -192,6 +232,18 @@ fn run_byte_probes(context: &mut FuzzContext) {
         });
         determinism(context, &format!("artifact-{seed_index}"), || {
             fuzz_artifact(&bytes)
+        });
+        determinism(context, &format!("snapshot-{seed_index}"), || {
+            fuzz_snapshot(&bytes)
+        });
+        determinism(context, &format!("snapshot-page-{seed_index}"), || {
+            fuzz_snapshot_page(&bytes)
+        });
+        determinism(context, &format!("event-{seed_index}"), || {
+            fuzz_event(&bytes)
+        });
+        determinism(context, &format!("search-{seed_index}"), || {
+            fuzz_search(&bytes)
         });
         determinism(context, &format!("policy-{seed_index}"), || {
             fuzz_policy(&bytes)

@@ -195,9 +195,9 @@ fn verify_manifest(source: &RestoreSource) -> Result<(), OpsError> {
 ///
 /// Returns [`OpsError::RestoreChecksumMismatch`] when an object does not match
 /// its manifest digest. Returns [`OpsError::MigrationIncomplete`] when the new
-/// epoch equals the source epoch.
+/// epoch is not higher than the source epoch.
 pub fn restore(source: &RestoreSource, plan: &RestorePlan) -> Result<RestoredEpoch, OpsError> {
-    if plan.new_epoch == source.source_epoch {
+    if plan.new_epoch <= source.source_epoch {
         return Err(OpsError::MigrationIncomplete {
             step: "restore_epoch",
         });
@@ -382,6 +382,17 @@ mod tests {
             &RestorePlan::new(LeaseTerm::new(1), 1_000, 0, 1_000),
         )
         .expect_err("the epoch repeats");
+        assert_eq!(error.code(), "ops.migration_incomplete");
+    }
+
+    #[test]
+    fn a_restore_refuses_a_lower_epoch() {
+        let source = source();
+        let error = restore(
+            &source,
+            &RestorePlan::new(LeaseTerm::new(0), 1_000, 0, 1_000),
+        )
+        .expect_err("the epoch moves back");
         assert_eq!(error.code(), "ops.migration_incomplete");
     }
 }

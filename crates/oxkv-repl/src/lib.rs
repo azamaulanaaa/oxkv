@@ -75,7 +75,7 @@ pub use fence::{Fence, FenceBook, Leadership};
 pub use ids::{NodeId, Tick};
 pub use lease::{AuthorityLease, LeaseDuration, LeaseKeeper};
 pub use lease_driver::LeaseDriver;
-pub use log::{EntryPayload, Log, LogIndex, LogRecord};
+pub use log::{EntryPayload, Log, LogIndex, LogRecord, OwnerFence};
 pub use raft::{RaftDriver, RaftMessage, RaftNode, Role};
 pub use read::{KeyValue, ReadBarrier, ReadBound, ReadFreshness, ReadView};
 pub use sim::{CrashableDriver, KillOutcome, KillPoint, run_kill_point};

@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use oxkv_contracts::keyspace::TableName;
-use oxkv_contracts::receipt::ReceiptState;
+use oxkv_contracts::receipt::{IdempotencyKey, ReceiptState, RequestId};
 use oxkv_contracts::version::{
     ContentDigest, FactSourceId, PolicyAstVersion, PolicyVersion, ProjectionEpoch,
 };
@@ -142,6 +142,8 @@ fn approvals(digest: ContentDigest) -> ApprovalSet {
 
 fn request(fixture: &Fixture, cohort: Cohort) -> ActivationRequest {
     ActivationRequest {
+        idempotency_key: IdempotencyKey::new(cohort.id().as_bytes().to_vec()),
+        request_id: RequestId::from_bytes([7; 32]),
         policy_id: policy_id(),
         base_version: fixture.old.version(),
         candidate: fixture.candidate.clone(),
@@ -310,6 +312,8 @@ fn a_rollback_restores_an_earlier_version_without_rewriting_history() {
         .to_vec();
     let audit_len = lifecycle.audit().len();
     let change = lifecycle.rollback(&RollbackRequest {
+        idempotency_key: IdempotencyKey::new(b"rollback-1".to_vec()),
+        request_id: RequestId::from_bytes([8; 32]),
         policy_id: policy_id(),
         cohort: fixture.control.clone(),
         base_version: fixture.candidate.version(),
@@ -335,6 +339,65 @@ fn a_rollback_restores_an_earlier_version_without_rewriting_history() {
     );
     assert_eq!(lifecycle.audit().len(), audit_len + 1);
     assert!(lifecycle.audit().verify());
+}
+
+#[test]
+fn a_retry_with_the_same_idempotency_key_returns_the_same_receipt() {
+    let (mut lifecycle, fixture) = seeded();
+    let request = request(&fixture, fixture.canary.clone());
+    let first = lifecycle.activate(request.clone());
+    let audit_len = lifecycle.audit().len();
+    let second = lifecycle.activate(request);
+    assert_eq!(first.receipt, second.receipt);
+    assert_eq!(lifecycle.audit().len(), audit_len);
+}
+
+#[test]
+fn a_rollback_cannot_move_to_a_newer_version() {
+    let (mut lifecycle, fixture) = seeded();
+    let _ = lifecycle.activate(request(&fixture, fixture.canary.clone()));
+    let change = lifecycle.rollback(&RollbackRequest {
+        idempotency_key: IdempotencyKey::new(b"rollback-forward".to_vec()),
+        request_id: RequestId::from_bytes([10; 32]),
+        policy_id: policy_id(),
+        cohort: fixture.control.clone(),
+        base_version: fixture.old.version(),
+        target_version: fixture.candidate.version(),
+        actor: "operator-1".to_owned(),
+        role: Role::PlatformOperator,
+        projection_base_epoch: BASE_EPOCH,
+        at: InjectedTime::new(200),
+    });
+    assert_eq!(change.receipt.state(), ReceiptState::Conflict);
+    assert_eq!(change.receipt.reason_code(), Some("write.version_conflict"));
+    assert_eq!(
+        lifecycle.active_version(&fixture.control),
+        Some(fixture.old.version())
+    );
+}
+
+#[test]
+fn a_rule_receipt_names_the_commit_version_and_the_manifest_digest() {
+    let (mut lifecycle, fixture) = seeded();
+    let change = lifecycle.activate(request(&fixture, fixture.canary.clone()));
+    assert_eq!(
+        change.receipt.manifest_digest(),
+        lifecycle.manifest().digest()
+    );
+    assert!(change.receipt.commit_version().is_some());
+    assert_eq!(
+        change.receipt.idempotency_key().as_bytes(),
+        fixture.canary.id().as_bytes()
+    );
+    let mut rejected_request = request(&fixture, Cohort::control("tenant-c"));
+    rejected_request.dry_run = None;
+    let rejected = lifecycle.activate(rejected_request);
+    assert_eq!(rejected.receipt.state(), ReceiptState::Rejected);
+    assert_eq!(rejected.receipt.commit_version(), None);
+    assert_eq!(
+        rejected.receipt.manifest_digest(),
+        lifecycle.manifest().digest()
+    );
 }
 
 #[test]
@@ -373,6 +436,8 @@ fn an_unknown_policy_version_fails() {
     let (mut lifecycle, fixture) = seeded();
     let unknown = PolicyVersion::from_bytes([9; 32]);
     let change = lifecycle.rollback(&RollbackRequest {
+        idempotency_key: IdempotencyKey::new(b"rollback-unknown".to_vec()),
+        request_id: RequestId::from_bytes([9; 32]),
         policy_id: policy_id(),
         cohort: fixture.control.clone(),
         base_version: fixture.old.version(),

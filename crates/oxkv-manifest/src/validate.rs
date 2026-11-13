@@ -14,8 +14,8 @@ use crate::schema::{DIGEST_ALGORITHM, Manifest, RULE_COST_BUDGET, SCHEMA_VERSION
 impl Manifest {
     /// Validates the manifest schema and the declaration graph.
     ///
-    /// The method does not require a digest. Use [`Manifest::verify_digest`]
-    /// for the digest check.
+    /// The method requires a stored digest. Use [`Manifest::verify_digest`] to
+    /// check that the digest matches the canonical bytes.
     ///
     /// # Errors
     ///
@@ -101,6 +101,12 @@ impl Manifest {
             for code in &operation.errors {
                 validate_error_code("manifest.control[].errors", code)?;
             }
+        }
+        if self.schema.digest.is_none() {
+            return Err(ManifestError::ArtifactDrift {
+                expected: self.digest().to_hex(),
+                found: "none".to_owned(),
+            });
         }
         Ok(())
     }
@@ -209,6 +215,34 @@ impl Manifest {
                 index: index.name.clone(),
             });
         }
+        if index.search {
+            if index.tokenizer.as_deref().is_none_or(str::is_empty) {
+                return Err(invalid(
+                    "manifest.indexes[].tokenizer",
+                    "a search index requires a tokenizer",
+                ));
+            }
+            if index.scorer.as_deref().is_none_or(str::is_empty) {
+                return Err(invalid(
+                    "manifest.indexes[].scorer",
+                    "a search index requires a scorer",
+                ));
+            }
+            if index.scorer_parameters.is_empty() {
+                return Err(invalid(
+                    "manifest.indexes[].scorer_parameters",
+                    "a search index requires integer scorer parameters",
+                ));
+            }
+        }
+        for (name, value) in &index.scorer_parameters {
+            if *value < 0 {
+                return Err(invalid(
+                    &format!("manifest.indexes[].scorer_parameters.{name}"),
+                    value,
+                ));
+            }
+        }
         if index.overhead_budget < 0 {
             return Err(invalid(
                 "manifest.indexes[].overhead_budget",
@@ -268,6 +302,11 @@ impl Manifest {
             validate_identifier("manifest.facts[].name", &fact.name)?;
             if fact.owner.is_empty() {
                 return Err(invalid("manifest.facts[].owner", "empty"));
+            }
+            let owner_is_table = self.tables.iter().any(|table| table.name == fact.owner);
+            let owner_is_fact = self.facts.iter().any(|other| other.name == fact.owner);
+            if !owner_is_table && !owner_is_fact {
+                return Err(invalid("manifest.facts[].owner", &fact.owner));
             }
             if fact.fan_in_cap <= 0 {
                 return Err(invalid("manifest.facts[].fan_in_cap", &fact.fan_in_cap));

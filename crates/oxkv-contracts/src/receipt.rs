@@ -9,6 +9,7 @@
 use core::fmt;
 use core::str::FromStr;
 
+use crate::error::{ErrorRegistryError, lookup_receipt_reason};
 use crate::version::{CommitVersion, Hash32, KeyVersion, ManifestDigest, PolicyVersion, ShardId};
 
 /// The four receipt states.
@@ -119,6 +120,12 @@ pub enum ReceiptTransitionError {
         /// The target state.
         state: ReceiptState,
     },
+    /// The reason code is not a registered receipt reason.
+    #[error("The receipt reason is not registered: {code}.")]
+    UnknownReason {
+        /// The unregistered reason code.
+        code: &'static str,
+    },
 }
 
 impl ReceiptTransitionError {
@@ -126,7 +133,9 @@ impl ReceiptTransitionError {
     #[must_use]
     pub const fn code(self) -> &'static str {
         match self {
-            Self::Terminal { .. } | Self::NotTerminal { .. } => "receipt.state_invalid",
+            Self::Terminal { .. } | Self::NotTerminal { .. } | Self::UnknownReason { .. } => {
+                "receipt.state_invalid"
+            }
         }
     }
 }
@@ -339,6 +348,36 @@ impl ReceiptEnvelope {
         }
     }
 
+    /// Creates a `Queued` receipt when the reason code is registered.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorRegistryError`] when the reason code is absent or maps
+    /// to no receipt.
+    pub fn try_queued(
+        receipt_id: ReceiptId,
+        request_id: RequestId,
+        idempotency_key: IdempotencyKey,
+        audit: AuditReference,
+        policy_version: PolicyVersion,
+        manifest_digest: ManifestDigest,
+        reason_code: &'static str,
+    ) -> Result<Self, ErrorRegistryError> {
+        lookup_receipt_reason(reason_code)?;
+        Ok(Self {
+            receipt_id,
+            request_id,
+            state: ReceiptState::Queued,
+            idempotency_key,
+            audit,
+            policy_version,
+            manifest_digest,
+            commit_version: None,
+            current_key_version: None,
+            reason_code: Some(reason_code),
+        })
+    }
+
     /// Closes a queued receipt with one terminal outcome.
     ///
     /// # Errors
@@ -548,6 +587,42 @@ mod tests {
         assert_eq!(receipt.state(), ReceiptState::Rejected);
         assert_eq!(receipt.reason_code(), Some("write.queue_timeout"));
         assert_eq!(receipt.commit_version(), None);
+    }
+
+    #[test]
+    fn a_queued_receipt_reason_must_be_registered() {
+        assert!(
+            ReceiptEnvelope::try_queued(
+                ReceiptId::from_bytes([1; 32]),
+                RequestId::from_bytes([2; 32]),
+                IdempotencyKey::new(vec![9, 9]),
+                AuditReference::new(
+                    ShardId::new(vec![1]),
+                    AuditSequence::new(7),
+                    Hash32::from_bytes([3; 32]),
+                ),
+                PolicyVersion::from_bytes([4; 32]),
+                ManifestDigest::from_bytes([5; 32]),
+                "projection.lagging",
+            )
+            .is_ok()
+        );
+        assert!(
+            ReceiptEnvelope::try_queued(
+                ReceiptId::from_bytes([1; 32]),
+                RequestId::from_bytes([2; 32]),
+                IdempotencyKey::new(vec![9, 9]),
+                AuditReference::new(
+                    ShardId::new(vec![1]),
+                    AuditSequence::new(7),
+                    Hash32::from_bytes([3; 32]),
+                ),
+                PolicyVersion::from_bytes([4; 32]),
+                ManifestDigest::from_bytes([5; 32]),
+                "write.not_registered",
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -4,9 +4,9 @@ use oxkv_contracts::receipt::{IdempotencyKey, ReceiptState};
 use oxkv_contracts::version::{CommitVersion, LeaseTerm};
 use oxkv_repl::{
     CrashableDriver, EntryPayload, FenceBook, KillPoint, KvState, LeaseDriver, LeaseDuration,
-    LeaseKeeper, Log, LogIndex, NodeId, RaftDriver, ReadBarrier, ReadBound, ReadFreshness,
-    ReplError, ReplicationDriver, TerminalReceipt, Tick, WarmupBudget, WriteAttempt, WriteRequest,
-    run_kill_point, submit,
+    LeaseKeeper, Log, LogIndex, NodeId, OwnerFence, RaftDriver, ReadBarrier, ReadBound,
+    ReadFreshness, ReplError, ReplicationDriver, TerminalReceipt, Tick, WarmupBudget, WriteAttempt,
+    WriteRequest, run_kill_point, submit,
 };
 
 fn lease_driver() -> LeaseDriver {
@@ -160,8 +160,12 @@ fn a_held_lease_fails_with_a_named_error() {
 #[test]
 fn a_read_past_the_applied_index_fails_with_a_named_error() {
     let mut log = Log::new();
-    log.append(LeaseTerm::new(1), payload(1))
-        .expect("the record appends");
+    log.append(
+        LeaseTerm::new(1),
+        OwnerFence::new(LeaseTerm::new(1)),
+        payload(1),
+    )
+    .expect("the record appends");
     let mut state = KvState::new();
     state
         .apply(&log, LogIndex::new(1))
@@ -455,6 +459,7 @@ fn the_record_header_is_readable() {
     let record = log
         .append(
             LeaseTerm::new(1),
+            OwnerFence::new(LeaseTerm::new(1)),
             EntryPayload::Data {
                 idempotency: IdempotencyKey::new(vec![1, 2]),
                 key: vec![3],
@@ -463,4 +468,31 @@ fn the_record_header_is_readable() {
         )
         .expect("the record appends");
     assert_eq!(record.header_line(), "index=1 term=1 len=5");
+}
+
+#[test]
+fn a_stale_fence_at_the_log_boundary_returns_stale_epoch() {
+    let mut log = Log::new();
+    log.append(
+        LeaseTerm::new(2),
+        OwnerFence::new(LeaseTerm::new(2)),
+        payload(1),
+    )
+    .expect("the higher fence appends");
+    let error = log
+        .append(
+            LeaseTerm::new(1),
+            OwnerFence::new(LeaseTerm::new(1)),
+            payload(2),
+        )
+        .expect_err("the lower fence is stale");
+    assert_eq!(error.code(), "replication.stale_epoch");
+    assert_eq!(
+        error,
+        ReplError::StaleEpoch {
+            presented: 1,
+            current: 2
+        }
+    );
+    assert_eq!(log.len(), 1);
 }

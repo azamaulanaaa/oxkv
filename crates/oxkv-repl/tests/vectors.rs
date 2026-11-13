@@ -6,8 +6,8 @@ use oxkv_contracts::receipt::{IdempotencyKey, ReceiptState};
 use oxkv_contracts::version::{CommitVersion, LeaseTerm};
 use oxkv_repl::{
     EntryPayload, FenceBook, KillPoint, KvState, LeaseDriver, LeaseDuration, LeaseKeeper, Log,
-    LogIndex, NodeId, RaftDriver, ReadBound, ReadFreshness, ReplError, ReplicationDriver, Tick,
-    WriteRequest, run_kill_point, submit,
+    LogIndex, NodeId, OwnerFence, RaftDriver, ReadBound, ReadFreshness, ReplError,
+    ReplicationDriver, Tick, WriteRequest, run_kill_point, submit,
 };
 
 use support::{GoldenCase, GoldenFile};
@@ -126,6 +126,7 @@ fn replication_golden_vectors_are_pinned() {
                 let mut log = Log::new();
                 log.append(
                     LeaseTerm::new(1),
+                    OwnerFence::new(LeaseTerm::new(1)),
                     EntryPayload::Data {
                         idempotency: IdempotencyKey::new(vec![1]),
                         key: b"k".to_vec(),
@@ -153,6 +154,7 @@ fn replication_golden_vectors_are_pinned() {
                 let record = log
                     .append(
                         LeaseTerm::new(1),
+                        OwnerFence::new(LeaseTerm::new(1)),
                         EntryPayload::Data {
                             idempotency: IdempotencyKey::new(vec![1, 2]),
                             key: vec![3],

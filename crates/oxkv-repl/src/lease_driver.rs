@@ -17,7 +17,7 @@ use crate::error::ReplError;
 use crate::fence::Leadership;
 use crate::ids::{NodeId, Tick};
 use crate::lease::{LeaseDuration, LeaseKeeper};
-use crate::log::{EntryPayload, Log, LogIndex};
+use crate::log::{EntryPayload, Log, LogIndex, OwnerFence};
 use crate::read::ReadView;
 use crate::state::{ApplyReport, KvState};
 
@@ -149,7 +149,9 @@ impl ReplicationDriver for LeaseDriver {
                 record.index() <= self.commit,
             ));
         }
-        let record = self.log.append(token.term(), payload)?;
+        let record = self
+            .log
+            .append(token.term(), OwnerFence::new(token.term()), payload)?;
         Ok(AppendReceipt::new(
             record.index(),
             record.term(),

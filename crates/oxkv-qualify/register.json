@@ -7,7 +7,8 @@
       "version": "oxkv/manifest/v1",
       "parent": null,
       "surface": "core",
-      "vector_id": "C1-manifest"
+      "vector_id": "C1-manifest",
+      "migration_path": "migration/c1-manifest/v0-to-v1"
     },
     {
       "id": "C2",
@@ -15,7 +16,8 @@
       "version": "snapshot-page/v1",
       "parent": null,
       "surface": "core",
-      "vector_id": "C2-snapshot"
+      "vector_id": "C2-snapshot",
+      "migration_path": "migration/c2-snapshot/v0-to-v1"
     },
     {
       "id": "C3",
@@ -23,7 +25,8 @@
       "version": "sync-wire/v1",
       "parent": null,
       "surface": "core",
-      "vector_id": "C3-sync-wire"
+      "vector_id": "C3-sync-wire",
+      "migration_path": "migration/c3-sync-wire/v0-to-v1"
     },
     {
       "id": "C4",
@@ -31,7 +34,8 @@
       "version": "policy-ast/v1",
       "parent": null,
       "surface": "core",
-      "vector_id": "C4-policy"
+      "vector_id": "C4-policy",
+      "migration_path": "migration/c4-policy/v0-to-v1"
     },
     {
       "id": "C5",
@@ -39,7 +43,8 @@
       "version": "receipt-error/v1",
       "parent": null,
       "surface": "core",
-      "vector_id": "C5-receipt-error"
+      "vector_id": "C5-receipt-error",
+      "migration_path": "migration/c5-receipt-error/v0-to-v1"
     },
     {
       "id": "A1",
@@ -47,7 +52,8 @@
       "version": "key-encoding/v1",
       "parent": "C2",
       "surface": "annex",
-      "vector_id": "A1-key-encoding"
+      "vector_id": "A1-key-encoding",
+      "migration_path": "migration/a1-key-encoding/v0-to-v1"
     },
     {
       "id": "A2",
@@ -55,7 +61,8 @@
       "version": "tokenizer/v1",
       "parent": "C1",
       "surface": "annex",
-      "vector_id": "A2-tokenizer"
+      "vector_id": "A2-tokenizer",
+      "migration_path": "migration/a2-tokenizer/v0-to-v1"
     },
     {
       "id": "A3",
@@ -63,7 +70,8 @@
       "version": "event/v1",
       "parent": "C5",
       "surface": "annex",
-      "vector_id": "A3-event"
+      "vector_id": "A3-event",
+      "migration_path": "migration/a3-event/v0-to-v1"
     },
     {
       "id": "A4",
@@ -71,7 +79,8 @@
       "version": "oxkv/map/v1",
       "parent": "C1",
       "surface": "annex",
-      "vector_id": "A4-shard-map"
+      "vector_id": "A4-shard-map",
+      "migration_path": "migration/a4-shard-map/v0-to-v1"
     },
     {
       "id": "A5",
@@ -79,7 +88,8 @@
       "version": "scope/v1",
       "parent": "C3",
       "surface": "annex",
-      "vector_id": "A5-scope"
+      "vector_id": "A5-scope",
+      "migration_path": "migration/a5-scope/v0-to-v1"
     },
     {
       "id": "A6",
@@ -87,7 +97,8 @@
       "version": "projection/v1",
       "parent": "C4",
       "surface": "annex",
-      "vector_id": "A6-projection"
+      "vector_id": "A6-projection",
+      "migration_path": "migration/a6-projection/v0-to-v1"
     },
     {
       "id": "A7",
@@ -95,7 +106,8 @@
       "version": "audit/v1",
       "parent": "C5",
       "surface": "annex",
-      "vector_id": "A7-audit"
+      "vector_id": "A7-audit",
+      "migration_path": "migration/a7-audit/v0-to-v1"
     },
     {
       "id": "A8",
@@ -103,7 +115,8 @@
       "version": "cost/v1",
       "parent": "C1",
       "surface": "annex",
-      "vector_id": "A8-cost"
+      "vector_id": "A8-cost",
+      "migration_path": "migration/a8-cost/v0-to-v1"
     },
     {
       "id": "A9",
@@ -111,7 +124,8 @@
       "version": "cursor/v1",
       "parent": "C3",
       "surface": "annex",
-      "vector_id": "A9-cursor"
+      "vector_id": "A9-cursor",
+      "migration_path": "migration/a9-cursor/v0-to-v1"
     },
     {
       "id": "A10",
@@ -119,7 +133,8 @@
       "version": "descriptor/v1",
       "parent": "C1",
       "surface": "annex",
-      "vector_id": "A10-descriptor"
+      "vector_id": "A10-descriptor",
+      "migration_path": "migration/a10-descriptor/v0-to-v1"
     },
     {
       "id": "A11",
@@ -127,7 +142,8 @@
       "version": "read-pin/v1",
       "parent": "C3",
       "surface": "annex",
-      "vector_id": "A11-read-pin"
+      "vector_id": "A11-read-pin",
+      "migration_path": "migration/a11-read-pin/v0-to-v1"
     },
     {
       "id": "A12",
@@ -135,7 +151,8 @@
       "version": "migration/v1",
       "parent": "C2",
       "surface": "annex",
-      "vector_id": "A12-migration"
+      "vector_id": "A12-migration",
+      "migration_path": "migration/a12-migration/v0-to-v1"
     }
   ]
 }

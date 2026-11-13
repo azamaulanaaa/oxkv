@@ -123,6 +123,16 @@ text_enum!(
 );
 
 text_enum!(
+    /// One cause that invalidates a projection.
+    InvalidationCause {
+        FactSet => "fact-set",
+        Schema => "schema",
+        Ownership => "ownership",
+        Revocation => "revocation",
+    }
+);
+
+text_enum!(
     /// One retention class from the retention registry.
     RetentionClass {
         Receipt => "receipt_retention",
@@ -282,6 +292,8 @@ pub struct Index {
     pub search: bool,
     /// The scorer identity.
     pub scorer: Option<String>,
+    /// The integer scorer parameters.
+    pub scorer_parameters: BTreeMap<String, i64>,
     /// The overhead budget in bytes.
     pub overhead_budget: i64,
 }
@@ -397,7 +409,7 @@ pub struct Projection {
     /// The watermark rule.
     pub watermark_rule: String,
     /// The invalidation causes.
-    pub invalidation: Vec<String>,
+    pub invalidation: Vec<InvalidationCause>,
 }
 
 /// The codec section.
@@ -879,6 +891,17 @@ impl Index {
         if let Some(scorer) = &self.scorer {
             entries.push(("scorer", string(scorer)));
         }
+        if !self.scorer_parameters.is_empty() {
+            entries.push((
+                "scorer_parameters",
+                CanonicalValue::Object(
+                    self.scorer_parameters
+                        .iter()
+                        .map(|(name, value)| (name.clone(), integer(*value)))
+                        .collect(),
+                ),
+            ));
+        }
         object(entries)
     }
 
@@ -904,6 +927,20 @@ impl Index {
             Some(value) => Some(expect_string(&value, &format!("{path}.scorer"))?),
             None => None,
         };
+        let scorer_parameters = match reader.take_optional("scorer_parameters") {
+            Some(value) => {
+                let parameters = expect_object(value, &format!("{path}.scorer_parameters"))?;
+                let mut map = BTreeMap::new();
+                for (name, value) in parameters.fields {
+                    map.insert(
+                        name.clone(),
+                        expect_i64(&value, &format!("{path}.scorer_parameters.{name}"))?,
+                    );
+                }
+                map
+            }
+            None => BTreeMap::new(),
+        };
         let overhead_budget = expect_i64(
             &reader.take("overhead_budget")?,
             &format!("{path}.overhead_budget"),
@@ -918,6 +955,7 @@ impl Index {
             filter,
             search,
             scorer,
+            scorer_parameters,
             overhead_budget,
         })
     }
@@ -1262,7 +1300,10 @@ impl Projection {
     fn to_value(&self) -> CanonicalValue {
         object(vec![
             ("epoch_rule", string(&self.epoch_rule)),
-            ("invalidation", array(self.invalidation.iter().map(string))),
+            (
+                "invalidation",
+                array(self.invalidation.iter().map(|cause| string(cause.as_str()))),
+            ),
             ("watermark_rule", string(&self.watermark_rule)),
         ])
     }
@@ -1280,9 +1321,10 @@ impl Projection {
             expect_array(&invalidation_value, &format!("{path}.invalidation"))?;
         let mut invalidation = Vec::with_capacity(invalidation_items.len());
         for (index, item) in invalidation_items.iter().enumerate() {
-            invalidation.push(expect_string(
+            invalidation.push(expect_enum(
                 item,
                 &format!("{path}.invalidation[{index}]"),
+                InvalidationCause::parse,
             )?);
         }
         reader.finish()?;

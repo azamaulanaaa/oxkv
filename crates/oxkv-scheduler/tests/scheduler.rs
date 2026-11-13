@@ -427,7 +427,7 @@ fn admission_rejects_cycle_forward_cross_shard_and_fan_in() {
     let duplicate = admit_result(&mut state, &first, &key(21), request(20), &[])
         .expect_err("a request id is admitted once");
     assert!(matches!(duplicate, AdmissionError::DuplicateRequest { .. }));
-    assert_eq!(duplicate.code(), "write.batch_too_large");
+    assert_eq!(duplicate.code(), "write.idempotency_key_reuse");
 
     admit(&mut state, &first, &key(21), request(21), &[request(20)]);
     assert_eq!(
@@ -439,6 +439,7 @@ fn admission_rejects_cycle_forward_cross_shard_and_fan_in() {
         "outbox.dependency_cycle",
         "outbox.cross_shard_edge",
         "write.batch_too_large",
+        "write.idempotency_key_reuse",
         "internal.resource_exhausted",
     ] {
         assert!(lookup(code).is_some(), "the code {code} is registered");

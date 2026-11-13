@@ -135,7 +135,8 @@ impl AdmissionError {
         match self {
             Self::Cycle { .. } | Self::ForwardReference { .. } => "outbox.dependency_cycle",
             Self::CrossShardEdge { .. } => "outbox.cross_shard_edge",
-            Self::FanInExceeded { .. } | Self::DuplicateRequest { .. } => "write.batch_too_large",
+            Self::FanInExceeded { .. } => "write.batch_too_large",
+            Self::DuplicateRequest { .. } => "write.idempotency_key_reuse",
             Self::ArrivalExhausted { .. } => "internal.resource_exhausted",
         }
     }

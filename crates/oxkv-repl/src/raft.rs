@@ -20,7 +20,7 @@ use crate::driver::{AdvanceReport, AppendReceipt, ReplicationDriver, TerminalRec
 use crate::error::ReplError;
 use crate::fence::{Fence, Leadership};
 use crate::ids::{NodeId, Tick};
-use crate::log::{EntryPayload, Log, LogIndex, LogRecord};
+use crate::log::{EntryPayload, Log, LogIndex, LogRecord, OwnerFence};
 use crate::read::ReadView;
 use crate::state::{ApplyReport, KvState};
 
@@ -594,7 +594,8 @@ impl RaftDriver {
                 reason: "the leader is not a node",
             })?;
         node.become_leader(term);
-        node.log.append(term, EntryPayload::Noop)?;
+        node.log
+            .append(term, OwnerFence::new(term), EntryPayload::Noop)?;
         let last = node.log.last_index();
         self.leader = Some(leader);
         self.matches.clear();
@@ -824,7 +825,7 @@ impl ReplicationDriver for RaftDriver {
                 reason: "the leader is not a node",
             })?
             .log
-            .append(token.term(), payload)?;
+            .append(token.term(), OwnerFence::new(token.term()), payload)?;
         Ok(AppendReceipt::new(record.index(), record.term(), false))
     }
 
@@ -994,7 +995,8 @@ impl ReplicationDriver for RaftDriver {
                 reason: "the transfer target is not a node",
             })?;
         node.become_leader(new_term);
-        node.log.append(new_term, EntryPayload::Noop)?;
+        node.log
+            .append(new_term, OwnerFence::new(new_term), EntryPayload::Noop)?;
         let last = node.log.last_index();
         self.leader = Some(to);
         self.matches.clear();

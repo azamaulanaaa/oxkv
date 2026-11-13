@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use oxkv_contracts::keyspace::TableName;
-use oxkv_contracts::receipt::ReceiptState;
+use oxkv_contracts::receipt::{IdempotencyKey, ReceiptState, RequestId};
 use oxkv_contracts::version::{ContentDigest, FactSourceId, PolicyVersion, ProjectionEpoch};
 use oxkv_rule::{
     ActivationRequest, ApprovalSet, Approver, AuditVisibility, ChangeClass, Cohort, CostBound,
@@ -141,6 +141,8 @@ pub(crate) fn approvals(digest: ContentDigest) -> ApprovalSet {
 
 pub(crate) fn request(fixture: &Fixture, cohort: Cohort) -> ActivationRequest {
     ActivationRequest {
+        idempotency_key: IdempotencyKey::new(cohort.id().as_bytes().to_vec()),
+        request_id: RequestId::from_bytes([7; 32]),
         policy_id: policy_id(),
         base_version: fixture.old.version(),
         candidate: fixture.candidate.clone(),
@@ -163,6 +165,10 @@ pub(crate) fn rollback_request(
     target_version: PolicyVersion,
 ) -> RollbackRequest {
     RollbackRequest {
+        idempotency_key: IdempotencyKey::new(
+            [b"rollback-".as_slice(), base_version.as_bytes()].concat(),
+        ),
+        request_id: RequestId::from_bytes([8; 32]),
         policy_id: policy_id(),
         cohort: fixture.control.clone(),
         base_version,

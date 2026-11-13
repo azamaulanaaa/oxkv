@@ -7,8 +7,9 @@
 use std::collections::BTreeMap;
 
 use oxkv_qualify::fuzz::{
-    PARITY_DIGEST, fuzz_artifact, fuzz_cursor_token, fuzz_error_code, fuzz_frame, fuzz_policy,
-    fuzz_receipt, fuzz_table, run_corpus,
+    PARITY_DIGEST, fuzz_artifact, fuzz_cursor_token, fuzz_error_code, fuzz_event, fuzz_frame,
+    fuzz_policy, fuzz_receipt, fuzz_search, fuzz_snapshot, fuzz_snapshot_page, fuzz_table,
+    run_corpus,
 };
 use oxkv_qualify::policy::{EvalBudget, FactValue, evaluate};
 use oxkv_qualify::rng::FixedSeedRng;
@@ -37,6 +38,10 @@ fn every_decoder_is_total_on_arbitrary_bytes() {
         }
         let _ = fuzz_frame(&bytes);
         let _ = fuzz_artifact(&bytes);
+        let _ = fuzz_snapshot(&bytes);
+        let _ = fuzz_snapshot_page(&bytes);
+        let _ = fuzz_event(&bytes);
+        let _ = fuzz_search(&bytes);
         let _ = fuzz_policy(&bytes);
         let _ = fuzz_table(&bytes);
         let _ = fuzz_error_code(&bytes);

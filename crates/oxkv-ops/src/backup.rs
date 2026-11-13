@@ -127,18 +127,35 @@ impl BackupImage {
             .find(|snapshot| &snapshot.shard_id == shard_id)
     }
 
-    /// Captures one image from a scheduler state.
+    /// Captures one image from a scheduler state and the remaining backup state.
     #[must_use]
-    pub fn from_scheduler(snapshots: Vec<SnapshotObject>, scheduler: &SchedulerState) -> Self {
+    pub fn from_scheduler(
+        snapshots: Vec<SnapshotObject>,
+        scheduler: &SchedulerState,
+        state: BackupState,
+    ) -> Self {
         Self {
             snapshots,
             receipts: scheduler.terminal.clone(),
-            idempotency: Vec::new(),
-            event_outbox: Vec::new(),
-            audit: AuditState::empty(),
-            effects: Vec::new(),
+            idempotency: state.idempotency,
+            event_outbox: state.event_outbox,
+            audit: state.audit,
+            effects: state.effects,
         }
     }
+}
+
+/// The state that a scheduler state does not hold.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BackupState {
+    /// The idempotency records.
+    pub idempotency: Vec<IdempotencyRecord>,
+    /// The event outbox state.
+    pub event_outbox: Vec<EventOutboxEntry>,
+    /// The audit chain state.
+    pub audit: AuditState,
+    /// The effect records.
+    pub effects: Vec<EffectRecord>,
 }
 
 /// The manifest of one backup.
@@ -628,7 +645,41 @@ mod tests {
             None,
             Some("shard.frozen_for_maintenance"),
         ));
-        let image = BackupImage::from_scheduler(vec![snapshot(1, 18)], &scheduler);
+        let image =
+            BackupImage::from_scheduler(vec![snapshot(1, 18)], &scheduler, BackupState::default());
+        assert_eq!(image.receipts.len(), 1);
+    }
+
+    #[test]
+    fn a_backup_from_a_scheduler_keeps_pending_outbox_and_audit_state() {
+        let mut scheduler = SchedulerState::new();
+        scheduler.add_terminal(AuthorityReceiptRecord::new(
+            IdempotencyKey::new(vec![1]),
+            oxkv_contracts::receipt::ReceiptState::Committed,
+            Some(CommitVersion::new(18)),
+            None,
+        ));
+        let state = BackupState {
+            idempotency: vec![IdempotencyRecord::new(
+                IdempotencyKey::new(vec![2]),
+                oxkv_contracts::version::Hash32::from_bytes([4; 32]),
+            )],
+            event_outbox: vec![EventOutboxEntry::new(
+                b"key".to_vec(),
+                EventSequence::new(5),
+                7,
+            )],
+            audit: AuditState::new(
+                oxkv_contracts::version::Hash32::from_bytes([5; 32]),
+                AuditSequence::new(9),
+            ),
+            effects: vec![EffectRecord::new("email", true, 1)],
+        };
+        let image = BackupImage::from_scheduler(vec![snapshot(1, 18)], &scheduler, state.clone());
+        assert_eq!(image.idempotency, state.idempotency);
+        assert_eq!(image.event_outbox, state.event_outbox);
+        assert_eq!(image.audit, state.audit);
+        assert_eq!(image.effects, state.effects);
         assert_eq!(image.receipts.len(), 1);
     }
 }

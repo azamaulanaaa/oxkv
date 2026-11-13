@@ -70,6 +70,41 @@ impl fmt::Display for LogIndex {
     }
 }
 
+/// The durable owner fence at the log boundary.
+///
+/// A write fence below the owner fence is stale. A higher write fence wins and
+/// becomes the new owner fence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct OwnerFence {
+    term: LeaseTerm,
+}
+
+impl Default for OwnerFence {
+    fn default() -> Self {
+        Self::new(LeaseTerm::new(0))
+    }
+}
+
+impl OwnerFence {
+    /// Creates an owner fence from a lease term.
+    #[must_use]
+    pub const fn new(term: LeaseTerm) -> Self {
+        Self { term }
+    }
+
+    /// Returns the fence term.
+    #[must_use]
+    pub const fn term(self) -> LeaseTerm {
+        self.term
+    }
+
+    /// Returns the integer fence value.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.term.get()
+    }
+}
+
 /// One entry in the replicated log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntryPayload {
@@ -179,6 +214,7 @@ impl LogRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Log {
     records: Vec<LogRecord>,
+    owner_fence: OwnerFence,
 }
 
 impl Log {
@@ -187,7 +223,14 @@ impl Log {
     pub const fn new() -> Self {
         Self {
             records: Vec::new(),
+            owner_fence: OwnerFence::new(LeaseTerm::new(0)),
         }
+    }
+
+    /// Returns the durable owner fence.
+    #[must_use]
+    pub const fn owner_fence(&self) -> OwnerFence {
+        self.owner_fence
     }
 
     /// Returns the record count.
@@ -245,19 +288,33 @@ impl Log {
         self.records.get(offset)
     }
 
-    /// Appends one payload under one term.
+    /// Appends one payload under one write fence and owner fence.
     ///
     /// The log is the durable boundary. A successful return means that the
-    /// record bytes are durable.
+    /// record bytes are durable. A write fence below the owner fence returns
+    /// [`ReplError::StaleEpoch`]. A higher write fence becomes the owner fence.
     ///
     /// # Errors
     ///
-    /// Returns [`ReplError::InvariantViolation`] when the next index overflows.
+    /// Returns [`ReplError::StaleEpoch`] when the write fence is below the
+    /// owner fence. Returns [`ReplError::InvariantViolation`] when the next
+    /// index overflows.
     pub fn append(
         &mut self,
         term: LeaseTerm,
+        owner_fence: OwnerFence,
         payload: EntryPayload,
     ) -> Result<LogRecord, ReplError> {
+        let owner_fence = self.owner_fence.term().max(owner_fence.term());
+        if term < owner_fence {
+            return Err(ReplError::StaleEpoch {
+                presented: term.get(),
+                current: owner_fence.get(),
+            });
+        }
+        if term > self.owner_fence.term() {
+            self.owner_fence = OwnerFence::new(term);
+        }
         let index = self.last_index().next()?;
         let record = LogRecord::new(index, term, payload);
         self.records.push(record.clone());

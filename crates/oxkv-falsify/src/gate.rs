@@ -198,40 +198,66 @@ impl GateReport {
 pub struct ReleaseGate;
 
 impl ReleaseGate {
-    /// Evaluates every falsifier against the result list.
+    /// Evaluates every falsifier against every result for that falsifier.
     ///
-    /// The gate takes the first result for each falsifier. It ignores a later
-    /// duplicate result.
+    /// A falsifier fails when two or more runs breach its threshold. The gate
+    /// does not ignore a later result.
+    ///
+    /// # Panics
+    ///
+    /// Panics only when an internal result list breaks the gate invariant.
     #[must_use]
+    #[allow(clippy::missing_panics_doc)]
     pub fn evaluate(results: &[FalsifierResult]) -> GateReport {
         let mut entries = Vec::with_capacity(Falsifier::ALL.len());
         let mut fail = false;
         let mut delayed = false;
         for falsifier in Falsifier::ALL {
-            let result = results
+            let matching = results
                 .iter()
-                .find(|result| result.falsifier() == falsifier);
-            let entry = match result {
-                Some(FalsifierResult::Measured(record)) => measured_entry(record),
-                Some(FalsifierResult::Skipped { reason, .. }) => {
-                    fail = true;
-                    GateEntry {
-                        falsifier,
-                        status: GateStatus::Skipped,
-                        measured: None,
-                        threshold: falsifier.threshold(),
-                        reason: Some(reason.clone()),
+                .filter(|result| result.falsifier() == falsifier)
+                .collect::<Vec<_>>();
+            let entry = if matching.is_empty() {
+                delayed = true;
+                GateEntry {
+                    falsifier,
+                    status: GateStatus::Missing,
+                    measured: None,
+                    threshold: falsifier.threshold(),
+                    reason: None,
+                }
+            } else if let Some(reason) = matching.iter().find_map(|result| match *result {
+                FalsifierResult::Skipped { reason, .. } => Some(reason),
+                FalsifierResult::Measured(_) => None,
+            }) {
+                fail = true;
+                GateEntry {
+                    falsifier,
+                    status: GateStatus::Skipped,
+                    measured: None,
+                    threshold: falsifier.threshold(),
+                    reason: Some(reason.clone()),
+                }
+            } else {
+                let mut breaches = Vec::new();
+                let mut measured = Vec::new();
+                for result in &matching {
+                    if let FalsifierResult::Measured(record) = *result {
+                        measured.push(record);
+                        if record.verdict() == Verdict::Breach {
+                            breaches.push(record);
+                        }
                     }
                 }
-                None => {
-                    delayed = true;
-                    GateEntry {
-                        falsifier,
-                        status: GateStatus::Missing,
-                        measured: None,
-                        threshold: falsifier.threshold(),
-                        reason: None,
-                    }
+                let first = measured
+                    .first()
+                    .copied()
+                    .expect("a measured falsifier has one result");
+                if breaches.len() >= 2 {
+                    fail = true;
+                    measured_entry(breaches.last().copied().unwrap_or(first))
+                } else {
+                    measured_entry(first)
                 }
             };
             if entry.status == GateStatus::Breached {
@@ -329,6 +355,36 @@ mod tests {
             .expect("the entry exists");
         assert_eq!(entry.status(), GateStatus::Breached);
         assert!(entry.detail().contains("action:"));
+    }
+
+    #[test]
+    fn two_breaches_in_three_runs_fail_the_gate() {
+        let mut results = passing_results();
+        results.push(FalsifierResult::Measured(record(
+            Falsifier::SyncAmplification,
+            100_000,
+        )));
+        results.push(FalsifierResult::Measured(record(
+            Falsifier::SyncAmplification,
+            110_000,
+        )));
+        let report = ReleaseGate::evaluate(&results);
+        assert_eq!(report.outcome(), GateOutcome::Fail);
+        let entry = report
+            .entry(Falsifier::SyncAmplification)
+            .expect("the entry exists");
+        assert_eq!(entry.status(), GateStatus::Breached);
+    }
+
+    #[test]
+    fn one_breach_in_three_runs_does_not_fail_the_gate() {
+        let mut results = passing_results();
+        results.push(FalsifierResult::Measured(record(
+            Falsifier::SyncAmplification,
+            100_000,
+        )));
+        let report = ReleaseGate::evaluate(&results);
+        assert_eq!(report.outcome(), GateOutcome::Pass);
     }
 
     #[test]

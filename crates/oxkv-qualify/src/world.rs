@@ -411,6 +411,32 @@ pub(crate) struct SnapshotPage {
     pub(crate) checksum: u32,
 }
 
+impl SnapshotPage {
+    /// Decodes one page from its wire bytes.
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
+        if bytes.len() < 12 {
+            return Err("format.corrupt_page");
+        }
+        let sequence =
+            u64::from_be_bytes(bytes[..8].try_into().map_err(|_| "format.corrupt_page")?);
+        let body_length = bytes.len() - 4;
+        let checksum = u32::from_be_bytes(
+            bytes[body_length..]
+                .try_into()
+                .map_err(|_| "format.corrupt_page")?,
+        );
+        let payload = bytes[8..body_length].to_vec();
+        if crc32c(&payload) != checksum {
+            return Err("format.corrupt_page");
+        }
+        Ok(Self {
+            sequence,
+            payload,
+            checksum,
+        })
+    }
+}
+
 /// A snapshot artifact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Snapshot {

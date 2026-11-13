@@ -274,6 +274,32 @@ impl fmt::Display for RetryClass {
     }
 }
 
+/// The wire shape of one error code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum WireShape {
+    /// The wire value is the code text only.
+    Code,
+    /// The wire value is the code text and a fixed message.
+    CodeMessage,
+    /// The wire value is the code text and a structured detail.
+    CodeDetail,
+}
+
+impl WireShape {
+    /// Every wire shape.
+    pub const ALL: &'static [Self] = &[Self::Code, Self::CodeMessage, Self::CodeDetail];
+
+    /// Returns the canonical shape name.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Code => "code",
+            Self::CodeMessage => "code_message",
+            Self::CodeDetail => "code_detail",
+        }
+    }
+}
+
 /// One row of the canonical error registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ErrorSpec {
@@ -287,6 +313,14 @@ pub struct ErrorSpec {
     pub retry: RetryClass,
     /// True when the error ends the operation in place.
     pub terminal: bool,
+    /// The wire shape of the error value.
+    pub wire_shape: WireShape,
+    /// The current key version field for a `Conflict` receipt.
+    pub conflict_key_version_field: Option<&'static str>,
+    /// True when a `Rejected` receipt consumes the idempotency key.
+    pub idempotency_consumed: Option<bool>,
+    /// The deadline field for a `Queued` receipt.
+    pub queued_deadline: Option<&'static str>,
 }
 
 impl ErrorSpec {
@@ -357,6 +391,30 @@ impl ErrorCode {
     pub const fn is_terminal(self) -> bool {
         self.0.terminal
     }
+
+    /// Returns the wire shape.
+    #[must_use]
+    pub const fn wire_shape(self) -> WireShape {
+        self.0.wire_shape
+    }
+
+    /// Returns the current key version field for a `Conflict` receipt.
+    #[must_use]
+    pub const fn conflict_key_version_field(self) -> Option<&'static str> {
+        self.0.conflict_key_version_field
+    }
+
+    /// Returns true when a `Rejected` receipt consumes the idempotency key.
+    #[must_use]
+    pub const fn idempotency_consumed(self) -> Option<bool> {
+        self.0.idempotency_consumed
+    }
+
+    /// Returns the deadline field for a `Queued` receipt.
+    #[must_use]
+    pub const fn queued_deadline(self) -> Option<&'static str> {
+        self.0.queued_deadline
+    }
 }
 
 impl fmt::Display for ErrorCode {
@@ -386,10 +444,37 @@ pub enum ErrorRegistryError {
         /// The invalid code.
         code: String,
     },
+    /// The code exists but maps to no receipt.
+    #[error("The error code maps to no receipt: {code}.")]
+    NoReceipt {
+        /// The code without a receipt.
+        code: String,
+    },
 }
 
 const fn terminal_for(receipt: Option<ReceiptState>) -> bool {
     !matches!(receipt, Some(ReceiptState::Queued))
+}
+
+const fn conflict_field_for(receipt: Option<ReceiptState>) -> Option<&'static str> {
+    match receipt {
+        Some(ReceiptState::Conflict) => Some("current_key_version"),
+        _ => None,
+    }
+}
+
+const fn idempotency_for(receipt: Option<ReceiptState>) -> Option<bool> {
+    match receipt {
+        Some(ReceiptState::Rejected) => Some(true),
+        _ => None,
+    }
+}
+
+const fn deadline_for(receipt: Option<ReceiptState>) -> Option<&'static str> {
+    match receipt {
+        Some(ReceiptState::Queued) => Some("queue_deadline"),
+        _ => None,
+    }
 }
 
 const fn bytes_equal(left: &str, right: &str) -> bool {
@@ -479,6 +564,10 @@ macro_rules! error_registry {
                 receipt: $receipt,
                 retry: RetryClass::$retry,
                 terminal: terminal_for($receipt),
+                wire_shape: WireShape::Code,
+                conflict_key_version_field: conflict_field_for($receipt),
+                idempotency_consumed: idempotency_for($receipt),
+                queued_deadline: deadline_for($receipt),
             }),*
         ];
     };
@@ -840,6 +929,22 @@ pub fn lookup_required(code: &str) -> Result<&'static ErrorSpec, ErrorRegistryEr
     })
 }
 
+/// Looks up one receipt reason code.
+///
+/// # Errors
+///
+/// Returns [`ErrorRegistryError::Unknown`] when the code is absent. Returns
+/// [`ErrorRegistryError::NoReceipt`] when the code maps to no receipt.
+pub fn lookup_receipt_reason(code: &str) -> Result<&'static ErrorSpec, ErrorRegistryError> {
+    let spec = lookup_required(code)?;
+    if spec.receipt.is_none() {
+        return Err(ErrorRegistryError::NoReceipt {
+            code: code.to_owned(),
+        });
+    }
+    Ok(spec)
+}
+
 /// Returns true when the code uses the lowercase dot namespace form.
 #[must_use]
 pub fn is_valid_code_shape(code: &str) -> bool {
@@ -943,6 +1048,63 @@ mod tests {
         let spec = lookup("write.version_conflict").expect("the code is registered");
         assert_eq!(spec.receipt, Some(ReceiptState::Conflict));
         assert!(spec.terminal);
+    }
+
+    #[test]
+    fn every_conflict_code_names_the_current_key_version_field() {
+        for spec in ERROR_REGISTRY {
+            if spec.receipt == Some(ReceiptState::Conflict) {
+                assert_eq!(spec.conflict_key_version_field, Some("current_key_version"));
+            } else {
+                assert_eq!(spec.conflict_key_version_field, None);
+            }
+        }
+    }
+
+    #[test]
+    fn every_rejected_code_declares_idempotency_consumption() {
+        for spec in ERROR_REGISTRY {
+            if spec.receipt == Some(ReceiptState::Rejected) {
+                assert_eq!(spec.idempotency_consumed, Some(true));
+            } else {
+                assert_eq!(spec.idempotency_consumed, None);
+            }
+        }
+    }
+
+    #[test]
+    fn every_queued_code_declares_a_deadline_and_a_retry_class() {
+        for spec in ERROR_REGISTRY {
+            if spec.receipt == Some(ReceiptState::Queued) {
+                assert_eq!(spec.queued_deadline, Some("queue_deadline"));
+                assert_ne!(spec.retry, RetryClass::Never);
+            } else {
+                assert_eq!(spec.queued_deadline, None);
+            }
+        }
+    }
+
+    #[test]
+    fn every_code_declares_a_wire_shape() {
+        for spec in ERROR_REGISTRY {
+            assert!(WireShape::ALL.contains(&spec.wire_shape));
+        }
+    }
+
+    #[test]
+    fn a_receipt_reason_must_name_a_code_with_a_receipt() {
+        assert!(lookup_receipt_reason("write.version_conflict").is_ok());
+        assert!(lookup_receipt_reason("projection.lagging").is_ok());
+        assert_eq!(
+            lookup_receipt_reason("key.not_found"),
+            Err(ErrorRegistryError::NoReceipt {
+                code: "key.not_found".to_owned()
+            })
+        );
+        assert!(matches!(
+            lookup_receipt_reason("not.registered"),
+            Err(ErrorRegistryError::Unknown { .. })
+        ));
     }
 
     #[test]
