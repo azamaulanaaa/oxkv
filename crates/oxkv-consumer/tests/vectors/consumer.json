@@ -1,0 +1,400 @@
+{
+  "contract": "consumer/v1",
+  "cases": [
+    {
+      "name": "poison key a does not block key b",
+      "config": {
+        "max_attempts": 3,
+        "base_delay_ms": 100,
+        "cap_delay_ms": 1000,
+        "deadline_ms": 10000,
+        "backlog_budget": 8
+      },
+      "steps": [
+        {
+          "deliver": {
+            "key": "a",
+            "sequence": 1,
+            "now": 1000,
+            "schema": "unknown/v9",
+            "handler": "success"
+          }
+        },
+        {
+          "deliver": {
+            "key": "b",
+            "sequence": 1,
+            "now": 1000,
+            "handler": "success"
+          }
+        }
+      ],
+      "expect": {
+        "outcomes": ["dead_lettered", "acked"],
+        "effect_keys": ["b"],
+        "attempt_keys": ["b"],
+        "cursors": {"a": 1, "b": 1},
+        "attempts": {"a": 1, "b": 1},
+        "dead_letter_depth": 1,
+        "reasons": ["event.poison"]
+      }
+    },
+    {
+      "name": "a duplicate poison delivery writes one record",
+      "config": {
+        "max_attempts": 3,
+        "base_delay_ms": 100,
+        "cap_delay_ms": 1000,
+        "deadline_ms": 10000,
+        "backlog_budget": 8
+      },
+      "steps": [
+        {
+          "repeat": 2,
+          "deliver": {
+            "key": "a",
+            "sequence": 1,
+            "now": 1000,
+            "schema": "unknown/v9",
+            "handler": "success"
+          }
+        }
+      ],
+      "expect": {
+        "outcomes": ["dead_lettered", "duplicate"],
+        "effect_keys": [],
+        "attempt_keys": [],
+        "cursors": {"a": 1},
+        "attempts": {"a": 1},
+        "dead_letter_depth": 1,
+        "reasons": ["event.poison"]
+      }
+    },
+    {
+      "name": "duplicate delivery runs one effect",
+      "config": {
+        "max_attempts": 3,
+        "base_delay_ms": 100,
+        "cap_delay_ms": 1000,
+        "deadline_ms": 10000,
+        "backlog_budget": 8
+      },
+      "steps": [
+        {
+          "repeat": 10,
+          "deliver": {
+            "key": "a",
+            "sequence": 1,
+            "now": 1000,
+            "handler": "success"
+          }
+        }
+      ],
+      "expect": {
+        "outcomes": [
+          "acked",
+          "duplicate",
+          "duplicate",
+          "duplicate",
+          "duplicate",
+          "duplicate",
+          "duplicate",
+          "duplicate",
+          "duplicate",
+          "duplicate"
+        ],
+        "effect_keys": ["a"],
+        "attempt_keys": ["a"],
+        "cursors": {"a": 1},
+        "attempts": {"a": 1},
+        "dead_letter_depth": 0,
+        "reasons": []
+      }
+    },
+    {
+      "name": "handler failure retries then dead-letters",
+      "config": {
+        "max_attempts": 2,
+        "base_delay_ms": 100,
+        "cap_delay_ms": 1000,
+        "deadline_ms": 10000,
+        "backlog_budget": 8
+      },
+      "steps": [
+        {
+          "deliver": {
+            "key": "a",
+            "sequence": 1,
+            "now": 1000,
+            "handler": "retry"
+          }
+        },
+        {
+          "deliver": {
+            "key": "a",
+            "sequence": 1,
+            "now": 2000,
+            "handler": "retry"
+          }
+        }
+      ],
+      "expect": {
+        "outcomes": ["retried", "dead_lettered"],
+        "effect_keys": [],
+        "attempt_keys": ["a", "a"],
+        "cursors": {"a": 1},
+        "attempts": {"a": 2},
+        "dead_letter_depth": 1,
+        "reasons": ["consumer.dead_lettered"]
+      }
+    },
+    {
+      "name": "handler failure retries then succeeds",
+      "config": {
+        "max_attempts": 3,
+        "base_delay_ms": 100,
+        "cap_delay_ms": 1000,
+        "deadline_ms": 10000,
+        "backlog_budget": 8
+      },
+      "steps": [
+        {
+          "deliver": {
+            "key": "a",
+            "sequence": 1,
+            "now": 1000,
+            "handler": "retry"
+          }
+        },
+        {
+          "deliver": {
+            "key": "a",
+            "sequence": 1,
+            "now": 2000,
+            "handler": "success"
+          }
+        }
+      ],
+      "expect": {
+        "outcomes": ["retried", "acked"],
+        "effect_keys": ["a"],
+        "attempt_keys": ["a", "a"],
+        "cursors": {"a": 1},
+        "attempts": {"a": 2},
+        "dead_letter_depth": 0,
+        "reasons": []
+      }
+    },
+    {
+      "name": "backlog over budget returns too slow",
+      "config": {
+        "max_attempts": 3,
+        "base_delay_ms": 100,
+        "cap_delay_ms": 1000,
+        "deadline_ms": 10000,
+        "backlog_budget": 1
+      },
+      "steps": [
+        {
+          "deliver": {
+            "key": "a",
+            "sequence": 1,
+            "now": 1000,
+            "handler": "retry"
+          }
+        },
+        {
+          "deliver": {
+            "key": "b",
+            "sequence": 1,
+            "now": 1000,
+            "handler": "success"
+          }
+        },
+        {
+          "deliver": {
+            "key": "a",
+            "sequence": 1,
+            "now": 2000,
+            "handler": "success"
+          }
+        },
+        {
+          "deliver": {
+            "key": "b",
+            "sequence": 1,
+            "now": 2000,
+            "handler": "success"
+          }
+        }
+      ],
+      "expect": {
+        "outcomes": ["retried", "consumer.too_slow", "acked", "acked"],
+        "effect_keys": ["a", "b"],
+        "attempt_keys": ["a", "a", "b"],
+        "cursors": {"a": 1, "b": 1},
+        "attempts": {"a": 2, "b": 1},
+        "dead_letter_depth": 0,
+        "reasons": []
+      }
+    },
+    {
+      "name": "cursor past completion retention returns cursor expired",
+      "config": {
+        "max_attempts": 3,
+        "base_delay_ms": 100,
+        "cap_delay_ms": 1000,
+        "deadline_ms": 10000,
+        "backlog_budget": 8
+      },
+      "steps": [
+        {"set_retention_floor": 5},
+        {
+          "deliver": {
+            "key": "a",
+            "sequence": 1,
+            "now": 1000,
+            "handler": "success"
+          }
+        }
+      ],
+      "expect": {
+        "outcomes": ["consumer.cursor_expired"],
+        "effect_keys": [],
+        "attempt_keys": [],
+        "cursors": {},
+        "attempts": {},
+        "dead_letter_depth": 0,
+        "reasons": []
+      }
+    },
+    {
+      "name": "required effect fields are self-contained",
+      "config": {
+        "max_attempts": 3,
+        "base_delay_ms": 100,
+        "cap_delay_ms": 1000,
+        "deadline_ms": 10000,
+        "backlog_budget": 8
+      },
+      "steps": [
+        {
+          "deliver": {
+            "key": "a",
+            "sequence": 1,
+            "now": 1000,
+            "handler": "success"
+          }
+        }
+      ],
+      "expect": {
+        "outcomes": ["acked"],
+        "effect_keys": ["a"],
+        "attempt_keys": ["a"],
+        "cursors": {"a": 1},
+        "attempts": {"a": 1},
+        "dead_letter_depth": 0,
+        "reasons": [],
+        "effect": {
+          "recipient": "ada@example.test",
+          "subject": "Invoice 1042 approved",
+          "body": "The invoice is approved.",
+          "enrichment": null
+        }
+      }
+    },
+    {
+      "name": "optional reference does not block the effect",
+      "config": {
+        "max_attempts": 3,
+        "base_delay_ms": 100,
+        "cap_delay_ms": 1000,
+        "deadline_ms": 10000,
+        "backlog_budget": 8
+      },
+      "steps": [
+        {
+          "deliver": {
+            "key": "a",
+            "sequence": 1,
+            "now": 1000,
+            "handler": "success",
+            "enrichment": true
+          }
+        }
+      ],
+      "expect": {
+        "outcomes": ["acked"],
+        "effect_keys": ["a"],
+        "attempt_keys": ["a"],
+        "cursors": {"a": 1},
+        "attempts": {"a": 1},
+        "dead_letter_depth": 0,
+        "reasons": [],
+        "effect": {
+          "recipient": "ada@example.test",
+          "subject": "Invoice 1042 approved",
+          "body": "The invoice is approved.",
+          "enrichment": {
+            "digest": "0707070707070707070707070707070707070707070707070707070707070707",
+            "version": 4
+          }
+        }
+      }
+    },
+    {
+      "name": "per key cursor resume does not skip",
+      "config": {
+        "max_attempts": 3,
+        "base_delay_ms": 100,
+        "cap_delay_ms": 1000,
+        "deadline_ms": 10000,
+        "backlog_budget": 8
+      },
+      "steps": [
+        {
+          "deliver": {
+            "key": "a",
+            "sequence": 1,
+            "now": 1000,
+            "handler": "success"
+          }
+        },
+        {
+          "deliver": {
+            "key": "a",
+            "sequence": 2,
+            "now": 1100,
+            "handler": "success"
+          }
+        },
+        {"checkpoint": true},
+        {
+          "deliver": {
+            "key": "a",
+            "sequence": 2,
+            "now": 1200,
+            "handler": "success"
+          }
+        },
+        {
+          "deliver": {
+            "key": "a",
+            "sequence": 3,
+            "now": 1300,
+            "handler": "success"
+          }
+        }
+      ],
+      "expect": {
+        "outcomes": ["acked", "acked", "duplicate", "acked"],
+        "effect_keys": ["a", "a", "a"],
+        "attempt_keys": ["a", "a", "a"],
+        "cursors": {"a": 3},
+        "attempts": {"a": 1},
+        "dead_letter_depth": 0,
+        "reasons": []
+      }
+    }
+  ]
+}
