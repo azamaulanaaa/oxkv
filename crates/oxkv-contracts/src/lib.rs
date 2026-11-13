@@ -3,7 +3,7 @@
 //! This crate holds the registries that every essay consumes. The first
 //! registry is [`version`]. It defines the qualified version axes and the
 //! provenance block. [`receipt`] defines the four receipt states and the
-//! receipt envelope.
+//! receipt envelope. [`error`] defines one canonical error code per cause.
 //!
 //! The crate is portable. It compiles for native and `wasm32-unknown-unknown`.
 //! It uses no floating point. It does not read a clock, draw randomness, or
@@ -22,9 +22,13 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::module_name_repetitions)]
 
+pub mod error;
 pub mod receipt;
 pub mod version;
 
+pub use error::{
+    ERROR_REGISTRY, ErrorCode, ErrorKind, ErrorRegistryError, ErrorSpec, RetryClass, lookup,
+};
 pub use receipt::{
     AuditReference, AuditSequence, IdempotencyKey, ReceiptEnvelope, ReceiptId, ReceiptOutcome,
     ReceiptState, ReceiptTransitionError, RequestId,
