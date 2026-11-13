@@ -10,6 +10,7 @@ use oxkv_contracts::version::{
     CommitVersion, FactSourceId, FactVersion, KeyVersion, ManifestDigest, MapVersion,
     PolicyVersion, ProjectionEpoch, ProjectionWatermarks, ShardId,
 };
+use oxkv_security::secret::KeyIdentifier;
 use oxkv_write::{
     AllowAll, AuditRecord, Authority, AuthorityConfig, ClientId, Key, KeyRecord, Mutation, Policy,
     PolicyDecision, PolicyEvaluation, PolicyRow, RuleIdentity, SubmitOutcome, WriteRequest,
@@ -77,6 +78,7 @@ fn authority() -> Authority {
         MapVersion::new(6),
         ProjectionEpoch::new(7),
         ProjectionWatermarks::new(),
+        KeyIdentifier::new("checkpoint-key-1"),
     ))
 }
 
@@ -322,21 +324,23 @@ fn audit_authority() -> Authority {
         MapVersion::new(6),
         ProjectionEpoch::new(7),
         facts,
+        KeyIdentifier::new("checkpoint-key-1"),
     ))
 }
 
 fn audit_json(record: &AuditRecord) -> Value {
-    let body = record.body();
+    let body = &record.entry;
     json!({
-        "sequence": record.sequence().get(),
-        "previous_hash_hex": hex(record.previous_hash().as_bytes()),
-        "record_hash_hex": hex(record.record_hash().as_bytes()),
+        "sequence": record.audit_sequence.get(),
+        "previous_hash_hex": hex(record.previous_hash.as_bytes()),
+        "record_hash_hex": hex(record.record_hash.as_bytes()),
         "request_id_hex": hex(body.request_id.as_bytes()),
         "idempotency_key_hex": hex(body.idempotency_key.as_bytes()),
         "principal_hex": hex(body.principal.as_bytes()),
         "shard_hex": hex(body.shard_id.as_bytes()),
+        "base_version": body.base_version.get(),
         "base_versions": body.base_versions.iter().map(|(key, version)| json!({
-            "key_hex": hex(key.as_bytes()),
+            "key_hex": hex(key),
             "base_version": version.map(KeyVersion::get),
         })).collect::<Vec<_>>(),
         "policy_version_hex": hex(body.policy_version.as_bytes()),
@@ -349,14 +353,14 @@ fn audit_json(record: &AuditRecord) -> Value {
         })).collect::<Vec<_>>(),
         "rule_identity": body.rule_identity.as_str(),
         "decisions": body.decisions.iter().map(|decision| json!({
-            "key_hex": hex(decision.key().as_bytes()),
-            "rule": decision.rule().as_str(),
-            "verdict": decision.verdict().name(),
-            "reason": decision.reason(),
+            "key_hex": hex(&decision.key),
+            "rule": decision.rule_identity.as_str(),
+            "allowed": decision.allowed,
+            "reason": decision.reason_code,
         })).collect::<Vec<_>>(),
-        "receipt_id_hex": hex(body.receipt_id.as_bytes()),
-        "verdict": body.verdict.name(),
-        "reason": body.reason,
+        "receipt_id_hex": body.receipt_id.map(|receipt_id| hex(receipt_id.as_bytes())),
+        "decision": body.decision.name(),
+        "reason": body.reason_code,
         "input_digest_hex": hex(body.input_digest.as_bytes()),
         "verified": record.verify_hash(),
     })

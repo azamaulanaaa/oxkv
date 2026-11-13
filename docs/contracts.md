@@ -6,15 +6,17 @@ names the source file and function that implements it.
 
 The crate version is 1.0.0. The contracts below describe this branch only.
 They do not describe requested features that are absent from this branch. The
-Lucene-style query engine lives in the `oxkv-query` crate at
-`crates/oxkv-query`.
+legacy Lucene-style query filter lives in the standalone `oxkv-query` crate at
+`crates/oxkv-query`. It is not part of the 1.0 search contract.
 
 ## Search surface
 
 The 1.0 search contract is `oxkv-index` for the tokenizer and inverted index,
 and `oxkv-search` for the pinned search read. The `oxkv-query` crate is a
-legacy convenience filter for the `gets` method. It is not the 1.0 search
-contract.
+standalone legacy crate. It is not part of the 1.0 search contract. The
+`oxkv-wasm` bindings do not depend on `oxkv-query`. The WASM `gets` and
+`getsBytes` methods return a plain paginated JSON scan. They have no query
+filter and no regex path.
 
 The 1.0 search language has no regular expressions. A `/regex/` term fails
 with `policy.regex_not_supported`. The `*` and `?` wildcard forms still work.
@@ -280,8 +282,7 @@ Both bounds are inclusive. See `src/store/btree.rs`, `build_next` and
 The caller must keep its own cursor. A page does not carry the next cursor.
 The usual pattern is to pass the last returned key as the next `start` and
 skip the first row of the next page, because the bound is inclusive. The
-streaming save path uses this pattern. See `src/store/mod.rs`, `SaveStream`
-and `crates/oxkv-query/src/lib.rs`, `QueryExt::gets`.
+streaming save path uses this pattern. See `src/store/mod.rs`, `SaveStream`.
 
 ```text
 let mut start = Some(prefix_start)
@@ -582,7 +583,7 @@ The `Storage` implementation maps backend errors to `StoreError::Storage` or
 | `Utf8(FromUtf8Error)` | Owned UTF-8 conversion failed. | No. |
 | `Utf8Slice(Utf8Error)` | Borrowed UTF-8 conversion failed. | No. |
 | `Json(Arc<serde_json::Error>)` | JSON conversion failed. | No. |
-| `Other(String)` | Generic error. This includes read-only write rejection and query parse errors. | Depends on the cause. Not generally retryable. |
+| `Other(String)` | Generic error. This includes read-only write rejection. | Depends on the cause. Not generally retryable. |
 | `Rejected { key, reason }` | A validator rejected the write. | No. Change the value or the rule. |
 | `Fenced(String)` | Another owner holds the epoch. | No. Terminal. Stop writing and restart through ownership CAS. |
 | `NotModified` | A conditional GET matched its ETag. | Not a failure. Reuse the cached value. |

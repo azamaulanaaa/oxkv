@@ -2,18 +2,20 @@
   "cases": [
     {
       "expected": {
+        "base_version": 0,
         "base_versions": [
           {
             "base_version": 0,
             "key_hex": "6163636f756e74"
           }
         ],
+        "decision": "Conflict",
         "decisions": [
           {
+            "allowed": false,
             "key_hex": "6163636f756e74",
             "reason": "write.version_conflict",
-            "rule": "write.version_check",
-            "verdict": "Reject"
+            "rule": "write.version_check"
           }
         ],
         "fact_versions": [
@@ -27,35 +29,36 @@
         "manifest_digest_hex": "0505050505050505050505050505050505050505050505050505050505050505",
         "map_version": 6,
         "policy_version_hex": "0404040404040404040404040404040404040404040404040404040404040404",
-        "previous_hash_hex": "cada78adbb8fc830bcc00ef120059353aeb8be6e3d0575ee513c740daa61b3d8",
+        "previous_hash_hex": "f8fab4208a8901d837b2964c3242c6bac179972d448961af8d108a0f3d47de90",
         "principal_hex": "01",
         "projection_epoch": 7,
         "reason": "write.version_conflict",
         "receipt_id_hex": "9c1519f44a10d2f077bdd1b33aabcd475a73074086031dc2a9b427d7bc8d5747",
-        "record_hash_hex": "ac25d1b147c8d8ecb5abc29b642177e73224d40ea74860b03bb7d774decdebf5",
+        "record_hash_hex": "627819faadf0124dcb5f679f9e396a9e81d63d12d0ef42da837c1645e8f92f6c",
         "request_id_hex": "0202020202020202020202020202020202020202020202020202020202020202",
         "rule_identity": "write.version_check",
         "sequence": 2,
         "shard_hex": "01",
-        "verdict": "Conflict",
         "verified": true
       },
       "name": "conflict"
     },
     {
       "expected": {
+        "base_version": 0,
         "base_versions": [
           {
             "base_version": 0,
             "key_hex": "6163636f756e74"
           }
         ],
+        "decision": "Committed",
         "decisions": [
           {
+            "allowed": true,
             "key_hex": "6163636f756e74",
             "reason": null,
-            "rule": "allow-all",
-            "verdict": "Allow"
+            "rule": "allow-all"
           }
         ],
         "fact_versions": [
@@ -74,30 +77,31 @@
         "projection_epoch": 7,
         "reason": null,
         "receipt_id_hex": "84dced02872751f7c7e732546ac2eef9245cc177f19551ae862415d9ce2dac00",
-        "record_hash_hex": "cada78adbb8fc830bcc00ef120059353aeb8be6e3d0575ee513c740daa61b3d8",
+        "record_hash_hex": "f8fab4208a8901d837b2964c3242c6bac179972d448961af8d108a0f3d47de90",
         "request_id_hex": "0101010101010101010101010101010101010101010101010101010101010101",
         "rule_identity": "allow-all",
         "sequence": 1,
         "shard_hex": "01",
-        "verdict": "Committed",
         "verified": true
       },
       "name": "create"
     },
     {
       "expected": {
+        "base_version": 0,
         "base_versions": [
           {
             "base_version": 0,
             "key_hex": "6163636f756e74"
           }
         ],
+        "decision": "Rejected",
         "decisions": [
           {
+            "allowed": false,
             "key_hex": "6163636f756e74",
             "reason": "shard.cross_mutation_rejected",
-            "rule": "write.cross_shard_check",
-            "verdict": "Reject"
+            "rule": "write.cross_shard_check"
           }
         ],
         "fact_versions": [
@@ -111,35 +115,36 @@
         "manifest_digest_hex": "0505050505050505050505050505050505050505050505050505050505050505",
         "map_version": 6,
         "policy_version_hex": "0404040404040404040404040404040404040404040404040404040404040404",
-        "previous_hash_hex": "e7a71f9d5c8d1cfaf5f48e50780893d85498ad122f447fcbbea0aca85d7575a8",
+        "previous_hash_hex": "5d4e2a3b051f666340b0b5e42c745d887ddb95c1a991b5bda071bffa732822ca",
         "principal_hex": "01",
         "projection_epoch": 7,
         "reason": "shard.cross_mutation_rejected",
         "receipt_id_hex": "26d426782c39eecd4fd20f6dce1faf48576f37926b8cfc73026b28ec7a1431b4",
-        "record_hash_hex": "b14ef5d2a3d4fc749f80f95bb404b56e4548025df57099fc1d06ebb36e5ecca6",
+        "record_hash_hex": "2a6ef9c8d0a5eab5b8106b6b4c8d112375a6c00b8e147dc778023086f97d12e1",
         "request_id_hex": "0505050505050505050505050505050505050505050505050505050505050505",
         "rule_identity": "write.cross_shard_check",
         "sequence": 5,
         "shard_hex": "01",
-        "verdict": "Rejected",
         "verified": true
       },
       "name": "cross_shard"
     },
     {
       "expected": {
+        "base_version": 1,
         "base_versions": [
           {
             "base_version": 1,
             "key_hex": "6163636f756e74"
           }
         ],
+        "decision": "Rejected",
         "decisions": [
           {
+            "allowed": false,
             "key_hex": "6163636f756e74",
             "reason": "policy.budget_exhausted",
-            "rule": "reject-all",
-            "verdict": "Reject"
+            "rule": "reject-all"
           }
         ],
         "fact_versions": [
@@ -153,35 +158,36 @@
         "manifest_digest_hex": "0505050505050505050505050505050505050505050505050505050505050505",
         "map_version": 6,
         "policy_version_hex": "0404040404040404040404040404040404040404040404040404040404040404",
-        "previous_hash_hex": "44212385113939f2f3e3a8bdc182fb157c12c918371ebeb889c5a6c411c7b6be",
+        "previous_hash_hex": "0542f6fa261353f655e1829bf490f3c13903c0751f41635f0cb8c18001fbdb35",
         "principal_hex": "01",
         "projection_epoch": 7,
         "reason": "policy.budget_exhausted",
         "receipt_id_hex": "3e7afe56c124d2a5b21c754e3f67410ef793a7761b2d21e9cea01106b1efc293",
-        "record_hash_hex": "e7a71f9d5c8d1cfaf5f48e50780893d85498ad122f447fcbbea0aca85d7575a8",
+        "record_hash_hex": "5d4e2a3b051f666340b0b5e42c745d887ddb95c1a991b5bda071bffa732822ca",
         "request_id_hex": "0404040404040404040404040404040404040404040404040404040404040404",
         "rule_identity": "reject-all",
         "sequence": 4,
         "shard_hex": "01",
-        "verdict": "Rejected",
         "verified": true
       },
       "name": "policy_reject"
     },
     {
       "expected": {
+        "base_version": 9,
         "base_versions": [
           {
             "base_version": 9,
             "key_hex": "6163636f756e74"
           }
         ],
+        "decision": "Rejected",
         "decisions": [
           {
+            "allowed": false,
             "key_hex": "6163636f756e74",
             "reason": "write.stale_base_version",
-            "rule": "write.stale_base_check",
-            "verdict": "Reject"
+            "rule": "write.stale_base_check"
           }
         ],
         "fact_versions": [
@@ -195,17 +201,16 @@
         "manifest_digest_hex": "0505050505050505050505050505050505050505050505050505050505050505",
         "map_version": 6,
         "policy_version_hex": "0404040404040404040404040404040404040404040404040404040404040404",
-        "previous_hash_hex": "ac25d1b147c8d8ecb5abc29b642177e73224d40ea74860b03bb7d774decdebf5",
+        "previous_hash_hex": "627819faadf0124dcb5f679f9e396a9e81d63d12d0ef42da837c1645e8f92f6c",
         "principal_hex": "01",
         "projection_epoch": 7,
         "reason": "write.stale_base_version",
         "receipt_id_hex": "0ac3848e02399d94472488e29d5a7027b17dd8fd9da2fb36fb2b1bec471d8d4e",
-        "record_hash_hex": "44212385113939f2f3e3a8bdc182fb157c12c918371ebeb889c5a6c411c7b6be",
+        "record_hash_hex": "0542f6fa261353f655e1829bf490f3c13903c0751f41635f0cb8c18001fbdb35",
         "request_id_hex": "0303030303030303030303030303030303030303030303030303030303030303",
         "rule_identity": "write.stale_base_check",
         "sequence": 3,
         "shard_hex": "01",
-        "verdict": "Rejected",
         "verified": true
       },
       "name": "stale"

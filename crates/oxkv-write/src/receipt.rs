@@ -1,8 +1,11 @@
 //! The durable receipt ledger.
 //!
-//! The ledger holds one receipt for each idempotency key. A receipt has four
-//! states. `Queued` is live. The other three states are terminal. A terminal
-//! receipt cannot change state.
+//! The ledger holds one receipt for each client and idempotency key pair. A
+//! receipt has four states. `Queued` is live. The other three states are
+//! terminal. A terminal receipt cannot change state.
+//!
+//! Two clients can use the same idempotency key. The ledger keeps the two
+//! receipts apart. A retry by the same client returns the original receipt.
 //!
 //! The ledger stores the body digest beside the receipt. The authority uses the
 //! digest to tell a retry from a reused key.
@@ -13,6 +16,8 @@ use oxkv_contracts::receipt::{
     IdempotencyKey, ReceiptEnvelope, ReceiptOutcome, ReceiptState, ReceiptTransitionError,
 };
 use oxkv_contracts::version::Hash32;
+
+use crate::request::ClientId;
 
 /// One stored receipt and the body digest that it belongs to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,9 +52,11 @@ impl StoredReceipt {
 /// An error from the receipt ledger.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ReceiptLedgerError {
-    /// The idempotency key already has a receipt.
-    #[error("The idempotency key already has a receipt.")]
+    /// The client already has a receipt for the idempotency key.
+    #[error("The client already has a receipt for the idempotency key.")]
     DuplicateKey {
+        /// The client that owns the receipt.
+        client_id: ClientId,
         /// The duplicated key.
         idempotency_key: IdempotencyKey,
     },
@@ -65,9 +72,11 @@ pub enum ReceiptLedgerError {
         /// The current state.
         state: ReceiptState,
     },
-    /// The idempotency key is unknown.
-    #[error("The idempotency key is unknown.")]
+    /// The client has no receipt for the idempotency key.
+    #[error("The client has no receipt for the idempotency key.")]
     UnknownKey {
+        /// The client that owns the receipt.
+        client_id: ClientId,
         /// The unknown key.
         idempotency_key: IdempotencyKey,
     },
@@ -94,10 +103,10 @@ impl ReceiptLedgerError {
     }
 }
 
-/// One receipt for each idempotency key.
+/// One receipt for each client and idempotency key pair.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReceiptLedger {
-    entries: BTreeMap<IdempotencyKey, StoredReceipt>,
+    entries: BTreeMap<(ClientId, IdempotencyKey), StoredReceipt>,
 }
 
 impl ReceiptLedger {
@@ -121,35 +130,50 @@ impl ReceiptLedger {
 
     /// Returns one stored receipt.
     #[must_use]
-    pub fn get(&self, idempotency_key: &IdempotencyKey) -> Option<&StoredReceipt> {
-        self.entries.get(idempotency_key)
+    pub fn get(
+        &self,
+        client_id: &ClientId,
+        idempotency_key: &IdempotencyKey,
+    ) -> Option<&StoredReceipt> {
+        self.entries
+            .get(&(client_id.clone(), idempotency_key.clone()))
     }
 
     /// Returns one receipt envelope.
     #[must_use]
-    pub fn receipt(&self, idempotency_key: &IdempotencyKey) -> Option<&ReceiptEnvelope> {
-        self.get(idempotency_key).map(StoredReceipt::envelope)
+    pub fn receipt(
+        &self,
+        client_id: &ClientId,
+        idempotency_key: &IdempotencyKey,
+    ) -> Option<&ReceiptEnvelope> {
+        self.get(client_id, idempotency_key)
+            .map(StoredReceipt::envelope)
     }
 
-    /// Returns true when the ledger has a receipt for the key.
+    /// Returns true when the client has a receipt for the key.
     #[must_use]
-    pub fn contains(&self, idempotency_key: &IdempotencyKey) -> bool {
-        self.entries.contains_key(idempotency_key)
+    pub fn contains(&self, client_id: &ClientId, idempotency_key: &IdempotencyKey) -> bool {
+        self.entries
+            .contains_key(&(client_id.clone(), idempotency_key.clone()))
     }
 
-    /// Iterates over the receipts in canonical idempotency-key order.
-    pub fn iter(&self) -> impl Iterator<Item = (&IdempotencyKey, &StoredReceipt)> {
-        self.entries.iter()
+    /// Iterates over the receipts in canonical client and key order.
+    pub fn iter(&self) -> impl Iterator<Item = ((&ClientId, &IdempotencyKey), &StoredReceipt)> {
+        self.entries
+            .iter()
+            .map(|((client_id, idempotency_key), stored)| ((client_id, idempotency_key), stored))
     }
 
     /// Queues one live receipt.
     ///
     /// # Errors
     ///
-    /// Returns [`ReceiptLedgerError::DuplicateKey`] when the key is present.
-    /// Returns [`ReceiptLedgerError::NotQueued`] when the receipt is terminal.
+    /// Returns [`ReceiptLedgerError::DuplicateKey`] when the client already has
+    /// a receipt for the key. Returns [`ReceiptLedgerError::NotQueued`] when the
+    /// receipt is terminal.
     pub fn queue(
         &mut self,
+        client_id: &ClientId,
         body_digest: Hash32,
         envelope: ReceiptEnvelope,
     ) -> Result<(), ReceiptLedgerError> {
@@ -158,17 +182,19 @@ impl ReceiptLedger {
                 state: envelope.state(),
             });
         }
-        self.insert_new(body_digest, envelope)
+        self.insert_new(client_id, body_digest, envelope)
     }
 
     /// Inserts one terminal receipt.
     ///
     /// # Errors
     ///
-    /// Returns [`ReceiptLedgerError::DuplicateKey`] when the key is present.
-    /// Returns [`ReceiptLedgerError::NotTerminal`] when the receipt is live.
+    /// Returns [`ReceiptLedgerError::DuplicateKey`] when the client already has
+    /// a receipt for the key. Returns [`ReceiptLedgerError::NotTerminal`] when
+    /// the receipt is live.
     pub fn insert_terminal(
         &mut self,
+        client_id: &ClientId,
         body_digest: Hash32,
         envelope: ReceiptEnvelope,
     ) -> Result<(), ReceiptLedgerError> {
@@ -177,26 +203,29 @@ impl ReceiptLedger {
                 state: envelope.state(),
             });
         }
-        self.insert_new(body_digest, envelope)
+        self.insert_new(client_id, body_digest, envelope)
     }
 
     /// Closes one queued receipt with a terminal outcome.
     ///
     /// # Errors
     ///
-    /// Returns [`ReceiptLedgerError::UnknownKey`] when the key is absent.
-    /// Returns [`ReceiptLedgerError::Transition`] when the receipt is already
-    /// terminal.
+    /// Returns [`ReceiptLedgerError::UnknownKey`] when the client has no receipt
+    /// for the key. Returns [`ReceiptLedgerError::Transition`] when the receipt
+    /// is already terminal.
     pub fn close(
         &mut self,
+        client_id: &ClientId,
         idempotency_key: &IdempotencyKey,
         outcome: ReceiptOutcome,
     ) -> Result<(), ReceiptLedgerError> {
-        let entry = self.entries.get_mut(idempotency_key).ok_or_else(|| {
-            ReceiptLedgerError::UnknownKey {
+        let entry = self
+            .entries
+            .get_mut(&(client_id.clone(), idempotency_key.clone()))
+            .ok_or_else(|| ReceiptLedgerError::UnknownKey {
+                client_id: client_id.clone(),
                 idempotency_key: idempotency_key.clone(),
-            }
-        })?;
+            })?;
         entry
             .envelope
             .close(outcome)
@@ -207,15 +236,20 @@ impl ReceiptLedger {
     /// Inserts a new receipt.
     fn insert_new(
         &mut self,
+        client_id: &ClientId,
         body_digest: Hash32,
         envelope: ReceiptEnvelope,
     ) -> Result<(), ReceiptLedgerError> {
         let idempotency_key = envelope.idempotency_key().clone();
-        if self.entries.contains_key(&idempotency_key) {
-            return Err(ReceiptLedgerError::DuplicateKey { idempotency_key });
+        let key = (client_id.clone(), idempotency_key.clone());
+        if self.entries.contains_key(&key) {
+            return Err(ReceiptLedgerError::DuplicateKey {
+                client_id: client_id.clone(),
+                idempotency_key,
+            });
         }
         self.entries
-            .insert(idempotency_key, StoredReceipt::new(body_digest, envelope));
+            .insert(key, StoredReceipt::new(body_digest, envelope));
         Ok(())
     }
 }

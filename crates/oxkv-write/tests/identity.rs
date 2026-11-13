@@ -5,9 +5,10 @@ use oxkv_contracts::version::{
     FactSourceId, FactVersion, Hash32, KeyVersion, ManifestDigest, MapVersion, PolicyVersion,
     ProjectionEpoch, ProjectionWatermarks, ShardId,
 };
+use oxkv_security::secret::KeyIdentifier;
 use oxkv_write::{
-    AllowAll, Authority, AuthorityConfig, ClientId, DecisionVerdict, Key, Mutation, Policy,
-    PolicyDecision, PolicyEvaluation, PolicyRow, RuleIdentity, SubmitOutcome, WriteRequest,
+    AllowAll, Authority, AuthorityConfig, ClientId, Key, Mutation, Policy, PolicyDecision,
+    PolicyEvaluation, PolicyRow, RuleIdentity, SubmitOutcome, WriteRequest,
 };
 
 struct FixedPolicy;
@@ -59,6 +60,7 @@ fn new_authority() -> Authority {
         MapVersion::new(9),
         ProjectionEpoch::new(4),
         fact_versions(),
+        KeyIdentifier::new("checkpoint-key-1"),
     ))
 }
 
@@ -172,13 +174,13 @@ fn a_rejected_write_writes_one_receipt_and_one_audit_record() {
     let receipt = outcome.receipt();
     let record = &authority.audit_records()[0];
     assert_eq!(receipt.audit().shard_id, shard());
-    assert_eq!(receipt.audit().audit_sequence, record.sequence());
-    assert_eq!(receipt.audit().record_hash, record.record_hash());
-    assert_eq!(record.body().receipt_id, receipt.receipt_id());
-    assert_eq!(record.body().verdict.name(), "Rejected");
-    assert_eq!(record.body().reason, Some("policy.not_total"));
+    assert_eq!(receipt.audit().audit_sequence, record.audit_sequence);
+    assert_eq!(receipt.audit().record_hash, record.record_hash);
+    assert_eq!(record.entry.receipt_id, Some(receipt.receipt_id()));
+    assert_eq!(record.entry.decision.name(), "Rejected");
+    assert_eq!(record.entry.reason_code, Some("policy.not_total"));
     assert!(record.verify_hash());
-    assert!(authority.verify_audit_chain());
+    assert!(authority.verify_audit_chain().is_ok());
 }
 
 #[test]
@@ -213,38 +215,46 @@ fn the_audit_record_carries_every_section_7_19_field() {
     let outcome = run(&mut authority, &request, &FixedPolicy);
 
     let record = &authority.audit_records()[0];
-    let body = record.body();
+    let body = &record.entry;
     assert_eq!(body.request_id, request.request_id());
     assert_eq!(&body.idempotency_key, request.idempotency_key());
-    assert_eq!(&body.principal, request.client_id());
+    assert_eq!(body.principal.as_bytes(), request.client_id().as_bytes());
     assert_eq!(body.shard_id, shard());
+    assert_eq!(body.base_version, KeyVersion::new(0));
     assert_eq!(
         body.base_versions,
-        [(key("account"), Some(KeyVersion::new(0)))]
+        [(b"account".to_vec(), Some(KeyVersion::new(0)))]
     );
     assert_eq!(body.policy_version, PolicyVersion::from_bytes([4; 32]));
     assert_eq!(body.manifest_digest, ManifestDigest::from_bytes([5; 32]));
     assert_eq!(body.map_version, MapVersion::new(9));
     assert_eq!(body.projection_epoch, ProjectionEpoch::new(4));
     assert_eq!(
-        body.fact_versions.get(&FactSourceId::new("accounts")),
+        body.fact_versions
+            .get(&FactSourceId::new("accounts"))
+            .copied(),
         Some(FactVersion::new(12))
     );
     assert_eq!(
-        body.fact_versions.get(&FactSourceId::new("orders")),
+        body.fact_versions
+            .get(&FactSourceId::new("orders"))
+            .copied(),
         Some(FactVersion::new(3))
     );
     assert_eq!(body.rule_identity.as_str(), "rule.accounts.rename");
     assert_eq!(body.decisions.len(), 1);
-    assert_eq!(body.decisions[0].key(), &key("account"));
-    assert_eq!(body.decisions[0].rule().as_str(), "rule.accounts.rename");
-    assert_eq!(body.decisions[0].verdict(), DecisionVerdict::Allow);
-    assert_eq!(body.decisions[0].reason(), None);
-    assert_eq!(body.receipt_id, outcome.receipt().receipt_id());
-    assert_eq!(body.verdict.name(), "Committed");
-    assert_eq!(body.reason, None);
+    assert_eq!(body.decisions[0].key, key("account").as_bytes());
+    assert_eq!(
+        body.decisions[0].rule_identity.as_str(),
+        "rule.accounts.rename"
+    );
+    assert!(body.decisions[0].allowed);
+    assert_eq!(body.decisions[0].reason_code, None);
+    assert_eq!(body.receipt_id, Some(outcome.receipt().receipt_id()));
+    assert_eq!(body.decision.name(), "Committed");
+    assert_eq!(body.reason_code, None);
     assert_eq!(body.input_digest, request.body_digest());
-    assert_eq!(record.previous_hash(), Hash32::from_bytes([0; 32]));
-    assert_eq!(record.record_hash(), outcome.receipt().audit().record_hash);
+    assert_eq!(record.previous_hash, Hash32::from_bytes([0; 32]));
+    assert_eq!(record.record_hash, outcome.receipt().audit().record_hash);
     assert!(record.verify_hash());
 }

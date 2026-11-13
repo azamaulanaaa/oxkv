@@ -2,7 +2,7 @@
 name = "oxkv-query"
 version = "0.11.0"
 edition = "2024"
-description = "Lucene-style query engine for the oxkv key-value store."
+description = "Legacy Lucene-style query filter for the oxkv key-value store. This crate is not part of the 1.0 search contract."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/azamaulanaaa/oxkv"
 readme = "../../README.md"

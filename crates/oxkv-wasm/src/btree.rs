@@ -5,9 +5,8 @@
 use wasm_bindgen::prelude::*;
 
 use oxkv::{self as store, GetSet, GetSetExt, Store, StoreExt, Transaction, load_stream};
-use oxkv_query::QueryExt;
 
-use super::{Direction, js_error, json_compatible};
+use super::{Direction, js_error, json_compatible, json_entries};
 
 /// Wrapper around the concrete [`store::BTreeStore`] for use in a WASM environment.
 ///
@@ -210,23 +209,13 @@ impl JsBTreeStore {
         }
     }
 
-    /// Retrieve JSON documents with cursor-based pagination. A Lucene-style
-    /// query string can filter the result.
+    /// Retrieve JSON documents with cursor-based pagination.
     ///
-    /// This method mirrors `gets_bytes`. The parameters `limit`, `direction`,
-    /// and the cursors carry the same meaning as they carry in `gets_bytes`.
-    /// This method passes through to `gets_bytes` when `query` is omitted. With
-    /// a query, this method scans the entries in the requested order. It returns
-    /// only the entries whose stored bytes deserialize as JSON that satisfies the
-    /// query. It skips the entries that are not JSON. When a query is given,
-    /// `limit` caps the number of *matching* entries.
-    ///
-    /// See the `query` module for the query syntax. The syntax covers field
-    /// paths, ranges, wildcards, fuzzy, and boolean operators. The 1.0 surface
-    /// has no regular expressions. A `/regex/` term fails with
-    /// `policy.regex_not_supported`.
+    /// This method mirrors `gets_bytes`. The `limit`, `direction`, and cursor
+    /// parameters have the same meaning as in `gets_bytes`. The `value` field
+    /// holds the parsed JSON document. When the stored bytes are not valid
+    /// JSON, the `value` field holds a `Uint8Array` instead.
     /// # Errors
-    /// * `StoreError` - if the query is invalid
     /// * `StoreError` - if an I/O error occurs
     #[wasm_bindgen(
         return_description = "An array of key-value objects where `value` is the parsed JSON document"
@@ -245,40 +234,17 @@ impl JsBTreeStore {
             param_description = "Optional end key for the range; keys *at* this cursor are included when present"
         )]
         end_cursor: Option<String>,
-        #[wasm_bindgen(
-            param_description = "Optional Lucene-style query string (e.g. \"age:[30 TO 40] AND tags:rust\")"
-        )]
-        query: Option<String>,
     ) -> Result<Vec<js_sys::Object>, JsValue> {
         let store = self.inner.lock().await;
-        match QueryExt::gets(
-            &*store,
-            limit.map(|value| value as usize),
-            direction.into(),
-            (start_cursor, end_cursor),
-            query.as_deref(),
-        )
-        .await
+        match store
+            .gets_bytes(
+                limit.map(|value| value as usize),
+                direction.into(),
+                (start_cursor, end_cursor),
+            )
+            .await
         {
-            Ok(kvs) => kvs
-                .into_iter()
-                .map(|kv| {
-                    let obj = js_sys::Object::new();
-                    let js_key = js_sys::JsString::from(kv.key);
-                    // With no query, this method may return raw (non-JSON)
-                    // values. In that case it falls back to bytes so that it
-                    // drops nothing silently.
-                    let js_val =
-                        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&kv.value) {
-                            json_compatible(&value)?
-                        } else {
-                            js_sys::Uint8Array::from(&kv.value[..]).into()
-                        };
-                    js_sys::Reflect::set(&obj, &"key".into(), &js_key)?;
-                    js_sys::Reflect::set(&obj, &"value".into(), &js_val)?;
-                    Ok(obj)
-                })
-                .collect(),
+            Ok(kvs) => json_entries(kvs),
             Err(e) => Err(js_error(&e)),
         }
     }
@@ -768,7 +734,7 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    async fn gets_without_query_returns_all_documents() {
+    async fn gets_returns_all_documents() {
         let js_store = JsBTreeStore::new();
         for n in 0..3u32 {
             let doc =
@@ -776,41 +742,63 @@ mod tests {
             ok(js_store.set(&format!("k{n}"), doc).await);
         }
 
-        let all = entries(js_store.gets(None, Direction::Next, None, None, None).await);
+        let all = entries(js_store.gets(None, Direction::Next, None, None).await);
         assert_eq!(all.len(), 3);
+        assert_eq!(entry_key(&all[0]), "k0");
         assert_eq!(entry_json(&all[0]), serde_json::json!({ "n": 0 }));
-
-        let filtered = entries(
-            js_store
-                .gets(None, Direction::Next, None, None, Some("n:1".to_owned()))
-                .await,
-        );
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(entry_json(&filtered[0]), serde_json::json!({ "n": 1 }));
     }
 
     #[wasm_bindgen_test]
-    async fn gets_with_query_limits_matches_not_scanned_entries() {
+    async fn gets_limit_caps_scanned_entries() {
         let js_store = JsBTreeStore::new();
         for n in 0..4u32 {
-            let doc = json_compatible(&serde_json::json!({ "even": n % 2 == 0 }))
-                .expect("serialize to JsValue");
+            let doc =
+                json_compatible(&serde_json::json!({ "n": n })).expect("serialize to JsValue");
             ok(js_store.set(&format!("k{n}"), doc).await);
         }
 
-        let matches = entries(
+        let page = entries(js_store.gets(Some(2), Direction::Next, None, None).await);
+        let keys: Vec<_> = page.iter().map(entry_key).collect();
+        assert_eq!(keys, vec!["k0", "k1"]);
+    }
+
+    #[wasm_bindgen_test]
+    async fn gets_honors_cursor_bounds() {
+        let js_store = JsBTreeStore::new();
+        for n in 0..4u32 {
+            let doc =
+                json_compatible(&serde_json::json!({ "n": n })).expect("serialize to JsValue");
+            ok(js_store.set(&format!("k{n}"), doc).await);
+        }
+
+        let page = entries(
             js_store
                 .gets(
-                    Some(1),
+                    None,
                     Direction::Next,
-                    None,
-                    None,
-                    Some("even:true".to_owned()),
+                    Some("k1".to_owned()),
+                    Some("k2".to_owned()),
                 )
                 .await,
         );
-        assert_eq!(matches.len(), 1);
-        assert_eq!(entry_key(&matches[0]), "k0");
+        let keys: Vec<_> = page.iter().map(entry_key).collect();
+        assert_eq!(keys, vec!["k1", "k2"]);
+    }
+
+    #[wasm_bindgen_test]
+    async fn gets_returns_non_json_values_as_bytes() {
+        let js_store = JsBTreeStore::new();
+        ok(js_store.set_bytes("raw", b"not json").await);
+        let doc =
+            json_compatible(&serde_json::json!({ "ok": true })).expect("serialize to JsValue");
+        ok(js_store.set("doc", doc).await);
+
+        let all = entries(js_store.gets(None, Direction::Next, None, None).await);
+        assert_eq!(all.len(), 2);
+        assert_eq!(entry_key(&all[0]), "doc");
+        assert_eq!(entry_json(&all[0]), serde_json::json!({ "ok": true }));
+        assert_eq!(entry_key(&all[1]), "raw");
+        assert_eq!(entry_bytes(&all[1]), b"not json");
     }
 
     #[wasm_bindgen_test]

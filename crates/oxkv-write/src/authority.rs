@@ -3,7 +3,7 @@
 //! The authority owns one shard. It serializes writes and assigns every key
 //! version. The check order is:
 //!
-//! 1. receipt lookup for the idempotency key;
+//! 1. receipt lookup for the client and idempotency key;
 //! 2. cross-shard check;
 //! 3. base-version check;
 //! 4. policy check;
@@ -11,26 +11,37 @@
 //!
 //! Authentication is outside this crate. The request carries the client
 //! identity as an explicit value. The receipt id covers the client identity,
-//! the idempotency key, and the request body digest. The simulator has no
-//! clock, randomness, or I/O.
+//! the idempotency key, and the request body digest. The receipt ledger keys
+//! every receipt by the client identity and the idempotency key. The simulator
+//! has no clock, randomness, or I/O.
 
 use std::collections::BTreeMap;
 
 use oxkv_contracts::receipt::{
-    IdempotencyKey, ReceiptEnvelope, ReceiptId, ReceiptOutcome, ReceiptState,
+    AuditReference, IdempotencyKey, ReceiptEnvelope, ReceiptId, ReceiptOutcome, ReceiptState,
 };
 use oxkv_contracts::version::{
     CommitVersion, DigestDomain, Hash32, KeyVersion, ManifestDigest, MapVersion, PolicyVersion,
     ProjectionEpoch, ProjectionWatermarks, ShardId,
 };
+use oxkv_security::audit::{
+    AuditChain, AuditCheckpoint, AuditDecision, AuditEntry, AuditRowDecision,
+    AuditVerificationReport, StructuralSigner,
+};
+use oxkv_security::auth::PrincipalId;
+use oxkv_security::error::SecurityError;
+use oxkv_security::secret::KeyIdentifier;
+use oxkv_security::witness::{WitnessQueue, WitnessSink};
 
-use crate::audit::{AuditChain, AuditRecord, AuditRecordBody, AuditVerdict};
+use crate::audit::AuditRecord;
 use crate::conflict::ConflictDetail;
 use crate::hook::{CommitHook, HookEffect};
-use crate::policy::{Policy, PolicyDecision, PolicyRow, PolicyVerdict, RuleIdentity};
+use crate::policy::{
+    DecisionVerdict, Policy, PolicyDecision, PolicyRow, PolicyVerdict, RuleIdentity,
+};
 use crate::receipt::{ReceiptLedger, ReceiptLedgerError};
 use crate::record::{CommitSummary, CommitView, KeyChange, KeyRecord, KeyValue};
-use crate::request::{Key, WriteOperation, WriteRequest};
+use crate::request::{ClientId, Key, Mutation, WriteOperation, WriteRequest};
 use crate::util::push_bytes;
 
 const REASON_CROSS_SHARD: &str = "shard.cross_mutation_rejected";
@@ -169,6 +180,12 @@ pub enum SubmitError {
     /// A key version or commit version cannot advance.
     #[error("The version sequence is exhausted.")]
     VersionExhausted,
+    /// The audit append failed.
+    #[error("The audit append failed.")]
+    AuditUnavailable,
+    /// The audit chain rejected the record or the checkpoint.
+    #[error("The audit chain is invalid.")]
+    AuditChainInvalid,
     /// The receipt ledger failed.
     #[error("{source}")]
     Receipt {
@@ -187,6 +204,8 @@ impl SubmitError {
             Self::IdempotencyKeyReuse { .. } => "write.idempotency_key_reuse",
             Self::HookFailed { code, .. } => code,
             Self::VersionExhausted => "internal.resource_exhausted",
+            Self::AuditUnavailable => "audit.unavailable",
+            Self::AuditChainInvalid => "audit.chain_invalid",
             Self::Receipt { source } => source.code(),
         }
     }
@@ -204,10 +223,14 @@ pub struct AuthorityConfig {
     map_version: MapVersion,
     projection_epoch: ProjectionEpoch,
     fact_versions: ProjectionWatermarks,
+    checkpoint_key: KeyIdentifier,
 }
 
 impl AuthorityConfig {
     /// Creates an authority configuration.
+    ///
+    /// The checkpoint key names the key that signs each audit checkpoint. The
+    /// value is a key identifier. It is not key material.
     #[must_use]
     pub fn new(
         shard_id: ShardId,
@@ -216,6 +239,7 @@ impl AuthorityConfig {
         map_version: MapVersion,
         projection_epoch: ProjectionEpoch,
         fact_versions: ProjectionWatermarks,
+        checkpoint_key: KeyIdentifier,
     ) -> Self {
         Self {
             shard_id,
@@ -224,6 +248,7 @@ impl AuthorityConfig {
             map_version,
             projection_epoch,
             fact_versions,
+            checkpoint_key,
         }
     }
 
@@ -262,10 +287,16 @@ impl AuthorityConfig {
     pub const fn fact_versions(&self) -> &ProjectionWatermarks {
         &self.fact_versions
     }
+
+    /// Returns the key identifier that signs each audit checkpoint.
+    #[must_use]
+    pub const fn checkpoint_key(&self) -> &KeyIdentifier {
+        &self.checkpoint_key
+    }
 }
 
 /// The in-memory authority for one shard.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Authority {
     shard_id: ShardId,
     policy_version: PolicyVersion,
@@ -277,12 +308,16 @@ pub struct Authority {
     receipts: ReceiptLedger,
     commit_version: CommitVersion,
     audit: AuditChain,
+    signer: StructuralSigner,
+    witness: WitnessQueue,
 }
 
 impl Authority {
     /// Creates an authority for one shard.
     #[must_use]
     pub fn new(config: AuthorityConfig) -> Self {
+        let audit = AuditChain::new(config.shard_id.clone());
+        let signer = StructuralSigner::new(config.checkpoint_key);
         Self {
             shard_id: config.shard_id,
             policy_version: config.policy_version,
@@ -293,7 +328,9 @@ impl Authority {
             records: BTreeMap::new(),
             receipts: ReceiptLedger::new(),
             commit_version: CommitVersion::new(0),
-            audit: AuditChain::new(),
+            audit,
+            signer,
+            witness: WitnessQueue::new(),
         }
     }
 
@@ -371,16 +408,48 @@ impl Authority {
         self.audit.len()
     }
 
-    /// Checks the audit chain.
-    #[must_use]
-    pub fn verify_audit_chain(&self) -> bool {
+    /// Checks the audit chain to the last signed checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SecurityError::AuditChainInvalid`] when a record hash, a
+    /// previous hash, a sequence, or a checkpoint does not match.
+    pub fn verify_audit_chain(&self) -> Result<AuditVerificationReport, SecurityError> {
         self.audit.verify()
+    }
+
+    /// Returns the signed checkpoints in chain order.
+    #[must_use]
+    pub fn audit_checkpoints(&self) -> &[AuditCheckpoint] {
+        self.audit.checkpoints()
+    }
+
+    /// Returns the last signed checkpoint.
+    #[must_use]
+    pub fn last_audit_checkpoint(&self) -> Option<&AuditCheckpoint> {
+        self.audit.last_checkpoint()
+    }
+
+    /// Returns the asynchronous witness queue.
+    #[must_use]
+    pub const fn witness(&self) -> &WitnessQueue {
+        &self.witness
+    }
+
+    /// Returns the asynchronous witness queue for delivery.
+    #[must_use]
+    pub const fn witness_mut(&mut self) -> &mut WitnessQueue {
+        &mut self.witness
     }
 
     /// Returns one receipt envelope.
     #[must_use]
-    pub fn receipt(&self, idempotency_key: &IdempotencyKey) -> Option<&ReceiptEnvelope> {
-        self.receipts.receipt(idempotency_key)
+    pub fn receipt(
+        &self,
+        client_id: &ClientId,
+        idempotency_key: &IdempotencyKey,
+    ) -> Option<&ReceiptEnvelope> {
+        self.receipts.receipt(client_id, idempotency_key)
     }
 
     /// Submits one write request.
@@ -394,7 +463,9 @@ impl Authority {
     /// version. Returns [`SubmitError::IdempotencyKeyReuse`] when the body
     /// differs. Returns [`SubmitError::HookFailed`] when a commit hook fails.
     /// Returns [`SubmitError::VersionExhausted`] when a sequence cannot
-    /// advance. Returns [`SubmitError::Receipt`] when the ledger fails.
+    /// advance. Returns [`SubmitError::AuditUnavailable`] when the audit append
+    /// fails. An audit failure writes no receipt and changes no state. Returns
+    /// [`SubmitError::Receipt`] when the ledger fails.
     pub fn submit(
         &mut self,
         request: &WriteRequest,
@@ -403,7 +474,10 @@ impl Authority {
     ) -> Result<SubmitOutcome, SubmitError> {
         let body_digest = request.body_digest();
 
-        if let Some(stored) = self.receipts.get(request.idempotency_key()) {
+        if let Some(stored) = self
+            .receipts
+            .get(request.client_id(), request.idempotency_key())
+        {
             if stored.body_digest() != body_digest {
                 return Err(SubmitError::IdempotencyKeyReuse {
                     idempotency_key: request.idempotency_key().clone(),
@@ -445,13 +519,14 @@ impl Authority {
         let rule = evaluation.rule_identity().clone();
         let decisions = evaluation.decisions().to_vec();
         if let PolicyVerdict::Reject { reason } = evaluation.verdict() {
-            let receipt = self.finish_receipt(
+            let (receipt, checkpoint) = self.finish_receipt(
                 request,
                 body_digest,
                 ReceiptOutcome::Rejected { reason },
                 rule,
-                decisions,
+                &decisions,
             )?;
+            self.witness.enqueue(checkpoint);
             return Ok(SubmitOutcome::rejected(receipt));
         }
 
@@ -471,17 +546,18 @@ impl Authority {
             }
         }
 
-        let receipt = self.finish_receipt(
+        let (receipt, checkpoint) = self.finish_receipt(
             request,
             body_digest,
             ReceiptOutcome::Committed {
                 commit_version: next_commit_version,
             },
             rule,
-            decisions,
+            &decisions,
         )?;
         self.apply_changes(&changes);
         self.commit_version = next_commit_version;
+        self.witness.enqueue(checkpoint);
         Ok(SubmitOutcome::committed(
             receipt,
             CommitSummary::new(self.shard_id.clone(), next_commit_version, changes),
@@ -502,15 +578,16 @@ impl Authority {
             rule.clone(),
             REASON_CROSS_SHARD,
         )];
-        let receipt = self.finish_receipt(
+        let (receipt, checkpoint) = self.finish_receipt(
             request,
             body_digest,
             ReceiptOutcome::Rejected {
                 reason: REASON_CROSS_SHARD,
             },
             rule,
-            decisions,
+            &decisions,
         )?;
+        self.witness.enqueue(checkpoint);
         Ok(SubmitOutcome::rejected(receipt))
     }
 
@@ -523,15 +600,16 @@ impl Authority {
     ) -> Result<SubmitOutcome, SubmitError> {
         let rule = RuleIdentity::new(RULE_STALE_BASE);
         let decisions = vec![PolicyDecision::reject(key, rule.clone(), REASON_STALE_BASE)];
-        let receipt = self.finish_receipt(
+        let (receipt, checkpoint) = self.finish_receipt(
             request,
             body_digest,
             ReceiptOutcome::Rejected {
                 reason: REASON_STALE_BASE,
             },
             rule,
-            decisions,
+            &decisions,
         )?;
+        self.witness.enqueue(checkpoint);
         Ok(SubmitOutcome::rejected(receipt))
     }
 
@@ -550,7 +628,7 @@ impl Authority {
             rule.clone(),
             REASON_VERSION_CONFLICT,
         )];
-        let receipt = self.finish_receipt(
+        let (receipt, checkpoint) = self.finish_receipt(
             request,
             body_digest,
             ReceiptOutcome::Conflict {
@@ -558,8 +636,9 @@ impl Authority {
                 reason: REASON_VERSION_CONFLICT,
             },
             rule,
-            decisions,
+            &decisions,
         )?;
+        self.witness.enqueue(checkpoint);
         Ok(SubmitOutcome::conflict_outcome(
             receipt,
             ConflictDetail::new(key, base_version, current_key_version),
@@ -649,20 +728,24 @@ impl Authority {
         }
     }
 
-    /// Builds and stores one audit record and its terminal receipt.
+    /// Builds and stores one audit record, its signed checkpoint, and its
+    /// terminal receipt.
+    ///
+    /// The function appends the audit record before it writes the receipt. An
+    /// audit append failure returns an error and writes no receipt.
     fn finish_receipt(
         &mut self,
         request: &WriteRequest,
         body_digest: Hash32,
         outcome: ReceiptOutcome,
         rule_identity: RuleIdentity,
-        decisions: Vec<PolicyDecision>,
-    ) -> Result<ReceiptEnvelope, SubmitError> {
+        decisions: &[PolicyDecision],
+    ) -> Result<(ReceiptEnvelope, AuditCheckpoint), SubmitError> {
         let receipt_id = receipt_id_for(request, body_digest);
         let verdict = match outcome.state() {
-            ReceiptState::Committed => AuditVerdict::Committed,
-            ReceiptState::Rejected => AuditVerdict::Rejected,
-            ReceiptState::Conflict => AuditVerdict::Conflict,
+            ReceiptState::Committed => AuditDecision::Committed,
+            ReceiptState::Rejected => AuditDecision::Rejected,
+            ReceiptState::Conflict => AuditDecision::Conflict,
             ReceiptState::Queued => {
                 return Err(SubmitError::Receipt {
                     source: ReceiptLedgerError::NotTerminal {
@@ -677,34 +760,63 @@ impl Authority {
                 Some(reason)
             }
         };
-        let body = AuditRecordBody {
+        let base_version = request
+            .mutations()
+            .first()
+            .and_then(Mutation::base_version)
+            .unwrap_or(KeyVersion::new(0));
+        let entry = AuditEntry {
             request_id: request.request_id(),
             idempotency_key: request.idempotency_key().clone(),
-            principal: request.client_id().clone(),
+            principal: PrincipalId::from_bytes(request.client_id().as_bytes().to_vec()),
             shard_id: self.shard_id.clone(),
+            base_version,
             base_versions: request
                 .mutations()
                 .iter()
-                .map(|mutation| (mutation.key().clone(), mutation.base_version()))
+                .map(|mutation| (mutation.key().as_bytes().to_vec(), mutation.base_version()))
                 .collect(),
             policy_version: self.policy_version,
             manifest_digest: self.manifest_digest,
             map_version: self.map_version,
             projection_epoch: self.projection_epoch,
-            fact_versions: self.fact_versions.clone(),
+            fact_versions: self
+                .fact_versions
+                .iter()
+                .map(|(source, version)| (source.clone(), version))
+                .collect(),
             rule_identity,
-            decisions,
-            receipt_id,
-            verdict,
-            reason,
+            decisions: decisions
+                .iter()
+                .map(|decision| AuditRowDecision {
+                    key: decision.key().as_bytes().to_vec(),
+                    rule_identity: decision.rule().clone(),
+                    allowed: decision.verdict() == DecisionVerdict::Allow,
+                    reason_code: decision.reason(),
+                })
+                .collect(),
+            decision: verdict,
+            reason_code: reason,
+            receipt_id: Some(receipt_id),
             input_digest: body_digest,
         };
-        let record = self.audit.seal_next(body);
+        let record = self.audit.append(entry).map_err(|error| match error {
+            SecurityError::AuditUnavailable => SubmitError::AuditUnavailable,
+            _ => SubmitError::AuditChainInvalid,
+        })?;
+        let checkpoint = self
+            .audit
+            .checkpoint(&self.signer)
+            .map_err(|_| SubmitError::AuditChainInvalid)?;
         let mut receipt = ReceiptEnvelope::queued(
             receipt_id,
             request.request_id(),
             request.idempotency_key().clone(),
-            record.audit_reference(),
+            AuditReference::new(
+                self.shard_id.clone(),
+                record.audit_sequence,
+                record.record_hash,
+            ),
             self.policy_version,
             self.manifest_digest,
             REASON_QUEUED,
@@ -716,10 +828,9 @@ impl Authority {
                 source: ReceiptLedgerError::from(source),
             })?;
         self.receipts
-            .insert_terminal(body_digest, receipt.clone())
+            .insert_terminal(request.client_id(), body_digest, receipt.clone())
             .map_err(|source| SubmitError::Receipt { source })?;
-        self.audit.push(record);
-        Ok(receipt)
+        Ok((receipt, checkpoint))
     }
 }
 

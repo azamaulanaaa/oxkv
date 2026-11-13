@@ -88,6 +88,28 @@ fn json_compatible<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
         .map_err(|e| js_error(&store::StoreError::Serialization(e.to_string())))
 }
 
+/// Convert key-value rows into JavaScript objects.
+///
+/// Each object has a `key` field and a `value` field. The function parses the
+/// stored bytes as JSON. When the bytes are not valid JSON, the `value` field
+/// holds a `Uint8Array` instead. The function drops no row.
+fn json_entries(kvs: Vec<store::KeyValue>) -> Result<Vec<js_sys::Object>, JsValue> {
+    kvs.into_iter()
+        .map(|kv| {
+            let obj = js_sys::Object::new();
+            let js_key = js_sys::JsString::from(kv.key);
+            let js_val = if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&kv.value) {
+                json_compatible(&value)?
+            } else {
+                js_sys::Uint8Array::from(&kv.value[..]).into()
+            };
+            js_sys::Reflect::set(&obj, &"key".into(), &js_key)?;
+            js_sys::Reflect::set(&obj, &"value".into(), &js_val)?;
+            Ok(obj)
+        })
+        .collect()
+}
+
 /// Generate the `wasm_bindgen` transaction wrapper shared by every backend.
 ///
 /// `BTreeStore`, `OxKvStore` and `CachedOxKvStore` each carried a ~220-line

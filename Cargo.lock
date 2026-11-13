@@ -1568,7 +1568,6 @@ dependencies = [
  "oxkv",
  "oxkv-cached",
  "oxkv-opfs",
- "oxkv-query",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
@@ -1593,6 +1592,7 @@ name = "oxkv-write"
 version = "0.11.0"
 dependencies = [
  "oxkv-contracts",
+ "oxkv-security",
  "serde_json",
  "thiserror",
 ]

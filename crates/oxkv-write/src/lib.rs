@@ -15,6 +15,11 @@
 //! Authentication is outside this crate. The crate is portable and pure. It
 //! uses no clock, randomness, I/O, floating point, or `unsafe`.
 //!
+//! The authority appends one signed audit record for each terminal verdict.
+//! The audit chain comes from `oxkv-security`. The authority sends each signed
+//! checkpoint to an asynchronous witness queue after the commit. The commit
+//! path does not wait for the witness.
+//!
 //! # Example
 //!
 //! ```
@@ -23,6 +28,7 @@
 //!     KeyVersion, ManifestDigest, MapVersion, PolicyVersion, ProjectionEpoch,
 //!     ProjectionWatermarks, ShardId,
 //! };
+//! use oxkv_security::secret::KeyIdentifier;
 //! use oxkv_write::{AllowAll, Authority, AuthorityConfig, ClientId, Key, Mutation, WriteRequest};
 //!
 //! let mut authority = Authority::new(AuthorityConfig::new(
@@ -32,6 +38,7 @@
 //!     MapVersion::new(6),
 //!     ProjectionEpoch::new(7),
 //!     ProjectionWatermarks::new(),
+//!     KeyIdentifier::new("checkpoint-key-1"),
 //! ));
 //! let request = WriteRequest::new(
 //!     RequestId::from_bytes([2; 32]),
@@ -65,7 +72,7 @@ pub mod record;
 pub mod request;
 mod util;
 
-pub use audit::{AuditChain, AuditRecord, AuditRecordBody, AuditVerdict};
+pub use audit::{AuditChain, AuditCheckpoint, AuditRecord, AuditRecordBody, AuditVerdict};
 pub use authority::{Authority, AuthorityConfig, SubmitError, SubmitOutcome};
 pub use conflict::{ConflictDetail, RebaseError, rebase_request};
 pub use hook::{CommitHook, HookEffect, HookError};

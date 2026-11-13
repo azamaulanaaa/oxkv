@@ -1,28 +1,30 @@
 # Migrating from 0.12 to 1.0
 
-OxKV 1.0 removes the `/regex/` term from the query filter. The 1.0 search
-language has no regular expressions. A query with `/regex/` fails with
-`policy.regex_not_supported`.
+OxKV 1.0 removes the query filter from the WASM surface. The `gets` and
+`getsBytes` methods on `BTreeStore`, `OxKvStore`, and `CachedOxKvStore` now
+take four arguments. They return a plain paginated JSON scan.
 
 Before:
 
-```rust
-let rows = store
-    .gets(None, Direction::Next, (None, None), Some(r"id:/doc-\d+/"))
-    .await?;
+```js
+const rows = await store.gets(10, Direction.Next, null, null, "age:[30 TO 40]");
 ```
 
 After:
 
-```rust
-let rows = store
-    .gets(None, Direction::Next, (None, None), Some("id:doc-*"))
-    .await?;
+```js
+const rows = await store.gets(10, Direction.Next, null, null);
 ```
 
-The `*` and `?` wildcard forms still work. The `oxkv-index` and `oxkv-search`
-crates hold the 1.0 search contract. The `oxkv-query` filter is a legacy
-convenience layer. All workspace crates release in lockstep at 1.0.0.
+Filter the returned rows in JavaScript. The WASM surface has no query path and
+no regex path.
+
+The `oxkv-query` crate is a standalone legacy crate. It is not part of the 1.0
+search contract. The `oxkv-index` and `oxkv-search` crates hold the 1.0 search
+contract. The 1.0 search language has no regular expressions. A query with
+`/regex/` fails with `policy.regex_not_supported`. The `*` and `?` wildcard
+forms still work in the legacy filter. All workspace crates release in lockstep
+at 1.0.0.
 
 # Migrating from 0.11 to 0.12
 
@@ -238,7 +240,7 @@ version as `oxkv`.
 | Crate | Purpose | Version |
 | --- | --- | --- |
 | `oxkv` | Core traits, the B-tree backend, and the LSM backend | Core crate |
-| `oxkv-query` | Lucene-style query engine for stored JSON documents | Matches `oxkv` |
+| `oxkv-query` | Standalone legacy Lucene-style query filter. Not part of the 1.0 search contract | Matches `oxkv` |
 | `oxkv-opfs` | Browser OPFS storage backend | Matches `oxkv` |
 | `oxkv-s3` | S3, GCS, Azure, and local filesystem storage with `object_store` | Matches `oxkv` |
 | `oxkv-otel` | OpenTelemetry span and metric decorator | Matches `oxkv` |

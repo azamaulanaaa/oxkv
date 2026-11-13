@@ -42,14 +42,17 @@ pub(crate) fn sample_entry() -> AuditEntry {
         principal: PrincipalId::from_bytes(vec![2]),
         shard_id: ShardId::new(vec![1]),
         base_version: KeyVersion::new(7),
+        base_versions: vec![(b"account/42".to_vec(), Some(KeyVersion::new(7)))],
         policy_version: PolicyVersion::from_bytes([3; 32]),
         manifest_digest: ManifestDigest::from_bytes([4; 32]),
         map_version: MapVersion::new(5),
         projection_epoch: ProjectionEpoch::new(6),
         fact_versions,
         rule_identity: RuleIdentity::new("accounts/write"),
+        decisions: Vec::new(),
         decision: AuditDecision::Committed,
         reason_code: None,
+        receipt_id: Some(oxkv_contracts::receipt::ReceiptId::from_bytes([10; 32])),
         input_digest: Hash32::from_bytes([8; 32]),
     }
 }

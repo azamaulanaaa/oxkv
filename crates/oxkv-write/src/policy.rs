@@ -6,45 +6,12 @@
 //! A policy implementation must be pure. It must not read a clock, draw
 //! randomness, perform I/O, or keep state.
 
-use core::fmt;
-
 use oxkv_contracts::version::KeyVersion;
 
 use crate::record::KeyRecord;
 use crate::request::{Key, Mutation, WriteRequest};
 
-/// A rule identity.
-///
-/// The audit record carries one rule identity for the evaluation and one rule
-/// identity for each row decision.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct RuleIdentity(String);
-
-impl RuleIdentity {
-    /// Creates a rule identity.
-    #[must_use]
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-
-    /// Returns the rule identity text.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    /// Returns true when the identity is empty.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
-impl fmt::Display for RuleIdentity {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
+pub use oxkv_security::audit::RuleIdentity;
 
 /// One request row that a policy can inspect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

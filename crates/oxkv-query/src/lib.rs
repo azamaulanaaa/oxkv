@@ -1,6 +1,11 @@
 #![allow(clippy::multiple_crate_versions)]
 
-//! The Lucene-style query engine for `oxkv`.
+//! The legacy Lucene-style query filter for `oxkv`.
+//!
+//! This crate is a standalone legacy crate. It is not part of the 1.0 search
+//! contract. The 1.0 search contract is `oxkv-index` for the tokenizer and the
+//! inverted index, and `oxkv-search` for the pinned search read. The
+//! `oxkv-wasm` bindings do not use this crate.
 //!
 //! [`parse`] turns a query string into a [`Query`] AST. [`eval`] matches one
 //! [`serde_json::Value`] against that AST. [`QueryExt`] adds the paginated

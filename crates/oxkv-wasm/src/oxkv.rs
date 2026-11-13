@@ -5,9 +5,8 @@
 use wasm_bindgen::prelude::*;
 
 use oxkv::{self as store, GetSet, GetSetExt, Store, StoreExt, Transaction, load_stream};
-use oxkv_query::QueryExt;
 
-use super::{Direction, js_error, json_compatible};
+use super::{Direction, js_error, json_compatible, json_entries};
 
 /// Wrapper around the LSM [`store::OxKvStore`] for use in a WASM environment.
 ///
@@ -248,10 +247,14 @@ impl JsOxKvStore {
         }
     }
 
-    /// Retrieve JSON documents with cursor-based pagination, optionally filtered
-    /// by a Lucene-style query string.
+    /// Retrieve JSON documents with cursor-based pagination.
+    ///
+    /// This method mirrors `gets_bytes`. The `limit`, `direction`, and cursor
+    /// parameters have the same meaning as in `gets_bytes`. The `value` field
+    /// holds the parsed JSON document. When the stored bytes are not valid
+    /// JSON, the `value` field holds a `Uint8Array` instead.
     /// # Errors
-    /// * `StoreError` - if the query is invalid or an I/O error occurs
+    /// * `StoreError` - if an I/O error occurs
     #[wasm_bindgen(
         return_description = "An array of key-value objects where `value` is the parsed JSON document"
     )]
@@ -269,37 +272,17 @@ impl JsOxKvStore {
             param_description = "Optional end key for the range; keys *at* this cursor are included when present"
         )]
         end_cursor: Option<String>,
-        #[wasm_bindgen(
-            param_description = "Optional Lucene-style query string (e.g. \"age:[30 TO 40] AND tags:rust\")"
-        )]
-        query: Option<String>,
     ) -> Result<Vec<js_sys::Object>, JsValue> {
         let store = self.inner.lock().await;
-        match QueryExt::gets(
-            &*store,
-            limit.map(|value| value as usize),
-            direction.into(),
-            (start_cursor, end_cursor),
-            query.as_deref(),
-        )
-        .await
+        match store
+            .gets_bytes(
+                limit.map(|value| value as usize),
+                direction.into(),
+                (start_cursor, end_cursor),
+            )
+            .await
         {
-            Ok(kvs) => kvs
-                .into_iter()
-                .map(|kv| {
-                    let obj = js_sys::Object::new();
-                    let js_key = js_sys::JsString::from(kv.key);
-                    let js_val =
-                        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&kv.value) {
-                            json_compatible(&value)?
-                        } else {
-                            js_sys::Uint8Array::from(&kv.value[..]).into()
-                        };
-                    js_sys::Reflect::set(&obj, &"key".into(), &js_key)?;
-                    js_sys::Reflect::set(&obj, &"value".into(), &js_val)?;
-                    Ok(obj)
-                })
-                .collect(),
+            Ok(kvs) => json_entries(kvs),
             Err(e) => Err(js_error(&e)),
         }
     }
@@ -591,6 +574,24 @@ mod tests {
             ok_bytes(js_store.get_bytes("tx-k").await),
             Some(b"tx-v".to_vec())
         );
+    }
+
+    #[wasm_bindgen_test]
+    async fn oxkv_gets_returns_documents_without_a_filter() {
+        let js_store = new_oxkv().await;
+        for n in 0..3u32 {
+            let doc =
+                json_compatible(&serde_json::json!({ "n": n })).expect("serialize to JsValue");
+            ok(js_store.set(&format!("k{n}"), doc).await);
+        }
+
+        let page = js_store
+            .gets(Some(2), Direction::Next, None, None)
+            .await
+            .expect("gets failed");
+        assert_eq!(page.len(), 2);
+        let key = js_sys::Reflect::get(&page[0], &"key".into()).expect("missing key field");
+        assert_eq!(key.as_string().as_deref(), Some("k0"));
     }
 
     #[wasm_bindgen_test]

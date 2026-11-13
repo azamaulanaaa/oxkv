@@ -12,7 +12,7 @@
 use core::fmt;
 use std::collections::BTreeMap;
 
-use oxkv_contracts::receipt::{AuditSequence, IdempotencyKey, RequestId};
+use oxkv_contracts::receipt::{AuditSequence, IdempotencyKey, ReceiptId, RequestId};
 use oxkv_contracts::version::{
     DigestDomain, FactSourceId, FactVersion, Hash32, KeyVersion, ManifestDigest, MapVersion,
     PolicyVersion, ProjectionEpoch, ShardId, Signature,
@@ -102,6 +102,22 @@ impl fmt::Display for AuditDecision {
     }
 }
 
+/// The decision of one request row.
+///
+/// The audit record carries one row decision for each row of the request. An
+/// allowed row has no reason code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditRowDecision {
+    /// The row key.
+    pub key: Vec<u8>,
+    /// The rule identity for the row.
+    pub rule_identity: RuleIdentity,
+    /// True when the row passed the rule.
+    pub allowed: bool,
+    /// The coarse reason code. An allowed row has no reason code.
+    pub reason_code: Option<&'static str>,
+}
+
 /// The body of one audit record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditEntry {
@@ -115,6 +131,8 @@ pub struct AuditEntry {
     pub shard_id: ShardId,
     /// The base key version of the request.
     pub base_version: KeyVersion,
+    /// The base version of every row.
+    pub base_versions: Vec<(Vec<u8>, Option<KeyVersion>)>,
     /// The pinned policy version.
     pub policy_version: PolicyVersion,
     /// The manifest digest.
@@ -127,10 +145,14 @@ pub struct AuditEntry {
     pub fact_versions: BTreeMap<FactSourceId, FactVersion>,
     /// The rule identity.
     pub rule_identity: RuleIdentity,
+    /// The bounded decision list for the rows.
+    pub decisions: Vec<AuditRowDecision>,
     /// The enforcement decision.
     pub decision: AuditDecision,
     /// The coarse reason code. A committed verdict has no reason code.
     pub reason_code: Option<&'static str>,
+    /// The receipt that this record justifies.
+    pub receipt_id: Option<ReceiptId>,
     /// The digest of every signed request field.
     pub input_digest: Hash32,
 }
@@ -161,6 +183,13 @@ impl AuditRecord {
         }
     }
 
+    /// Returns true when the record hash matches the body and the previous
+    /// hash.
+    #[must_use]
+    pub fn verify_hash(&self) -> bool {
+        Self::compute_hash(self.audit_sequence, &self.entry, self.previous_hash) == self.record_hash
+    }
+
     /// Computes the hash of one record body and its previous hash.
     #[must_use]
     pub fn compute_hash(
@@ -179,6 +208,20 @@ impl AuditRecord {
         push_bytes(&mut body, entry.principal.as_bytes());
         push_bytes(&mut body, entry.shard_id.as_bytes());
         push_u64(&mut body, entry.base_version.get());
+        push_u64(
+            &mut body,
+            u64::try_from(entry.base_versions.len()).unwrap_or(u64::MAX),
+        );
+        for (key, base_version) in &entry.base_versions {
+            push_bytes(&mut body, key);
+            match base_version {
+                Some(base_version) => {
+                    body.push(1);
+                    push_u64(&mut body, base_version.get());
+                }
+                None => body.push(0),
+            }
+        }
         push_bytes(&mut body, entry.policy_version.as_bytes());
         push_bytes(&mut body, entry.manifest_digest.as_bytes());
         push_u64(&mut body, entry.map_version.get());
@@ -192,11 +235,34 @@ impl AuditRecord {
             push_u64(&mut body, fact_version.get());
         }
         push_bytes(&mut body, entry.rule_identity.as_str().as_bytes());
+        push_u64(
+            &mut body,
+            u64::try_from(entry.decisions.len()).unwrap_or(u64::MAX),
+        );
+        for decision in &entry.decisions {
+            push_bytes(&mut body, &decision.key);
+            push_bytes(&mut body, decision.rule_identity.as_str().as_bytes());
+            body.push(u8::from(decision.allowed));
+            match decision.reason_code {
+                Some(reason) => {
+                    body.push(1);
+                    push_bytes(&mut body, reason.as_bytes());
+                }
+                None => body.push(0),
+            }
+        }
         body.push(entry.decision.wire_tag());
         match entry.reason_code {
             Some(reason) => {
                 body.push(1);
                 push_bytes(&mut body, reason.as_bytes());
+            }
+            None => body.push(0),
+        }
+        match entry.receipt_id {
+            Some(receipt_id) => {
+                body.push(1);
+                push_bytes(&mut body, receipt_id.as_bytes());
             }
             None => body.push(0),
         }

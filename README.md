@@ -1,13 +1,13 @@
 
 # oxkv
 
-A transactional key-value store library written in Rust, with optional WebAssembly bindings for JavaScript interop. Features cursor-based pagination, a Lucene-style query engine that matches stored JSON documents, JSON serialization via `serde_json`, streaming export and import, optional OpenTelemetry instrumentation, and strict linting. The query engine lives in `oxkv-query`. The WASM bindings live in `oxkv-wasm`. All operations are `async` and take `&self`, and every store is `Send + Sync`, so one store can be shared across threads via `Arc`.
+A transactional key-value store library written in Rust, with optional WebAssembly bindings for JavaScript interop. Features cursor-based pagination, JSON serialization via `serde_json`, streaming export and import, optional OpenTelemetry instrumentation, and strict linting. The WASM bindings live in `oxkv-wasm`. The standalone `oxkv-query` crate is a legacy JSON query filter and is not part of the 1.0 search contract. All operations are `async` and take `&self`, and every store is `Send + Sync`, so one store can be shared across threads via `Arc`.
 
 ## Features
 
 - **Transaction support** — atomic commit/rollback batches of CRUD operations, with opt-in transaction-level conditional writes via `TxCas`
 - **Cursor-based pagination** — bidirectional traversal (`Next` / `Prev`) with inclusive range cursors and limit control
-- **Lucene-style query engine** — the `oxkv-query` crate filters stored JSON documents with a query language supporting field paths, ranges, wildcards, regex, fuzzy matching, and boolean operators
+- **Legacy query filter** — the standalone `oxkv-query` crate filters stored JSON documents. It is not part of the 1.0 search contract, and the WASM surface does not expose it
 - **JSON serialization** — extension methods for inserting and retrieving `serde_json::Value` types via JSON, stored as raw bytes
 - **WASM bindings** — thread-safe wrappers in `crates/oxkv-wasm/` expose `BTreeStore`, `OxKvStore`, and `CachedOxKvStore` to JavaScript as async promises (`oxkv-otel` is native-only, the OXKV export is portable across all)
 - **Extensible backends** — the crate defines three traits (`GetSet`, `Transaction`, `Store`) that any backend can implement; ships with an in-memory B-tree backend (`btree`, test and bench baseline + WASM baseline) and an LSM backend (`oxkv`, native + wasm) generic over `Storage` + `Cache` (S3/GCS/Azure via the `oxkv-s3` crate)
@@ -32,8 +32,9 @@ The default feature is `oxkv`. The other surfaces are opt-in:
 
 `oxkv-cached`, `oxkv-wasm`, `oxkv-query`, `oxkv-opfs`, `oxkv-otel`, and
 `oxkv-s3` are separate workspace crates. All workspace crates release in
-lockstep. See [MIGRATING.md](MIGRATING.md) for the 0.10 to 1.0 upgrade guide
-and the [crate compatibility table](MIGRATING.md#crate-compatibility).
+lockstep. The `oxkv-query` crate is a standalone legacy crate. It is not part
+of the 1.0 search contract. See [MIGRATING.md](MIGRATING.md) for the 0.10 to
+1.0 upgrade guide and the [crate compatibility table](MIGRATING.md#crate-compatibility).
 The [0.11 feedback response](docs/feedback-0.11-response.md) lists each item,
 its status, and the matching public API.
 
@@ -45,8 +46,8 @@ its status, and the matching public API.
 | [`store::Transaction`] | Extends `GetSet` with `commit` and `rollback` for atomic batches |
 | [`store::Store`] | Extends `GetSet` with `begin_tx` — starts a write transaction |
 | [`store::GetSetExt`] | Convenience methods: `set` and `get` (JSON-serialized) |
-| `oxkv_query::QueryExt` | Adds `gets` (paginated JSON retrieval with optional query filtering) to every `GetSet` backend |
-| `oxkv_query::QueryViewExt` | Adds the same `gets` method to every read-only `StoreView` |
+| `oxkv_query::QueryExt` | Legacy: adds `gets` (paginated JSON retrieval with an optional query filter) to every `GetSet` backend. Not part of the 1.0 search contract |
+| `oxkv_query::QueryViewExt` | Legacy: adds the same `gets` method to every read-only `StoreView`. Not part of the 1.0 search contract |
 | [`store::Cas`] / [`store::CasResult`] | Atomic single-key conditional writes: `set_if_absent`, `compare_and_set`, and `delete_if`; `CasResult` reports `Applied` or `Conflict { current }` |
 | [`store::TxCas`] | Transaction-level conditional writes: `set_if_absent`, `compare_and_set`, and `delete_if` stage a write and a precondition; `commit` checks every precondition against committed state under the write lock or write gate; one conflict rejects every staged write with `StoreError::TxConflict` |
 | [`store::KeyPrefix`] / [`store::Page`] / [`store::ScanExt`] | Prefix-bounded scans that return one page at a time: `scan_keys`, `scan` (values optional), `scan_older_than` (keys below an exclusive cutoff), and `count_prefix`; `Page::next` carries the cursor |
@@ -111,7 +112,12 @@ async fn main() {
 # }
 ```
 
-## Querying Stored Documents
+## Legacy Query Filter
+
+The `oxkv-query` crate is a standalone legacy crate. It is not part of the 1.0
+search contract. The 1.0 search contract is `oxkv-index` for the tokenizer and
+the inverted index, and `oxkv-search` for the pinned search read. The
+`oxkv-wasm` bindings do not expose this filter.
 
 Any store can scan its entries and return only the JSON documents that match a
 query string, using `gets` from the `oxkv-query` crate. It mirrors
@@ -185,7 +191,7 @@ Rules of thumb:
   (override per-term with `~N`; note transpositions count as two edits).
 - **Quoted phrase** → case-insensitive containment anywhere in the value.
 - **Wildcards** (`rus*`, `j?va`) → anchored whole-value globs.
-- **Regex** (`/pattern/`) → substring search via the regex crate.
+- **Regex** (`/pattern/`) → rejected with `policy.regex_not_supported`.
 - **Numbers** stay precise: a numeric term against a numeric leaf compares
   as a number, not fuzzily as text.
 - **Date-shaped values** (`2025-03-08`, timestamps with `Z` or offsets)
@@ -201,7 +207,7 @@ Rules of thumb:
 | Field-scoped term | `lang:rust` | dot-separated paths descend into objects (`address.city:Berlin`) and fan out across arrays (`tags:kv`) |
 | Quoted phrase | `"memory safe"`, `title:"rust prog"` | case-insensitive substring containment in any scope |
 | Wildcards | `name:r*`, `j?va` | `*` and `?`, case-insensitive |
-| Regex | `email:/@gmail\.com$/` | Rust `regex` crate syntax |
+| Regex | `email:/@gmail\.com$/` | rejected with `policy.regex_not_supported` |
 | Fuzzy | `name:Jon~1` | Levenshtein distance ≤ slop; bare `~` defaults to 2 |
 | Boost | `rust^2.5` | parsed but ignored for boolean matching |
 | Inclusive range | `age:[30 TO 40]` | numeric bounds also match numeric-looking strings |
@@ -635,7 +641,7 @@ Enable it:
 
 ```console
 cargo add oxkv --features oxkv   # portable LSM core
-cargo add oxkv-query             # + Lucene-style JSON queries
+cargo add oxkv-query             # + legacy Lucene-style JSON filter (not the 1.0 search contract)
 cargo add oxkv-s3                # + S3/GCS/Azure/local via object_store (native)
 cargo add oxkv-opfs              # + browser OPFS storage (wasm)
 cargo add oxkv-cached            # + write-through RAM mirror
@@ -845,7 +851,7 @@ Build for WebAssembly:
 wasm-pack build crates/oxkv-wasm --target web --out-name oxkv  # or nodejs, bundler, etc.
 ```
 
-### Querying from JavaScript
+### Reading JSON documents from JavaScript
 
 ```js
 import init, { BTreeStore } from "./pkg/oxkv.js";
@@ -856,13 +862,12 @@ const store = new BTreeStore();
 await store.set("user1", { name: "Ada", age: 36, tags: ["math"] });
 await store.set("user2", { name: "Alan", age: 41, tags: ["code"] });
 
-// Paginated JSON retrieval with an optional Lucene-style query
+// Paginated JSON retrieval
 const results = await store.gets(
     10,
     Direction.Next,
     null,   // start cursor
     null,   // end cursor
-    "age:[30 TO 40] AND tags:math",
 );
 for (const { key, value } of results) {
     console.log(key, value); // value is the parsed JSON document
@@ -1055,7 +1060,7 @@ wasm-pack build crates/oxkv-wasm --target web --out-name oxkv   # or nodejs, bun
 - `crates/oxkv-otel/` — `OtelStore` decorator emitting OpenTelemetry spans and metrics
 - `crates/oxkv-s3/` — `ObjectStoreStorage` adapter for S3, GCS, Azure, and local files
 - `crates/oxkv-opfs/` — `OpfsStorage` browser backend and its Web Lock bridge
-- `crates/oxkv-query/` — Lucene-style parser, JSON matcher, `QueryExt`, and `QueryViewExt`
+- `crates/oxkv-query/` — standalone legacy Lucene-style parser, JSON matcher, `QueryExt`, and `QueryViewExt` (not part of the 1.0 search contract)
 - `crates/oxkv-cached/` — `CachedOxKvStore`/`CachedTx` write-through RAM mirror and `BuildCachedExt`
 - `src/store/mod.rs` — core traits (`GetSet`, `Transaction`, `Store`, `GetSetExt`, `StoreExt`), error types (`StoreError::Fenced`, `StoreError::CasConflict`, `StoreError::TxConflict`, `StoreError::NotModified`), and the `lock_ignore_poison` policy helper
 - `src/store/btree.rs` — in-memory B-tree backend (`btree`, test/bench + WASM baseline)

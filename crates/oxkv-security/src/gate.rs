@@ -314,7 +314,9 @@ where
         } else {
             Some(SecurityError::Forbidden.code())
         };
-        let entry = make_audit_entry(&subject, request, input, decision, reason_code);
+        let receipt_id =
+            make_receipt_id(subject.principal(), request.idempotency_key(), body_digest);
+        let entry = make_audit_entry(&subject, request, input, decision, reason_code, receipt_id);
         let record = match self.audit.append(entry) {
             Ok(record) => record,
             Err(SecurityError::AuditUnavailable) => {
@@ -331,14 +333,7 @@ where
             record.audit_sequence,
             record.record_hash,
         );
-        let receipt = make_receipt(
-            subject.principal(),
-            request,
-            input,
-            audit_reference,
-            decision,
-            body_digest,
-        )?;
+        let receipt = make_receipt(request, input, audit_reference, decision, receipt_id)?;
         let outcome = WriteOutcome {
             receipt,
             checkpoint: checkpoint.clone(),
@@ -468,6 +463,7 @@ fn make_audit_entry(
     input: &EnforcementInput,
     decision: AuditDecision,
     reason_code: Option<&'static str>,
+    receipt_id: ReceiptId,
 ) -> AuditEntry {
     AuditEntry {
         request_id: request.request_id(),
@@ -475,27 +471,28 @@ fn make_audit_entry(
         principal: subject.principal().clone(),
         shard_id: request.shard_id().clone(),
         base_version: request.base_version(),
+        base_versions: Vec::new(),
         policy_version: input.policy_version,
         manifest_digest: input.manifest_digest,
         map_version: input.map_version,
         projection_epoch: input.projection_epoch,
         fact_versions: input.fact_versions.clone(),
         rule_identity: input.rule_identity.clone(),
+        decisions: Vec::new(),
         decision,
         reason_code,
+        receipt_id: Some(receipt_id),
         input_digest: request.input_digest(),
     }
 }
 
 fn make_receipt(
-    principal: &PrincipalId,
     request: &SignedRequest,
     input: &EnforcementInput,
     audit_reference: AuditReference,
     decision: AuditDecision,
-    body_digest: Hash32,
+    receipt_id: ReceiptId,
 ) -> Result<ReceiptEnvelope, SecurityError> {
-    let receipt_id = make_receipt_id(principal, request.idempotency_key(), body_digest);
     let mut receipt = ReceiptEnvelope::queued(
         receipt_id,
         request.request_id(),
