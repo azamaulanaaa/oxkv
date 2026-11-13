@@ -1,0 +1,86 @@
+{
+  "cases": [
+    {
+      "budget": {
+        "max_cost_milli": 10000,
+        "max_fanout": 4,
+        "max_tokens": 1000
+      },
+      "expected": {
+        "canonical_json": "{\"contract\":\"cost/v1\",\"query_plan\":{\"manifest_revision\":7,\"policy_version\":\"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\",\"map_version\":3,\"statistics_version\":2,\"policy_normalization\":\"table == \\\"accounts\\\" && region == \\\"eu\\\"\",\"merge_shape\":\"search\",\"fanout\":2,\"estimated_rows\":25,\"token_budget\":500,\"total_tokens\":50,\"per_shard\":[{\"shard_id\":\"01\",\"term_probes\":2,\"keys_examined\":102,\"estimated_rows\":10,\"token_count\":20,\"cost_milli\":1102},{\"shard_id\":\"02\",\"term_probes\":3,\"keys_examined\":203,\"estimated_rows\":15,\"token_count\":30,\"cost_milli\":1203}]},\"cost\":{\"total_shards\":2,\"total_keys\":305,\"total_cost_milli\":2305},\"active_budget\":{\"max_cost_milli\":10000,\"max_fanout\":4,\"max_tokens\":1000},\"verdict\":{\"status\":\"admitted\"},\"cost_errors\":[]}",
+        "text": "contract=cost/v1\nmanifest_revision=7\npolicy_version=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\nmap_version=3\nstatistics_version=2\npolicy_normalization=table == \"accounts\" && region == \"eu\"\nmerge_shape=search\nfanout=2\nestimated_rows=25\ntoken_budget=500\ntotal_tokens=50\ntotal_shards=2\ntotal_keys=305\ntotal_cost_milli=2305\nactive_budget_max_cost_milli=10000\nactive_budget_max_fanout=4\nactive_budget_max_tokens=1000\nshard=01 term_probes=2 keys_examined=102 estimated_rows=10 token_count=20 cost_milli=1102\nshard=02 term_probes=3 keys_examined=203 estimated_rows=15 token_count=30 cost_milli=1203\nverdict=admitted"
+      },
+      "input": {
+        "manifest_revision": 7,
+        "map_version": 3,
+        "merge_shape": "search",
+        "policy_normalization": "table == \"accounts\" && region == \"eu\"",
+        "policy_version_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "shards": [
+          {
+            "estimated_rows": 10,
+            "posting_keys": 100,
+            "shard_id_hex": "01",
+            "term_probes": 2,
+            "token_count": 20
+          },
+          {
+            "estimated_rows": 15,
+            "posting_keys": 200,
+            "shard_id_hex": "02",
+            "term_probes": 3,
+            "token_count": 30
+          }
+        ],
+        "statistics_version": 2,
+        "token_budget": 500
+      },
+      "name": "two_shard_search_admitted"
+    },
+    {
+      "budget": {
+        "max_cost_milli": 1000,
+        "max_fanout": 4,
+        "max_tokens": 1000
+      },
+      "expected": {
+        "canonical_json": "{\"contract\":\"cost/v1\",\"query_plan\":{\"manifest_revision\":9,\"policy_version\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"map_version\":5,\"statistics_version\":null,\"policy_normalization\":\"term == \\\"alpha\\\"\",\"merge_shape\":\"general\",\"fanout\":3,\"estimated_rows\":15,\"token_budget\":100,\"total_tokens\":50,\"per_shard\":[{\"shard_id\":\"01\",\"term_probes\":0,\"keys_examined\":100,\"estimated_rows\":5,\"token_count\":20,\"cost_milli\":1100},{\"shard_id\":\"02\",\"term_probes\":0,\"keys_examined\":200,\"estimated_rows\":5,\"token_count\":15,\"cost_milli\":1200},{\"shard_id\":\"03\",\"term_probes\":0,\"keys_examined\":300,\"estimated_rows\":5,\"token_count\":15,\"cost_milli\":1300}]},\"cost\":{\"total_shards\":3,\"total_keys\":600,\"total_cost_milli\":3600},\"active_budget\":{\"max_cost_milli\":1000,\"max_fanout\":4,\"max_tokens\":1000},\"verdict\":{\"status\":\"rejected\",\"code\":\"query.budget_exceeded\"},\"cost_errors\":[\"query.budget_exceeded\"]}",
+        "text": "contract=cost/v1\nmanifest_revision=9\npolicy_version=cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\nmap_version=5\nstatistics_version=none\npolicy_normalization=term == \"alpha\"\nmerge_shape=general\nfanout=3\nestimated_rows=15\ntoken_budget=100\ntotal_tokens=50\ntotal_shards=3\ntotal_keys=600\ntotal_cost_milli=3600\nactive_budget_max_cost_milli=1000\nactive_budget_max_fanout=4\nactive_budget_max_tokens=1000\nshard=01 term_probes=0 keys_examined=100 estimated_rows=5 token_count=20 cost_milli=1100\nshard=02 term_probes=0 keys_examined=200 estimated_rows=5 token_count=15 cost_milli=1200\nshard=03 term_probes=0 keys_examined=300 estimated_rows=5 token_count=15 cost_milli=1300\nverdict=rejected\ncost_error=query.budget_exceeded"
+      },
+      "input": {
+        "manifest_revision": 9,
+        "map_version": 5,
+        "merge_shape": "general",
+        "policy_normalization": "term == \"alpha\"",
+        "policy_version_hex": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "shards": [
+          {
+            "estimated_rows": 5,
+            "posting_keys": 100,
+            "shard_id_hex": "01",
+            "term_probes": 0,
+            "token_count": 20
+          },
+          {
+            "estimated_rows": 5,
+            "posting_keys": 200,
+            "shard_id_hex": "02",
+            "term_probes": 0,
+            "token_count": 15
+          },
+          {
+            "estimated_rows": 5,
+            "posting_keys": 300,
+            "shard_id_hex": "03",
+            "term_probes": 0,
+            "token_count": 15
+          }
+        ],
+        "statistics_version": null,
+        "token_budget": 100
+      },
+      "name": "three_shard_general_over_cost"
+    }
+  ],
+  "contract": "cost/v1"
+}

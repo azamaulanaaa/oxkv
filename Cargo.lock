@@ -1228,6 +1228,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxkv-cost"
+version = "0.11.0"
+dependencies = [
+ "oxkv-contracts",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "oxkv-enforce"
 version = "0.11.0"
 dependencies = [

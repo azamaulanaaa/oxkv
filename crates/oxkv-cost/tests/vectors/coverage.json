@@ -1,0 +1,82 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "canonical_json": "{\"answered\":[{\"shard_id\":\"01\",\"served_version\":5}],\"missing\":[\"02\"]}",
+        "complete": false,
+        "partial": true,
+        "rows_hex": [
+          "61"
+        ]
+      },
+      "name": "one_missing_shard",
+      "pin": {
+        "01": 5,
+        "02": 5
+      },
+      "replies": [
+        {
+          "latency_ticks": 20,
+          "rows": [
+            {
+              "key_hex": "61",
+              "payload_hex": "61",
+              "score": 9
+            }
+          ],
+          "served_version": 5,
+          "shard_id_hex": "01"
+        },
+        {
+          "latency_ticks": 1,
+          "rows": [],
+          "served_version": null,
+          "shard_id_hex": "02"
+        }
+      ]
+    },
+    {
+      "expected": {
+        "canonical_json": "{\"answered\":[{\"shard_id\":\"01\",\"served_version\":5},{\"shard_id\":\"02\",\"served_version\":5}],\"missing\":[]}",
+        "complete": true,
+        "partial": true,
+        "rows_hex": [
+          "61",
+          "62"
+        ]
+      },
+      "name": "complete_coverage_stays_partial",
+      "pin": {
+        "01": 5,
+        "02": 5
+      },
+      "replies": [
+        {
+          "latency_ticks": 30,
+          "rows": [
+            {
+              "key_hex": "62",
+              "payload_hex": "62",
+              "score": 7
+            }
+          ],
+          "served_version": 5,
+          "shard_id_hex": "01"
+        },
+        {
+          "latency_ticks": 2,
+          "rows": [
+            {
+              "key_hex": "61",
+              "payload_hex": "61",
+              "score": 7
+            }
+          ],
+          "served_version": 5,
+          "shard_id_hex": "02"
+        }
+      ]
+    }
+  ],
+  "contract": "cost/v1"
+}

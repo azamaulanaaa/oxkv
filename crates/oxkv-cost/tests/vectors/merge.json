@@ -1,0 +1,97 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "frontiers": {
+          "01": 1,
+          "02": 2
+        },
+        "keys_hex": [
+          "63",
+          "61",
+          "62"
+        ]
+      },
+      "limit": 10,
+      "name": "search_deliberate_ties",
+      "order": "search",
+      "streams": [
+        {
+          "latency_ticks": 50,
+          "rows": [
+            {
+              "key_hex": "63",
+              "payload_hex": "62",
+              "score": 9
+            },
+            {
+              "key_hex": "61",
+              "payload_hex": "61",
+              "score": 7
+            }
+          ],
+          "shard_id_hex": "02"
+        },
+        {
+          "latency_ticks": 1,
+          "rows": [
+            {
+              "key_hex": "62",
+              "payload_hex": "63",
+              "score": 7
+            }
+          ],
+          "shard_id_hex": "01"
+        }
+      ]
+    },
+    {
+      "expected": {
+        "frontiers": {
+          "01": 3
+        },
+        "keys_hex": [
+          "62",
+          "63",
+          "61"
+        ]
+      },
+      "limit": 10,
+      "name": "general_sort_key_then_key",
+      "order": "general",
+      "streams": [
+        {
+          "latency_ticks": 0,
+          "rows": [
+            {
+              "key_hex": "62",
+              "payload_hex": "62",
+              "score": 0,
+              "sort_key_ints": [
+                1
+              ]
+            },
+            {
+              "key_hex": "63",
+              "payload_hex": "63",
+              "score": 0,
+              "sort_key_ints": [
+                1
+              ]
+            },
+            {
+              "key_hex": "61",
+              "payload_hex": "61",
+              "score": 0,
+              "sort_key_ints": [
+                2
+              ]
+            }
+          ],
+          "shard_id_hex": "01"
+        }
+      ]
+    }
+  ],
+  "contract": "cost/v1"
+}
