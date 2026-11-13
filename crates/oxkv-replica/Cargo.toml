@@ -1,0 +1,20 @@
+[package]
+name = "oxkv-replica"
+version = "0.11.0"
+edition = "2024"
+description = "Read-only client replica for oxkv: scope-projected mirror, local search index, bounded reads, and local tab lease."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/azamaulanaaa/oxkv"
+readme = "../../README.md"
+keywords = ["replica", "scope", "search", "keyvalue"]
+categories = ["database"]
+
+[dependencies]
+oxkv-contracts = { path = "../oxkv-contracts", version = "0.11.0" }
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true
