@@ -1,0 +1,364 @@
+{
+  "contract": "write-enforcement/v1",
+  "cases": [
+    {
+      "name": "committed_write",
+      "expected": {
+        "receipt_state": "Committed",
+        "reason": null,
+        "audit_count": 1,
+        "receipt_count": 1,
+        "data_changed": true,
+        "decisions": [
+          {
+            "row_key": "row:1",
+            "rule": "rule.payload",
+            "verdict": "allow",
+            "reason": "policy.allowed"
+          }
+        ],
+        "chain_verified": true,
+        "receipt_names_audit": true,
+        "record_hash_hex": "7d200d22f6b9f7f03b977e3643c0059ed0d6cdd7f747692199920bad7ffd07c4",
+        "previous_hash_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+        "error_code": null,
+        "staleness_distance": 1
+      }
+    },
+    {
+      "name": "rejected_policy_write",
+      "expected": {
+        "receipt_state": "Rejected",
+        "reason": "auth.forbidden",
+        "audit_count": 1,
+        "receipt_count": 1,
+        "data_changed": false,
+        "decisions": [
+          {
+            "row_key": "row:2",
+            "rule": "rule.payload",
+            "verdict": "reject",
+            "reason": "auth.forbidden"
+          }
+        ],
+        "chain_verified": true,
+        "receipt_names_audit": true,
+        "staleness_distance": 1
+      }
+    },
+    {
+      "name": "stale_base_policy_violation",
+      "expected": {
+        "receipt_state": "Conflict",
+        "reason": "write.version_conflict",
+        "audit_count": 2,
+        "receipt_count": 2,
+        "data_changed": false,
+        "decisions": [
+          {
+            "row_key": "row:3",
+            "rule": "version",
+            "verdict": "reject",
+            "reason": "write.version_conflict"
+          }
+        ],
+        "chain_verified": true,
+        "receipt_names_audit": true,
+        "staleness_distance": null
+      }
+    },
+    {
+      "name": "non_strict_over_bound_timeout",
+      "expected": {
+        "receipt_state": "Rejected",
+        "reason": "write.queue_timeout",
+        "audit_count": 1,
+        "receipt_count": 1,
+        "data_changed": false,
+        "decisions": [
+          {
+            "row_key": "row:5",
+            "rule": "authorization",
+            "verdict": "reject",
+            "reason": "write.queue_timeout"
+          }
+        ],
+        "chain_verified": true,
+        "receipt_names_audit": true,
+        "staleness_distance": 3,
+        "queued_state": "Queued",
+        "queued_reason": "projection.lagging",
+        "queued_audit_count": 0
+      }
+    },
+    {
+      "name": "strict_over_bound",
+      "expected": {
+        "receipt_state": "Rejected",
+        "reason": "authorization.stale_facts",
+        "audit_count": 1,
+        "receipt_count": 1,
+        "data_changed": false,
+        "decisions": [
+          {
+            "row_key": "row:6",
+            "rule": "authorization",
+            "verdict": "reject",
+            "reason": "authorization.stale_facts"
+          }
+        ],
+        "chain_verified": true,
+        "receipt_names_audit": true,
+        "staleness_distance": 3
+      }
+    },
+    {
+      "name": "audit_append_failure",
+      "expected": {
+        "receipt_state": null,
+        "reason": null,
+        "audit_count": 0,
+        "receipt_count": 0,
+        "data_changed": false,
+        "decisions": [],
+        "chain_verified": true,
+        "receipt_names_audit": false,
+        "error_code": "audit.unavailable"
+      }
+    },
+    {
+      "name": "per_row_decision_list",
+      "expected": {
+        "receipt_state": "Rejected",
+        "reason": "auth.forbidden",
+        "audit_count": 1,
+        "receipt_count": 1,
+        "data_changed": false,
+        "decisions": [
+          {
+            "row_key": "row:8a",
+            "rule": "rule.payload",
+            "verdict": "allow",
+            "reason": "policy.allowed"
+          },
+          {
+            "row_key": "row:8b",
+            "rule": "rule.payload",
+            "verdict": "reject",
+            "reason": "auth.forbidden"
+          }
+        ],
+        "chain_verified": true,
+        "receipt_names_audit": true
+      }
+    },
+    {
+      "name": "batch_conjunction",
+      "expected": {
+        "receipt_state": "Rejected",
+        "reason": "auth.forbidden",
+        "audit_count": 1,
+        "receipt_count": 1,
+        "data_changed": false,
+        "decisions": [
+          {
+            "row_key": "row:8a",
+            "rule": "rule.payload",
+            "verdict": "allow",
+            "reason": "policy.allowed"
+          },
+          {
+            "row_key": "row:8b",
+            "rule": "rule.payload",
+            "verdict": "reject",
+            "reason": "auth.forbidden"
+          }
+        ]
+      }
+    },
+    {
+      "name": "audit_chain_verifies",
+      "expected": {
+        "receipt_state": "Committed",
+        "reason": null,
+        "audit_count": 2,
+        "receipt_count": 2,
+        "data_changed": true,
+        "decisions": [
+          {
+            "row_key": "row:9b",
+            "rule": "rule.payload",
+            "verdict": "allow",
+            "reason": "policy.allowed"
+          }
+        ],
+        "chain_verified": true,
+        "receipt_names_audit": true,
+        "record_hash_hex": "35a40d79b2368728355b645e9095972c681ced2595406a92610f0165d83fd2ba",
+        "previous_hash_hex": "009da77d3826e1c246699d2bdc01fc62c9a76772a4e655e81081a4032e6bf643",
+        "staleness_distance": 1
+      }
+    },
+    {
+      "name": "receipt_names_audit",
+      "expected": {
+        "receipt_state": "Committed",
+        "receipt_names_audit": true,
+        "audit_count": 1
+      }
+    },
+    {
+      "name": "budget_exhaustion",
+      "expected": {
+        "receipt_state": "Rejected",
+        "reason": "policy.budget_exhausted",
+        "audit_count": 1,
+        "receipt_count": 1,
+        "data_changed": false,
+        "decisions": [
+          {
+            "row_key": "row:11",
+            "rule": "rule.payload",
+            "verdict": "reject",
+            "reason": "policy.budget_exhausted"
+          }
+        ],
+        "chain_verified": true,
+        "receipt_names_audit": true
+      }
+    },
+    {
+      "name": "projection_checksum_failure",
+      "expected": {
+        "receipt_state": "Rejected",
+        "reason": "projection.checksum_failed",
+        "audit_count": 1,
+        "receipt_count": 1,
+        "data_changed": false,
+        "decisions": [
+          {
+            "row_key": "row:12",
+            "rule": "authorization",
+            "verdict": "reject",
+            "reason": "projection.checksum_failed"
+          }
+        ],
+        "chain_verified": true,
+        "receipt_names_audit": true,
+        "staleness_distance": null
+      }
+    },
+    {
+      "name": "projection_client_write",
+      "expected": {
+        "receipt_state": null,
+        "reason": null,
+        "audit_count": 0,
+        "receipt_count": 0,
+        "data_changed": false,
+        "decisions": [],
+        "chain_verified": true,
+        "receipt_names_audit": false,
+        "error_code": "projection.client_write_rejected"
+      }
+    },
+    {
+      "name": "cross_shard_write",
+      "expected": {
+        "receipt_state": "Rejected",
+        "reason": "shard.cross_mutation_rejected",
+        "audit_count": 1,
+        "receipt_count": 1,
+        "data_changed": false,
+        "decisions": [
+          {
+            "row_key": "row:13",
+            "rule": "shard",
+            "verdict": "reject",
+            "reason": "shard.cross_mutation_rejected"
+          }
+        ],
+        "chain_verified": true,
+        "receipt_names_audit": true,
+        "staleness_distance": null
+      }
+    },
+    {
+      "name": "idempotency_retry",
+      "expected": {
+        "receipt_state": "Committed",
+        "reason": null,
+        "audit_count": 1,
+        "receipt_count": 1,
+        "data_changed": true,
+        "decisions": [
+          {
+            "row_key": "row:14",
+            "rule": "rule.payload",
+            "verdict": "allow",
+            "reason": "policy.allowed"
+          }
+        ],
+        "chain_verified": true,
+        "receipt_names_audit": true,
+        "staleness_distance": 1
+      }
+    },
+    {
+      "name": "idempotency_key_reuse",
+      "expected": {
+        "receipt_state": null,
+        "reason": null,
+        "audit_count": 1,
+        "receipt_count": 1,
+        "data_changed": true,
+        "decisions": [],
+        "chain_verified": true,
+        "receipt_names_audit": false,
+        "error_code": "write.idempotency_key_reuse"
+      }
+    },
+    {
+      "name": "stale_base_version",
+      "expected": {
+        "receipt_state": "Rejected",
+        "reason": "write.stale_base_version",
+        "audit_count": 2,
+        "receipt_count": 2,
+        "data_changed": false,
+        "decisions": [
+          {
+            "row_key": "row:16",
+            "rule": "version",
+            "verdict": "reject",
+            "reason": "write.stale_base_version"
+          }
+        ],
+        "chain_verified": true,
+        "receipt_names_audit": true,
+        "staleness_distance": null
+      }
+    },
+    {
+      "name": "missing_base_version",
+      "expected": {
+        "receipt_state": "Rejected",
+        "reason": "write.missing_base_version",
+        "audit_count": 1,
+        "receipt_count": 1,
+        "data_changed": false,
+        "decisions": [
+          {
+            "row_key": "row:18",
+            "rule": "version",
+            "verdict": "reject",
+            "reason": "write.missing_base_version"
+          }
+        ],
+        "chain_verified": true,
+        "receipt_names_audit": true,
+        "staleness_distance": null
+      }
+    }
+  ]
+}

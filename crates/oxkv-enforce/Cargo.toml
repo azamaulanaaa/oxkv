@@ -1,0 +1,20 @@
+[package]
+name = "oxkv-enforce"
+version = "0.11.0"
+edition = "2024"
+description = "Deterministic write enforcement and the hash-linked per-shard audit record for oxkv."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/azamaulanaaa/oxkv"
+readme = "../../README.md"
+keywords = ["authorization", "audit", "database", "enforcement"]
+categories = ["database"]
+
+[dependencies]
+oxkv-contracts = { path = "../oxkv-contracts" }
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true
