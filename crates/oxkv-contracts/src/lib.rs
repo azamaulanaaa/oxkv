@@ -1,10 +1,12 @@
 //! Shared 1.0 contract foundation for oxkv.
 //!
-//! This crate holds the registries that every essay consumes. The first
-//! registry is [`version`]. It defines the qualified version axes and the
-//! provenance block. [`receipt`] defines the four receipt states and the
-//! receipt envelope. [`error`] defines one canonical error code per cause.
-//! [`keyspace`] defines the reserved system identifiers and key validation.
+//! This crate holds the registries that every essay consumes:
+//!
+//! - [`error`] defines one canonical error code per cause.
+//! - [`version`] defines qualified version axes and the provenance block.
+//! - [`cursor`] defines the eight cursor token types.
+//! - [`receipt`] defines the four receipt states and the receipt envelope.
+//! - [`keyspace`] defines the reserved system identifiers and key validation.
 //!
 //! The crate is portable. It compiles for native and `wasm32-unknown-unknown`.
 //! It uses no floating point. It does not read a clock, draw randomness, or
@@ -13,21 +15,29 @@
 //! # Example
 //!
 //! ```
-//! use oxkv_contracts::version::{ContentDigest, ContentSeal, LeaseTerm};
+//! use oxkv_contracts::error::lookup;
+//! use oxkv_contracts::receipt::ReceiptState;
 //!
-//! let digest = ContentDigest::of_bytes(b"immutable bytes");
-//! let seal = ContentSeal::new(digest, LeaseTerm::new(9), None);
-//! assert!(seal.covers(digest));
+//! let spec = lookup("write.version_conflict").expect("the code is registered");
+//! assert_eq!(spec.receipt, Some(ReceiptState::Conflict));
+//! assert!(spec.terminal);
 //! ```
 
 #![forbid(unsafe_code)]
 #![allow(clippy::module_name_repetitions)]
 
+pub mod cursor;
 pub mod error;
 pub mod keyspace;
 pub mod receipt;
 pub mod version;
 
+pub use cursor::{
+    CostCursor, CostFrontier, CursorDirection, CursorError, CursorExpiry, CursorToken, CursorType,
+    EventCursor, EventPosition, EventSequence, HydrationCursor, KeyCursor, ProjectionCursor,
+    QueryFingerprint, ReceiptCursor, ReceiptSequence, ScopeGeneration, SearchCursor, SortTuple,
+    SortValue, SyncCursor,
+};
 pub use error::{
     ERROR_REGISTRY, ErrorCode, ErrorKind, ErrorRegistryError, ErrorSpec, RetryClass, lookup,
 };
