@@ -1,0 +1,20 @@
+[package]
+name = "oxkv-kv"
+version = "0.11.0"
+edition = "2024"
+description = "Ordered key-value substrate for oxkv: versioned point reads, range scans, cursors, and atomic batches."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/azamaulanaaa/oxkv"
+readme = "../../README.md"
+keywords = ["keyvalue", "database", "btree", "lsm", "cursor"]
+categories = ["database"]
+
+[dependencies]
+oxkv-contracts = { path = "../oxkv-contracts" }
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

@@ -1,0 +1,55 @@
+{
+  "contract": "kv/v1",
+  "cases": [
+    {
+      "name": "cursor_ascending_after_b",
+      "kind": "cursor",
+      "snapshot_version": 7,
+      "direction": "ascending",
+      "position_hex": "62",
+      "expected_hex": "4f584b4300010000000000000007000100000000000000016248ff6f8114c2d639a4c4c4eaf58ec94e1517b79aa1a1f13ab58699f75c9771c0"
+    },
+    {
+      "name": "cursor_descending_start",
+      "kind": "cursor",
+      "snapshot_version": 9,
+      "direction": "descending",
+      "position_hex": null,
+      "expected_hex": "4f584b4300010000000000000009010000000000000000005b7758673c1fb52936ee92e42d4fe5cdf9de8e96b919aae34a34a8acc65448af"
+    },
+    {
+      "name": "cursor_ascending_empty_position",
+      "kind": "cursor",
+      "snapshot_version": 1,
+      "direction": "ascending",
+      "position_hex": "",
+      "expected_hex": "4f584b430001000000000000000100010000000000000000a8ee74bfb743251bcff712816cabd89a0bae7434e491fdf28251d27faab19755"
+    },
+    {
+      "name": "batch_put_delete",
+      "kind": "batch",
+      "shard_hex": "73686172642d31",
+      "commit_version": 3,
+      "operations": [
+        {
+          "op": "put",
+          "key_hex": "61",
+          "value_hex": "31"
+        },
+        {
+          "op": "delete",
+          "key_hex": "62"
+        }
+      ],
+      "expected_hex": "4f584b420001000000000000000773686172642d31000000000000000300000000000000020100000000000000016100000000000000013102000000000000000162"
+    },
+    {
+      "name": "batch_empty",
+      "kind": "batch",
+      "shard_hex": "73",
+      "commit_version": 0,
+      "operations": [],
+      "expected_hex": "4f584b42000100000000000000017300000000000000000000000000000000"
+    }
+  ]
+}

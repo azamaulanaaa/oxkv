@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/oxkv-contracts",
+  "crates/oxkv-kv",
   "crates/oxkv-wasm",
   "crates/oxkv-otel",
   "crates/oxkv-s3",
