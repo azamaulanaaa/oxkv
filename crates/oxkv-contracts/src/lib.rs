@@ -4,6 +4,7 @@
 //! registry is [`version`]. It defines the qualified version axes and the
 //! provenance block. [`receipt`] defines the four receipt states and the
 //! receipt envelope. [`error`] defines one canonical error code per cause.
+//! [`keyspace`] defines the reserved system identifiers and key validation.
 //!
 //! The crate is portable. It compiles for native and `wasm32-unknown-unknown`.
 //! It uses no floating point. It does not read a clock, draw randomness, or
@@ -23,11 +24,19 @@
 #![allow(clippy::module_name_repetitions)]
 
 pub mod error;
+pub mod keyspace;
 pub mod receipt;
 pub mod version;
 
 pub use error::{
     ERROR_REGISTRY, ErrorCode, ErrorKind, ErrorRegistryError, ErrorSpec, RetryClass, lookup,
+};
+pub use keyspace::{
+    CATALOG_TABLE, CommitDomain, KEY_ENCODING_VERSION, KeyspaceError, SYSTEM_ID_AUDIT,
+    SYSTEM_ID_EVENT, SYSTEM_ID_INDEX, SYSTEM_ID_LEASE, SYSTEM_ID_PROJECTION, SYSTEM_ID_RECEIPT,
+    SYSTEM_ID_STATISTICS, SYSTEM_MARKER, SYSTEM_NAMESPACES, SystemNamespace, TableName,
+    USER_COMPONENT_BOOL, USER_COMPONENT_BYTES, USER_COMPONENT_I64, USER_COMPONENT_TEXT,
+    USER_COMPONENT_U64, UserComponentTag,
 };
 pub use receipt::{
     AuditReference, AuditSequence, IdempotencyKey, ReceiptEnvelope, ReceiptId, ReceiptOutcome,
