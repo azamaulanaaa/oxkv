@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/oxkv-contracts",
+  "crates/oxkv-scheduler",
   "crates/oxkv-outbox",
   "crates/oxkv-policy",
   "crates/oxkv-manifest",

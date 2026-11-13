@@ -1,0 +1,23 @@
+[package]
+name = "oxkv-scheduler"
+version = "0.11.0"
+edition = "2024"
+description = "Pure per-key write scheduler for oxkv: queued, in-flight, and terminal state with bounded deterministic selection."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/azamaulanaaa/oxkv"
+readme = "../../README.md"
+keywords = ["scheduler", "keyvalue", "database", "deterministic"]
+categories = ["database"]
+
+[dependencies]
+oxkv-contracts = { path = "../oxkv-contracts", version = "0.11.0" }
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[lints]
+workspace = true

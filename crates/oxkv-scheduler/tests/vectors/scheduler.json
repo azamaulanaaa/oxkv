@@ -1,0 +1,142 @@
+{
+  "contract": "scheduler/v1",
+  "cases": [
+    {
+      "name": "per_key_fifo_with_terminal_removal",
+      "max_fan_in": 4,
+      "budget": {"max_positions": 4, "max_edges": 16},
+      "shards": [
+        {
+          "id": "a",
+          "blocked": false,
+          "requests": [
+            {"id": 1, "key": "k", "deps": []},
+            {"id": 2, "key": "k", "deps": []},
+            {"id": 3, "key": "k", "deps": []}
+          ]
+        }
+      ],
+      "operations": [
+        {"decide": {"selected": [1], "more_work": false, "positions": 1, "edges": 0, "reasons": {"2": "key_blocked", "3": "key_blocked"}}},
+        {"apply": true},
+        {"retire": [1]},
+        {"decide": {"selected": [2], "more_work": false, "positions": 1, "edges": 0, "reasons": {"3": "key_blocked"}}},
+        {"apply": true},
+        {"retire": [2]},
+        {"decide": {"selected": [3], "more_work": false, "positions": 1, "edges": 0, "reasons": {}}},
+        {"apply": true},
+        {"retire": [3]},
+        {"decide": {"selected": [], "more_work": false, "positions": 0, "edges": 0, "reasons": {}}}
+      ]
+    },
+    {
+      "name": "blocked_key_bypass",
+      "max_fan_in": 4,
+      "budget": {"max_positions": 4, "max_edges": 16},
+      "shards": [
+        {
+          "id": "a",
+          "blocked": false,
+          "requests": [
+            {"id": 1, "key": "k1", "deps": []},
+            {"id": 2, "key": "k1", "deps": []},
+            {"id": 3, "key": "k2", "deps": []}
+          ]
+        }
+      ],
+      "operations": [
+        {"decide": {"selected": [1, 3], "more_work": false, "positions": 2, "edges": 0, "reasons": {"2": "key_blocked"}}},
+        {"apply": true},
+        {"retire": [3]},
+        {"decide": {"selected": [], "more_work": false, "positions": 0, "edges": 0, "reasons": {"1": "in_flight", "2": "key_blocked"}}},
+        {"retire": [1]},
+        {"decide": {"selected": [2], "more_work": false, "positions": 1, "edges": 0, "reasons": {}}},
+        {"apply": true},
+        {"retire": [2]}
+      ]
+    },
+    {
+      "name": "blocked_shard_does_not_consume_a_slot",
+      "max_fan_in": 4,
+      "budget": {"max_positions": 2, "max_edges": 16},
+      "shards": [
+        {
+          "id": "a",
+          "blocked": true,
+          "requests": [
+            {"id": 1, "key": "k1", "deps": []},
+            {"id": 2, "key": "k2", "deps": []}
+          ]
+        },
+        {
+          "id": "b",
+          "blocked": false,
+          "requests": [
+            {"id": 3, "key": "k3", "deps": []},
+            {"id": 4, "key": "k4", "deps": []},
+            {"id": 5, "key": "k5", "deps": []}
+          ]
+        }
+      ],
+      "operations": [
+        {"decide": {"selected": [3, 4], "more_work": true, "positions": 2, "edges": 0, "reasons": {"1": "shard_blocked", "2": "shard_blocked", "5": "outside_budget"}}},
+        {"apply": true},
+        {"retire": [3, 4]},
+        {"decide": {"selected": [5], "more_work": false, "positions": 1, "edges": 0, "reasons": {"1": "shard_blocked", "2": "shard_blocked"}}},
+        {"apply": true},
+        {"retire": [5]}
+      ]
+    },
+    {
+      "name": "partial_batch_reports_more_work",
+      "max_fan_in": 4,
+      "budget": {"max_positions": 2, "max_edges": 16},
+      "shards": [
+        {
+          "id": "a",
+          "blocked": false,
+          "requests": [
+            {"id": 1, "key": "k1", "deps": []},
+            {"id": 2, "key": "k2", "deps": []},
+            {"id": 3, "key": "k3", "deps": []},
+            {"id": 4, "key": "k4", "deps": []}
+          ]
+        }
+      ],
+      "operations": [
+        {"decide": {"selected": [1, 2], "more_work": true, "positions": 2, "edges": 0, "reasons": {"3": "outside_budget", "4": "outside_budget"}}},
+        {"apply": true},
+        {"retire": [1, 2]},
+        {"decide": {"selected": [3, 4], "more_work": false, "positions": 2, "edges": 0, "reasons": {}}},
+        {"apply": true},
+        {"retire": [3, 4]},
+        {"decide": {"selected": [], "more_work": false, "positions": 0, "edges": 0, "reasons": {}}}
+      ]
+    },
+    {
+      "name": "explicit_dependency_orders_work",
+      "max_fan_in": 4,
+      "budget": {"max_positions": 3, "max_edges": 16},
+      "shards": [
+        {
+          "id": "a",
+          "blocked": false,
+          "requests": [
+            {"id": 1, "key": "k1", "deps": []},
+            {"id": 2, "key": "k2", "deps": [1]},
+            {"id": 3, "key": "k3", "deps": []}
+          ]
+        }
+      ],
+      "operations": [
+        {"decide": {"selected": [1, 3], "more_work": false, "positions": 2, "edges": 0, "reasons": {"2": "dependency_blocked"}}},
+        {"apply": true},
+        {"retire": [1]},
+        {"decide": {"selected": [2], "more_work": false, "positions": 1, "edges": 1, "reasons": {"3": "in_flight"}}},
+        {"apply": true},
+        {"retire": [2, 3]},
+        {"decide": {"selected": [], "more_work": false, "positions": 0, "edges": 0, "reasons": {}}}
+      ]
+    }
+  ]
+}
