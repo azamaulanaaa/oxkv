@@ -11,12 +11,12 @@ categories = ["database", "development-tools::testing"]
 
 [dependencies]
 blake3 = "1.8"
-oxkv-contracts = { path = "../oxkv-contracts" }
-oxkv-index = { path = "../oxkv-index" }
+oxkv-contracts = { path = "../oxkv-contracts", version = "0.12.0" }
+oxkv-index = { path = "../oxkv-index", version = "0.12.0" }
 serde_json = "1"
 
 [dev-dependencies]
-oxkv-freeze = { path = "../oxkv-freeze" }
+oxkv-freeze = { path = "../oxkv-freeze", version = "0.12.0" }
 
 [lints]
 workspace = true
