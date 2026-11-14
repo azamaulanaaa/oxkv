@@ -23,14 +23,14 @@ The 1.0 search contract has no regular expressions. A policy with a regex
 fails with `policy.regex_not_supported`. The legacy filter supports regular
 expressions, because it keeps the 0.12 behavior. The `*` and `?` wildcard
 forms work in both surfaces. Only `oxkv` is published to crates.io for now.
-All workspace crates share the `0.12.0` version.
+All workspace crates share the `0.12.1` version.
 
 # Migrating from 0.11 to 0.12
 
 OxKV 0.12 changes three existing signatures and adds new APIs. The sections
 below show the old shape and the new shape.
 
-All workspace crates share the 0.12.0 version. Update the core crate and every
+All workspace crates share the 0.12.1 version. Update the core crate and every
 adapter crate together. Only `oxkv` is published to crates.io for now; the
 adapter crates are source-only until 1.0.
 

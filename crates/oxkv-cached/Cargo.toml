@@ -1,6 +1,6 @@
 [package]
 name = "oxkv-cached"
-version = "0.12.0"
+version = "0.12.1"
 publish = false
 edition = "2024"
 description = "Write-through RAM mirror for the oxkv key-value store."
@@ -11,7 +11,7 @@ keywords = ["cache", "mirror", "keyvalue", "database"]
 categories = ["database"]
 
 [dependencies]
-oxkv = { path = "../..", version = "0.12.0", features = ["btree", "oxkv"] }
+oxkv = { path = "../..", version = "0.12.1", features = ["btree", "oxkv"] }
 async-lock = "3"
 async-trait = "0.1"
 futures = { version = "0.3", default-features = false, features = ["std"] }

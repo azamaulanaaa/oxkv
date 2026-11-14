@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.12.1] - Unreleased
+
+### Changed
+
+- The workspace version is `0.12.1`. The workspace crates share this version.
+
 ## [0.12.0] - Unreleased
 
 This release is compared to `v0.11.0`. The workspace version is `0.12.0`.
@@ -207,4 +213,5 @@ This release is compared to `v0.11.0`. The workspace version is `0.12.0`.
 - `BatchExt::delete_prefix` is removed. Use
   `BatchExt::delete_prefix_chunked`.
 
-[0.12.0]: https://github.com/azamaulanaaa/oxkv/compare/v0.11.0...HEAD
+[0.12.1]: https://github.com/azamaulanaaa/oxkv/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/azamaulanaaa/oxkv/compare/v0.11.0...v0.12.0

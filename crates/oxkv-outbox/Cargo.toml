@@ -1,6 +1,6 @@
 [package]
 name = "oxkv-outbox"
-version = "0.12.0"
+version = "0.12.1"
 publish = false
 edition = "2024"
 description = "Durable client outbox and receipt ledger for oxkv."
@@ -11,7 +11,7 @@ keywords = ["outbox", "receipt", "idempotency", "keyvalue"]
 categories = ["database"]
 
 [dependencies]
-oxkv-contracts = { path = "../oxkv-contracts", version = "0.12.0" }
+oxkv-contracts = { path = "../oxkv-contracts", version = "0.12.1" }
 thiserror = "2"
 
 [dev-dependencies]

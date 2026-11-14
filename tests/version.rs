@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// The published 0.12 crate version.
-const RELEASE_VERSION: &str = "0.12.0";
+const RELEASE_VERSION: &str = "0.12.1";
 
 /// Returns the workspace root directory.
 fn workspace_root() -> PathBuf {

@@ -1,6 +1,6 @@
 [package]
 name = "oxkv-s3"
-version = "0.12.0"
+version = "0.12.1"
 publish = false
 edition = "2024"
 description = "object_store adapter for the oxkv key-value store."
@@ -11,7 +11,7 @@ keywords = ["s3", "gcs", "azure", "keyvalue"]
 categories = ["database"]
 
 [dependencies]
-oxkv = { path = "../..", version = "0.12.0", default-features = false }
+oxkv = { path = "../..", version = "0.12.1", default-features = false }
 async-trait = "0.1"
 futures = { version = "0.3", default-features = false, features = ["std"] }
 object_store = { version = "0.12", features = ["aws", "gcp", "azure"] }

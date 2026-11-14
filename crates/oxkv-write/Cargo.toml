@@ -1,6 +1,6 @@
 [package]
 name = "oxkv-write"
-version = "0.12.0"
+version = "0.12.1"
 publish = false
 edition = "2024"
 description = "Versioned write requests and a durable authority for oxkv."
@@ -11,8 +11,8 @@ keywords = ["write", "version", "idempotency", "keyvalue", "database"]
 categories = ["database"]
 
 [dependencies]
-oxkv-contracts = { path = "../oxkv-contracts", version = "0.12.0" }
-oxkv-security = { path = "../oxkv-security", version = "0.12.0" }
+oxkv-contracts = { path = "../oxkv-contracts", version = "0.12.1" }
+oxkv-security = { path = "../oxkv-security", version = "0.12.1" }
 thiserror = "2"
 
 [dev-dependencies]

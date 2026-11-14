@@ -4,7 +4,7 @@ This document states the behavior that the code on this branch provides. It
 covers the in-memory B-tree backend and the durable LSM backend. Each claim
 names the source file and function that implements it.
 
-The crate version is 0.12.0. The contracts below describe this branch only.
+The crate version is 0.12.1. The contracts below describe this branch only.
 They do not describe requested features that are absent from this branch. The
 legacy Lucene-style query filter lives in the standalone `oxkv-query` crate at
 `crates/oxkv-query`. The 1.0 release still supports it. It is not part of the

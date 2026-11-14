@@ -1,6 +1,6 @@
 [package]
 name = "oxkv-wasm"
-version = "0.12.0"
+version = "0.12.1"
 publish = false
 edition = "2024"
 description = "WebAssembly bindings for the oxkv key-value store."
@@ -14,10 +14,10 @@ categories = ["wasm", "database"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-oxkv = { path = "../..", version = "0.12.0", features = ["btree", "oxkv"] }
-oxkv-query = { path = "../oxkv-query", version = "0.12.0" }
-oxkv-opfs = { path = "../oxkv-opfs", version = "0.12.0" }
-oxkv-cached = { path = "../oxkv-cached", version = "0.12.0" }
+oxkv = { path = "../..", version = "0.12.1", features = ["btree", "oxkv"] }
+oxkv-query = { path = "../oxkv-query", version = "0.12.1" }
+oxkv-opfs = { path = "../oxkv-opfs", version = "0.12.1" }
+oxkv-cached = { path = "../oxkv-cached", version = "0.12.1" }
 futures = { version = "0.3", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

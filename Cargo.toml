@@ -54,7 +54,7 @@ pedantic = "deny"
 
 [package]
 name = "oxkv"
-version = "0.12.0"
+version = "0.12.1"
 edition = "2024"
 description = "A transactional key-value store with a durable LSM backend, cursor pagination, and streaming snapshots. Separate crates provide WASM bindings, OpenTelemetry, and object storage."
 license = "MIT OR Apache-2.0"
