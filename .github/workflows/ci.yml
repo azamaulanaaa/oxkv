@@ -171,6 +171,11 @@ jobs:
             echo "CHROME_BIN=/usr/bin/chromium" >> "$GITHUB_ENV"
             echo "CHROMEDRIVER=/usr/bin/chromedriver" >> "$GITHUB_ENV"
           else
+            # Firefox refuses to start as root when $HOME is not owned by
+            # root. The job runs as uid 0 in rust:1, and the runner's
+            # /github/home is owned by uid 1001. HOME=/root affects only the
+            # test steps below. CARGO_HOME and RUSTUP_HOME stay unchanged.
+            echo "HOME=/root" >> "$GITHUB_ENV"
             echo "FIREFOX_BIN=/usr/bin/firefox-esr" >> "$GITHUB_ENV"
             echo "GECKODRIVER=/usr/local/bin/geckodriver" >> "$GITHUB_ENV"
             echo "MOZ_HEADLESS=1" >> "$GITHUB_ENV"
