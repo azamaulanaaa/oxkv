@@ -1,4 +1,6 @@
 #![allow(clippy::multiple_crate_versions)]
+// The lint fires in code that `wasm_bindgen` generates, not in this crate.
+#![allow(clippy::float_cmp)]
 
 //! WASM bindings for `BTreeStore` (light baseline), `OxKvStore` (LSM engine),
 //! and `CachedOxKvStore` (write-through RAM mirror).
