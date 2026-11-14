@@ -124,11 +124,38 @@ jobs:
           apt-get install -y -qq chromium chromium-driver
       - name: Install Firefox and geckodriver
         if: matrix.browser == 'Firefox'
-        # Install both packages from the same Debian repository so the
-        # geckodriver version matches the installed Firefox.
+        # Debian has firefox-esr but no geckodriver package. Download a pinned
+        # geckodriver release from GitHub and check its digest before you
+        # install it.
         run: |
           apt-get update -qq
-          apt-get install -y -qq firefox-esr geckodriver
+          apt-get install -y -qq firefox-esr curl ca-certificates
+
+          geckodriver_version=0.37.1
+          case "$(dpkg --print-architecture)" in
+            amd64)
+              geckodriver_arch=linux64
+              geckodriver_sha256=e815130ea95983e162ae91843b48d3a3ce991735635fce83a647afde21e09f7e
+              ;;
+            arm64)
+              geckodriver_arch=linux-aarch64
+              geckodriver_sha256=8fd90b951422fbad5b56539fb344dff66eb3f986d615d8d6fde9f1f62dad610c
+              ;;
+            *)
+              echo "unsupported architecture: $(dpkg --print-architecture)" >&2
+              exit 1
+              ;;
+          esac
+
+          asset="geckodriver-v${geckodriver_version}-${geckodriver_arch}.tar.gz"
+          dir="$(mktemp -d)"
+          trap 'rm -rf "$dir"' EXIT
+
+          curl -fsSL -o "$dir/$asset" \
+            "https://github.com/mozilla/geckodriver/releases/download/v${geckodriver_version}/${asset}"
+          printf '%s  %s\n' "$geckodriver_sha256" "$dir/$asset" | sha256sum -c -
+          tar -xzf "$dir/$asset" -C "$dir" --no-same-owner
+          install -m 0755 "$dir/geckodriver" /usr/local/bin/geckodriver
       - name: Print browser and driver versions
         run: |
           if [ "${{ matrix.browser }}" = "Chrome" ]; then
@@ -145,7 +172,7 @@ jobs:
             echo "CHROMEDRIVER=/usr/bin/chromedriver" >> "$GITHUB_ENV"
           else
             echo "FIREFOX_BIN=/usr/bin/firefox-esr" >> "$GITHUB_ENV"
-            echo "GECKODRIVER=/usr/bin/geckodriver" >> "$GITHUB_ENV"
+            echo "GECKODRIVER=/usr/local/bin/geckodriver" >> "$GITHUB_ENV"
             echo "MOZ_HEADLESS=1" >> "$GITHUB_ENV"
           fi
       - name: Test core wasm (headless ${{ matrix.browser }})
