@@ -7,49 +7,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # The order follows the dependency graph. Each crate appears after every
+  # Only the core crate is public. Every other workspace crate sets
+  # `publish = false` and stays source-only until 1.0. When a second crate
+  # becomes public, remove its `publish = false` and add it here after every
   # workspace crate that it depends on.
-  RELEASE_CRATES: >-
-    oxkv
-    oxkv-cached
-    oxkv-contracts
-    oxkv-consumer
-    oxkv-cost
-    oxkv-event
-    oxkv-enforce
-    oxkv-falsify
-    oxkv-freeze
-    oxkv-hooks
-    oxkv-hydrate
-    oxkv-index
-    oxkv-key
-    oxkv-kv
-    oxkv-manifest
-    oxkv-map
-    oxkv-opfs
-    oxkv-ops
-    oxkv-otel
-    oxkv-outbox
-    oxkv-policy
-    oxkv-portable
-    oxkv-projection
-    oxkv-qualify
-    oxkv-query
-    oxkv-readpin
-    oxkv-repl
-    oxkv-replica
-    oxkv-rpc
-    oxkv-rule
-    oxkv-s3
-    oxkv-scheduler
-    oxkv-scope
-    oxkv-search
-    oxkv-security
-    oxkv-snapshot
-    oxkv-tier
-    oxkv-wasm
-    oxkv-wire
-    oxkv-write
+  RELEASE_CRATES: oxkv
 
 jobs:
   checks:
@@ -90,15 +52,18 @@ jobs:
             done
           } > "$patch"
 
-          # Guard: the list must cover every workspace crate. A new crate must
-          # join this list before the release can pass the gate.
+          # Guard: the list must cover every crate that allows publishing. A
+          # new public crate must remove its `publish = false` and join this
+          # list before the release can pass the gate. Internal crates keep
+          # `publish = false`, so the workspace can grow without publishing
+          # every member.
           expected="$(printf '%s\n' "${crates[@]}" | sort)"
-          actual="$(cargo tree --workspace --depth 0 --prefix none \
-            | awk 'NF { print $1 }' \
+          actual="$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import json, sys; print("\n".join(sorted(p["name"] for p in json.load(sys.stdin)["packages"] if p["publish"] != [])))' \
             | sort)"
           if [ "$expected" != "$actual" ]; then
-            echo "error: the crate list does not match the workspace." >&2
-            printf 'crate list:\n%s\nworkspace:\n%s\n' "$expected" "$actual" >&2
+            echo "error: the crate list does not match the publishable crates." >&2
+            printf 'crate list:\n%s\npublishable:\n%s\n' "$expected" "$actual" >&2
             exit 1
           fi
 
@@ -159,6 +124,13 @@ jobs:
             if [ -z "$version" ]; then
               echo "error: cannot read the version of $crate." >&2
               exit 1
+            fi
+
+            # A failed run leaves the crates that already published on the
+            # index. A rerun must resume, not fail on the first of them.
+            if cargo info "$crate@$version" --registry crates-io >/dev/null 2>&1; then
+              echo "$crate $version is already on crates.io; skipping."
+              continue
             fi
 
             echo "::group::cargo publish -p $crate"

@@ -1,6 +1,7 @@
 [package]
 name = "oxkv-contracts"
 version = "0.12.0"
+publish = false
 edition = "2024"
 description = "Shared 1.0 contract foundation for oxkv: error registry, version axes, cursors, receipts, and reserved keyspace."
 license = "MIT OR Apache-2.0"

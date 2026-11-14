@@ -1,6 +1,7 @@
 [package]
 name = "oxkv-policy"
 version = "0.12.0"
+publish = false
 edition = "2024"
 description = "Canonical policy AST v1, total evaluator, budgets, and explanation for oxkv."
 license = "MIT OR Apache-2.0"

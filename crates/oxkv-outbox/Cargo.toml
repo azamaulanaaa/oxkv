@@ -1,6 +1,7 @@
 [package]
 name = "oxkv-outbox"
 version = "0.12.0"
+publish = false
 edition = "2024"
 description = "Durable client outbox and receipt ledger for oxkv."
 license = "MIT OR Apache-2.0"

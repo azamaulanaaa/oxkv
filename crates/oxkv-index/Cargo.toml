@@ -1,6 +1,7 @@
 [package]
 name = "oxkv-index"
 version = "0.12.0"
+publish = false
 edition = "2024"
 description = "Per-shard inverted index and frozen tokenizer contract for oxkv search."
 license = "MIT OR Apache-2.0"

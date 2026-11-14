@@ -1,6 +1,7 @@
 [package]
 name = "oxkv-scheduler"
 version = "0.12.0"
+publish = false
 edition = "2024"
 description = "Pure per-key write scheduler for oxkv: queued, in-flight, and terminal state with bounded deterministic selection."
 license = "MIT OR Apache-2.0"

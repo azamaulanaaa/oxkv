@@ -1,6 +1,7 @@
 [package]
 name = "oxkv-kv"
 version = "0.12.0"
+publish = false
 edition = "2024"
 description = "Ordered key-value substrate for oxkv: versioned point reads, range scans, cursors, and atomic batches."
 license = "MIT OR Apache-2.0"

@@ -1,6 +1,7 @@
 [package]
 name = "oxkv-replica"
 version = "0.12.0"
+publish = false
 edition = "2024"
 description = "Read-only client replica for oxkv: scope-projected mirror, local search index, bounded reads, and local tab lease."
 license = "MIT OR Apache-2.0"

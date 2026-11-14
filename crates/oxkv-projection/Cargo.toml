@@ -1,6 +1,7 @@
 [package]
 name = "oxkv-projection"
 version = "0.12.0"
+publish = false
 edition = "2024"
 description = "Portable policy fact projection for oxkv: facts, epochs, watermarks, staleness, and invalidation."
 license = "MIT OR Apache-2.0"

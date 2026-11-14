@@ -1,6 +1,7 @@
 [package]
 name = "oxkv-cost"
 version = "0.12.0"
+publish = false
 edition = "2024"
 description = "Query cost model, explain records, bounded fan-out, and deterministic scatter-gather merge for oxkv."
 license = "MIT OR Apache-2.0"

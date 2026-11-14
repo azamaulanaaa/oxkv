@@ -1,6 +1,7 @@
 [package]
 name = "oxkv-scope"
 version = "0.12.0"
+publish = false
 edition = "2024"
 description = "Scope declaration, deterministic identity, membership, diffs, and result modes for oxkv."
 license = "MIT OR Apache-2.0"

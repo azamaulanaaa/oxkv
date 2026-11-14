@@ -1,6 +1,7 @@
 [package]
 name = "oxkv-hooks"
 version = "0.12.0"
+publish = false
 edition = "2024"
 description = "Pure pre-write validation and post-write notification hooks for oxkv."
 license = "MIT OR Apache-2.0"

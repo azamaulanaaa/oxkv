@@ -1,6 +1,7 @@
 [package]
 name = "oxkv-hydrate"
 version = "0.12.0"
+publish = false
 edition = "2024"
 description = "Resumable, verified snapshot hydration and crash recovery for an oxkv replica."
 license = "MIT OR Apache-2.0"
