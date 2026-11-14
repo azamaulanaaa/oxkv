@@ -6,7 +6,7 @@
 //!   encoding scopes.
 //! - [`backup`] captures shard snapshots with a version vector and a retention
 //!   pin.
-//! - [`restore`] verifies every object and writes a new epoch.
+//! - [`mod@restore`] verifies every object and writes a new epoch.
 //! - [`quota`] rejects at admission with a named error.
 //! - [`compaction`] controls budgets, pauses, and pins.
 //! - [`telemetry`] records metric samples and write, query, and sync traces.

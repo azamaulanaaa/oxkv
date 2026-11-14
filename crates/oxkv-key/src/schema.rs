@@ -1,8 +1,8 @@
 //! Table key schemas.
 //!
 //! A manifest declares the component type and the arity of every table key.
-//! [`KeySchema`] carries that declaration. [`Key::validate_schema`] rejects a
-//! key that does not match it.
+//! [`KeySchema`] carries that declaration. [`crate::Key::validate_schema`]
+//! rejects a key that does not match it.
 
 use crate::component::{Component, ComponentType};
 use crate::{KeyError, MAX_COMPONENTS};
