@@ -1,6 +1,6 @@
 //! Frozen Unicode normalization, case folding, and word segmentation.
 //!
-//! The tables in [`tables`] come from Unicode Character Database 16.0.0. The
+//! The tables in `tables` come from Unicode Character Database 16.0.0. The
 //! tokenizer applies canonical decomposition, canonical ordering, and
 //! canonical composition. It then applies full case folding. Segmentation is
 //! a maximal run of word characters as defined by the frozen `Word` subset:
