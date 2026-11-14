@@ -1,6 +1,7 @@
 [package]
 name = "oxkv-rpc"
 version = "0.12.0"
+publish = false
 edition = "2024"
 description = "Generated RPC surface for oxkv: neutral descriptor, Connect envelope, and sans-IO reference transport."
 license = "MIT OR Apache-2.0"

@@ -1,6 +1,7 @@
 [package]
 name = "oxkv-rule"
 version = "0.12.0"
+publish = false
 edition = "2024"
 description = "Portable rule lifecycle for oxkv: immutable policy catalog, dry run, staged rollout, canary, promotion, and rollback."
 license = "MIT OR Apache-2.0"

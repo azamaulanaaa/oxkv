@@ -1,6 +1,7 @@
 [package]
 name = "oxkv-wire"
 version = "0.12.0"
+publish = false
 edition = "2024"
 description = "Portable sans-IO sync wire protocol v1 for oxkv."
 license = "MIT OR Apache-2.0"

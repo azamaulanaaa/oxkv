@@ -1,6 +1,7 @@
 [package]
 name = "oxkv-security"
 version = "0.12.0"
+publish = false
 edition = "2024"
 description = "Portable authentication, authorization, audit, and access-log boundary for oxkv."
 license = "MIT OR Apache-2.0"

@@ -1,6 +1,7 @@
 [package]
 name = "oxkv-search"
 version = "0.12.0"
+publish = false
 edition = "2024"
 description = "Snapshot-consistent search pinning, deterministic merge order, and stable pagination for oxkv."
 license = "MIT OR Apache-2.0"

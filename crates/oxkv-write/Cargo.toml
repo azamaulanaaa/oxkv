@@ -1,6 +1,7 @@
 [package]
 name = "oxkv-write"
 version = "0.12.0"
+publish = false
 edition = "2024"
 description = "Versioned write requests and a durable authority for oxkv."
 license = "MIT OR Apache-2.0"

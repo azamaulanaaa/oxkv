@@ -1,6 +1,7 @@
 [package]
 name = "oxkv-query"
 version = "0.12.0"
+publish = false
 edition = "2024"
 description = "Legacy Lucene-style query filter for the oxkv key-value store. This crate is not part of the 1.0 search contract."
 license = "MIT OR Apache-2.0"

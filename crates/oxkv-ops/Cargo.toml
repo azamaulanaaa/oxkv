@@ -1,6 +1,7 @@
 [package]
 name = "oxkv-ops"
 version = "0.12.0"
+publish = false
 edition = "2024"
 description = "Portable operations contracts for oxkv: migration, backup, restore, quota, rate limits, compaction, and telemetry records."
 license = "MIT OR Apache-2.0"

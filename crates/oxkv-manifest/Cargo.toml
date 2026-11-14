@@ -1,6 +1,7 @@
 [package]
 name = "oxkv-manifest"
 version = "0.12.0"
+publish = false
 edition = "2024"
 description = "Manifest v1 schema, canonical JSON, validation, and deterministic descriptor compilation for oxkv."
 license = "MIT OR Apache-2.0"

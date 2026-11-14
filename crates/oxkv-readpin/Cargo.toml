@@ -1,6 +1,7 @@
 [package]
 name = "oxkv-readpin"
 version = "0.12.0"
+publish = false
 edition = "2024"
 description = "Pins, session minimums, bounded-staleness reads, and read-your-writes for oxkv replicas."
 license = "MIT OR Apache-2.0"

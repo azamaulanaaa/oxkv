@@ -22,16 +22,17 @@ crates hold the 1.0 search contract.
 The 1.0 search contract has no regular expressions. A policy with a regex
 fails with `policy.regex_not_supported`. The legacy filter supports regular
 expressions, because it keeps the 0.12 behavior. The `*` and `?` wildcard
-forms work in both surfaces. All workspace crates release in lockstep at
-0.12.0.
+forms work in both surfaces. Only `oxkv` is published to crates.io for now.
+All workspace crates share the `0.12.0` version.
 
 # Migrating from 0.11 to 0.12
 
 OxKV 0.12 changes three existing signatures and adds new APIs. The sections
 below show the old shape and the new shape.
 
-All workspace crates release in lockstep at 0.12.0. Update the core crate and
-every adapter crate together.
+All workspace crates share the 0.12.0 version. Update the core crate and every
+adapter crate together. Only `oxkv` is published to crates.io for now; the
+adapter crates are source-only until 1.0.
 
 ## 1. Scan limits use `usize`
 
@@ -132,8 +133,8 @@ commits one chunk per transaction and is not atomic across chunks. Call
 OxKV 0.11 moves three public items from the core crate to separate crates. This
 guide shows the old shape and the new shape.
 
-All workspace crates release in lockstep. The version of each adapter crate
-matches the version of `oxkv`.
+All workspace crates share one version. The version of each adapter crate
+matches the version of `oxkv`. Only `oxkv` is published to crates.io for now.
 
 ## 1. The builder takes a `Storage` value
 
@@ -232,8 +233,9 @@ let store = OtelStore::new(inner);
 
 ## Crate compatibility
 
-All workspace crates release in lockstep. Each adapter crate uses the same
-version as `oxkv`.
+All workspace crates share one version. Each adapter crate uses the same
+version as `oxkv`. Only `oxkv` is published to crates.io for now; every
+adapter row below is source-only until 1.0.
 
 | Crate | Purpose | Version |
 | --- | --- | --- |

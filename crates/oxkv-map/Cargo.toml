@@ -1,6 +1,7 @@
 [package]
 name = "oxkv-map"
 version = "0.12.0"
+publish = false
 edition = "2024"
 description = "Static shard map v1 for oxkv: canonical table bounds, validation, routing, and digest."
 license = "MIT OR Apache-2.0"

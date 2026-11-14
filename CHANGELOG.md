@@ -127,6 +127,9 @@ This release is compared to `v0.11.0`. The workspace version is `0.12.0`.
 ### Changed
 
 - The workspace version is `0.12.0`. The workspace crates share this version.
+- Only `oxkv` is published to crates.io in `0.12.0`. The adapter crates and
+  the 1.0 contract crates set `publish = false` and remain source-only until
+  1.0. `oxkv-wasm` still ships as the `oxkv` npm package.
 - Rust scan limits use `Option<usize>`. The WASM boundary keeps `Option<u32>`
   and converts the value. A limit that fits in `u32` behaves as it did in
   `0.11`.

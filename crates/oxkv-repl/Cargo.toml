@@ -1,6 +1,7 @@
 [package]
 name = "oxkv-repl"
 version = "0.12.0"
+publish = false
 edition = "2024"
 description = "Portable replication seam for oxkv: one driver interface, one lease-term fence, and a read barrier."
 license = "MIT OR Apache-2.0"

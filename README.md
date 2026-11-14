@@ -31,10 +31,12 @@ The default feature is `oxkv`. The other surfaces are opt-in:
 | `moka` | `moka` SST cache backend (native-only) |
 
 `oxkv-cached`, `oxkv-wasm`, `oxkv-query`, `oxkv-opfs`, `oxkv-otel`, and
-`oxkv-s3` are separate workspace crates. All workspace crates release in
-lockstep. The `oxkv-query` crate is a standalone legacy crate. It is not part
-of the 1.0 search contract. See [MIGRATING.md](MIGRATING.md) for the 0.10 to
-0.12 upgrade guide and the [crate compatibility table](MIGRATING.md#crate-compatibility).
+`oxkv-s3` are separate workspace crates. Only `oxkv` is published to
+crates.io for now; the adapter crates are source-only until 1.0 and share
+the workspace version. The `oxkv-query` crate is a standalone legacy crate.
+It is not part of the 1.0 search contract. See [MIGRATING.md](MIGRATING.md)
+for the 0.10 to 0.12 upgrade guide and the
+[crate compatibility table](MIGRATING.md#crate-compatibility).
 The [0.11 feedback response](docs/feedback-0.11-response.md) lists each item,
 its status, and the matching public API.
 
