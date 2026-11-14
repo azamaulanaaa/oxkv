@@ -17,7 +17,7 @@
 //! - [`manifest`] holds the field, scorer, and budget declarations.
 //! - [`index`] holds the immutable segments and the write transaction.
 //! - [`search`] holds the pinned search over the inverted index.
-//! - [`derive`] holds the derive-on-read oracle.
+//! - [`mod@derive`] holds the derive-on-read oracle.
 //! - [`scope`] holds the scope predicate and the replica build.
 //! - [`score`] holds the document-local integer scorer.
 //! - [`error`] holds the named errors.
