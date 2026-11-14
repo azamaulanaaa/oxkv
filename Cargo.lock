@@ -1185,7 +1185,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -1206,7 +1206,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-cached"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -1220,7 +1220,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-consumer"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "oxkv-contracts",
  "serde_json",
@@ -1229,7 +1229,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-contracts"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "blake3",
  "serde_json",
@@ -1238,7 +1238,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-cost"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "oxkv-contracts",
  "serde_json",
@@ -1247,7 +1247,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-enforce"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "oxkv-contracts",
  "oxkv-event",
@@ -1257,7 +1257,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-event"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "oxkv-contracts",
  "serde_json",
@@ -1266,7 +1266,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-falsify"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "criterion",
  "oxkv-contracts",
@@ -1276,7 +1276,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-freeze"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "oxkv-contracts",
  "serde_json",
@@ -1284,7 +1284,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-hooks"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "oxkv-contracts",
  "serde_json",
@@ -1292,7 +1292,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-hydrate"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "blake3",
  "oxkv-contracts",
@@ -1302,7 +1302,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-index"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "oxkv-contracts",
  "serde_json",
@@ -1311,7 +1311,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-key"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "oxkv-contracts",
  "serde_json",
@@ -1319,7 +1319,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-kv"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "oxkv-contracts",
  "serde_json",
@@ -1328,7 +1328,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-manifest"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "blake3",
  "oxkv-contracts",
@@ -1336,7 +1336,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-map"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "blake3",
  "oxkv-contracts",
@@ -1346,7 +1346,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-opfs"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -1362,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-ops"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "blake3",
  "oxkv-contracts",
@@ -1372,7 +1372,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-otel"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -1385,7 +1385,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-outbox"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "oxkv-contracts",
  "serde_json",
@@ -1394,7 +1394,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-policy"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "oxkv-contracts",
  "serde_json",
@@ -1402,7 +1402,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-portable"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "blake3",
  "oxkv-contracts",
@@ -1412,7 +1412,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-projection"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "oxkv-contracts",
  "serde_json",
@@ -1421,7 +1421,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-qualify"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "blake3",
  "oxkv-contracts",
@@ -1432,7 +1432,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-query"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "async-trait",
  "criterion",
@@ -1447,7 +1447,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-readpin"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "oxkv-contracts",
  "serde_json",
@@ -1456,7 +1456,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-repl"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "oxkv-contracts",
  "serde_json",
@@ -1464,7 +1464,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-replica"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "oxkv-contracts",
  "serde_json",
@@ -1473,7 +1473,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-rpc"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "blake3",
  "oxkv-contracts",
@@ -1483,7 +1483,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-rule"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "oxkv-contracts",
  "serde_json",
@@ -1492,7 +1492,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-s3"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -1503,7 +1503,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-scheduler"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "oxkv-contracts",
  "serde_json",
@@ -1513,7 +1513,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-scope"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "oxkv-contracts",
  "thiserror",
@@ -1521,7 +1521,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-search"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "blake3",
  "oxkv-contracts",
@@ -1531,7 +1531,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-security"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "blake3",
  "oxkv-contracts",
@@ -1541,7 +1541,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-snapshot"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "blake3",
  "crc32fast",
@@ -1552,7 +1552,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-tier"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "oxkv-contracts",
  "serde_json",
@@ -1561,7 +1561,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-wasm"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "console_error_panic_hook",
  "futures",
@@ -1582,7 +1582,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-wire"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "blake3",
  "oxkv-contracts",
@@ -1591,7 +1591,7 @@ dependencies = [
 
 [[package]]
 name = "oxkv-write"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "oxkv-contracts",
  "oxkv-security",

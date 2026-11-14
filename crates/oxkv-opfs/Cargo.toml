@@ -1,6 +1,6 @@
 [package]
 name = "oxkv-opfs"
-version = "0.12.0"
+version = "0.12.1"
 publish = false
 edition = "2024"
 description = "Browser OPFS storage backend for the oxkv key-value store."
@@ -11,7 +11,7 @@ keywords = ["opfs", "wasm", "keyvalue", "storage"]
 categories = ["wasm", "database"]
 
 [dependencies]
-oxkv = { path = "../..", version = "0.12.0", default-features = false }
+oxkv = { path = "../..", version = "0.12.1", default-features = false }
 async-trait = "0.1"
 futures = { version = "0.3", default-features = false, features = ["std"] }
 futures-timer = { version = "3", features = ["wasm-bindgen"] }

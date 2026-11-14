@@ -1,6 +1,6 @@
 [package]
 name = "oxkv-rule"
-version = "0.12.0"
+version = "0.12.1"
 publish = false
 edition = "2024"
 description = "Portable rule lifecycle for oxkv: immutable policy catalog, dry run, staged rollout, canary, promotion, and rollback."
@@ -11,7 +11,7 @@ keywords = ["policy", "rule", "lifecycle", "keyvalue"]
 categories = ["database"]
 
 [dependencies]
-oxkv-contracts = { path = "../oxkv-contracts", version = "0.12.0" }
+oxkv-contracts = { path = "../oxkv-contracts", version = "0.12.1" }
 thiserror = "2"
 
 [dev-dependencies]
