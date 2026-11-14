@@ -559,7 +559,7 @@ impl Replica {
     ///
     /// Returns [`ReplicaError::NotHydrated`] for a cold replica.
     /// Returns [`ReplicaError::Stale`] with no data when the lag exceeds the
-    /// bound. Returns the pin errors from [`resolve_pin`]. Returns
+    /// bound. Returns the pin errors from `resolve_pin`. Returns
     /// [`ReplicaError::NotFound`] when the key has no value at the pin.
     pub fn get(&self, request: &ReadRequest) -> Result<ReadResponse, ReplicaError> {
         let (mirror, _) = self.published()?;

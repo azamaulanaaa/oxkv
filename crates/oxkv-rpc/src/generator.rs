@@ -1,8 +1,9 @@
 //! Descriptor generation and generated method metadata.
 //!
 //! [`compile`] turns one manifest declaration set into one descriptor.
-//! [`generate`] turns one descriptor into the generated method surface. The
-//! control methods use the same generator as the data methods.
+//! [`GeneratedSurface::generate`] turns one descriptor into the generated
+//! method surface. The control methods use the same generator as the data
+//! methods.
 
 use oxkv_contracts::version::{DescriptorDigest, ManifestDigest};
 use oxkv_contracts::{ErrorCode, ErrorSpec};
